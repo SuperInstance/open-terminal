@@ -139,39 +139,64 @@ void TerminalProtocolComServer::_ensurePageEventsRegistered()
     if (!emperor)
         return;
 
+    // We need any window's AppHost to get a Dispatcher for UI-thread dispatch.
+    // The actual page lookup and event subscription must happen on the UI thread
+    // because TerminalPage is a DependencyObject with thread affinity — obtaining
+    // it from a background thread may return a COM proxy whose event subscription
+    // is silently lost.
+    AppHost* anyHost = nullptr;
     for (const auto& host : emperor->GetWindows())
     {
-        const auto page = _getPage(host.get());
-        if (!page)
-            continue;
+        anyHost = host.get();
+        if (anyHost)
+            break;
+    }
+    if (!anyHost)
+        return;
 
-        // TerminalPage is a DependencyObject with UI thread affinity.
-        // Subscribing to its events from a background thread (MTA worker)
-        // throws RPC_E_WRONG_THREAD. Dispatch subscription to UI thread.
-        auto subscribeOnUI = [page]() {
+    // Use Logic().Dispatcher() which is safe to call cross-thread.
+    auto logic = anyHost->Logic();
+    if (!logic)
+        return;
+
+    auto root = logic.GetRoot();
+    if (!root)
+        return;
+
+    auto dispatcher = root.Dispatcher();
+    if (!dispatcher)
+        return;
+
+    auto subscribe = [emperor]() {
+        for (const auto& host : emperor->GetWindows())
+        {
+            const auto page = _getPage(host.get());
+            if (!page)
+                continue;
+
             page.ProtocolVtSequenceReceived(
                 [](auto&&, const winrt::hstring& eventJson) {
                     s_NotifyEventToComClients(winrt::to_string(eventJson));
                 });
-        };
+            break; // Single-window for now
+        }
+    };
 
-        if (page.Dispatcher().HasThreadAccess())
-        {
-            subscribeOnUI();
-        }
-        else
-        {
-            HANDLE completedEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-            page.Dispatcher().RunAsync(
-                winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
-                [&]() {
-                    subscribeOnUI();
-                    SetEvent(completedEvent);
-                });
-            WaitForSingleObject(completedEvent, INFINITE);
-            CloseHandle(completedEvent);
-        }
-        break; // Single-window for now
+    if (dispatcher.HasThreadAccess())
+    {
+        subscribe();
+    }
+    else
+    {
+        HANDLE completedEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        dispatcher.RunAsync(
+            winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
+            [&]() {
+                subscribe();
+                SetEvent(completedEvent);
+            });
+        WaitForSingleObject(completedEvent, INFINITE);
+        CloseHandle(completedEvent);
     }
 }
 

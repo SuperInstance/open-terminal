@@ -276,50 +276,71 @@ void ProtocolRequestHandler::_ensurePageEventsRegistered()
     if (_pageEventsRegistered || !_server)
         return;
 
+    // We need any window to get a Dispatcher for UI-thread dispatch.
+    // The actual page lookup and event subscription must happen on the UI
+    // thread because TerminalPage is a DependencyObject — obtaining it from
+    // a background thread returns a COM proxy whose event subscriptions
+    // are silently lost.
+    AppHost* anyHost = nullptr;
     for (const auto& host : _emperor._windows)
     {
-        const auto page = _getPage(host.get());
-        if (!page)
-            continue;
+        anyHost = host.get();
+        if (anyHost)
+            break;
+    }
+    if (!anyHost)
+        return;
 
-        // Found a page — register once. TerminalPage unconditionally raises
-        // ProtocolVtSequenceReceived for all panes (wired in _RegisterTerminalEvents).
-        _pageEventsRegistered = true;
+    auto logic = anyHost->Logic();
+    if (!logic)
+        return;
 
-        // TerminalPage is a DependencyObject with UI thread affinity.
-        // Subscribing to its events from a background thread (pipe I/O)
-        // throws RPC_E_WRONG_THREAD. Dispatch subscription to UI thread.
-        auto subscribeOnUI = [page]() {
+    auto root = logic.GetRoot();
+    if (!root)
+        return;
+
+    auto dispatcher = root.Dispatcher();
+    if (!dispatcher)
+        return;
+
+    _pageEventsRegistered = true;
+
+    auto& windows = _emperor._windows;
+    auto subscribe = [&windows]() {
+        for (const auto& host : windows)
+        {
+            const auto page = _getPage(host.get());
+            if (!page)
+                continue;
+
             page.ProtocolVtSequenceReceived(
                 [](auto&&, const winrt::hstring& eventJson) {
                     const auto jsonStr = winrt::to_string(eventJson);
-                    // Broadcast to named-pipe clients (null-checked for shutdown safety)
                     if (auto* svr = ProtocolRequestHandler::GetPipeServer())
                     {
                         svr->BroadcastEvent(jsonStr);
                     }
-                    // Broadcast to COM clients
                     TerminalProtocolComServer::s_NotifyEventToComClients(jsonStr);
                 });
-        };
+            break; // Single-window for now
+        }
+    };
 
-        if (page.Dispatcher().HasThreadAccess())
-        {
-            subscribeOnUI();
-        }
-        else
-        {
-            HANDLE completedEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-            page.Dispatcher().RunAsync(
-                winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
-                [&]() {
-                    subscribeOnUI();
-                    SetEvent(completedEvent);
-                });
-            WaitForSingleObject(completedEvent, INFINITE);
-            CloseHandle(completedEvent);
-        }
-        break; // Single-window for now
+    if (dispatcher.HasThreadAccess())
+    {
+        subscribe();
+    }
+    else
+    {
+        HANDLE completedEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        dispatcher.RunAsync(
+            winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
+            [&]() {
+                subscribe();
+                SetEvent(completedEvent);
+            });
+        WaitForSingleObject(completedEvent, INFINITE);
+        CloseHandle(completedEvent);
     }
 }
 
