@@ -501,6 +501,8 @@ namespace winrt::TerminalApp::implementation
                                                    const winrt::hstring& initialPrompt);
         void _DelegatePromptToAgent(const winrt::hstring& prompt);
         void _OpenOrReuseAgentPane(const winrt::hstring& prompt);
+        void _RepositionAgentPanes();
+        static winrt::Microsoft::Terminal::Settings::Model::SplitDirection _AgentPanePositionToSplitDirection(const winrt::hstring& position);
 
         void _Find(const Tab& tab);
 

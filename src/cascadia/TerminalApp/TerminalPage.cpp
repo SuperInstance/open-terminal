@@ -807,6 +807,56 @@ namespace winrt::TerminalApp::implementation
         return {};
     }
 
+    SplitDirection TerminalPage::_AgentPanePositionToSplitDirection(const winrt::hstring& position)
+    {
+        if (position == L"bottom")
+            return SplitDirection::Down;
+        if (position == L"top")
+            return SplitDirection::Up;
+        if (position == L"left")
+            return SplitDirection::Left;
+        return SplitDirection::Right;
+    }
+
+    // Method Description:
+    // - Repositions all existing agent panes across all tabs to match the
+    //   current AgentPanePosition setting. Called during settings reload.
+    void TerminalPage::_RepositionAgentPanes()
+    {
+        // Prune expired weak_ptrs; bail out if no live agent panes exist.
+        bool anyLive = false;
+        for (auto it = _agentPanes.begin(); it != _agentPanes.end();)
+        {
+            if (it->lock())
+            {
+                anyLive = true;
+                ++it;
+            }
+            else
+            {
+                it = _agentPanes.erase(it);
+            }
+        }
+        if (!anyLive)
+        {
+            return;
+        }
+
+        const auto splitDirection = _AgentPanePositionToSplitDirection(
+            _settings.GlobalSettings().AgentPanePosition());
+
+        for (const auto& tab : _tabs)
+        {
+            if (auto tabImpl = _GetTabImpl(tab))
+            {
+                if (const auto rootPane = tabImpl->GetRootPane())
+                {
+                    rootPane->RepositionAgentPane(splitDirection);
+                }
+            }
+        }
+    }
+
     // Method Description:
     // - Creates a new pane running an ACP agent connection.
     //   NOTE: This is no longer used by the command palette agent path.
@@ -1267,10 +1317,8 @@ namespace winrt::TerminalApp::implementation
         {
             return;
         }
-        const auto positionSetting = _settings.GlobalSettings().AgentPanePosition();
-        const auto splitDirection = (positionSetting == L"bottom")
-                                        ? SplitDirection::Down
-                                        : SplitDirection::Right;
+        const auto splitDirection = _AgentPanePositionToSplitDirection(
+            _settings.GlobalSettings().AgentPanePosition());
 
         _UnZoomIfNeeded();
         activeTab->SplitPaneAtRoot(splitDirection, newPane);
@@ -4703,9 +4751,9 @@ namespace winrt::TerminalApp::implementation
         // The user may have changed the "show title in titlebar" setting.
         TitleChanged.raise(*this, nullptr);
 
-        // ACP agent / model / delegate settings take effect on the next
-        // agent pane launch.  The user closes the existing agent pane and
-        // presses ? to reopen, or restarts the terminal.
+        // Reposition existing agent panes if the position setting changed.
+        // Other ACP agent/model/delegate settings still take effect on next launch.
+        _RepositionAgentPanes();
     }
 
     void TerminalPage::_updateAllTabCloseButtons()

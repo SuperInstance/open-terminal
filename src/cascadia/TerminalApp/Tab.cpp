@@ -698,11 +698,25 @@ namespace winrt::TerminalApp::implementation
         });
         pane->EnableBroadcast(_tabStatus.IsInputBroadcastActive());
 
+        // Save the root's pane ID before the split clears it. If the root
+        // was a leaf, we need to transfer the ID to the new wrapper pane so
+        // that content event handlers (keyed by pane ID) continue to work.
+        const auto rootPaneId = _rootPane->Id();
+
         // AttachPane splits the root pane in-place: the existing tree becomes
         // _firstChild and the new pane becomes _secondChild. Because _rootPane
         // is modified in-place, Content() (which points to _rootPane->GetRootElement())
         // remains valid without any re-parenting.
         auto originalTree = _rootPane->AttachPane(pane, splitType);
+
+        // The split created a new wrapper pane for the original tree. Attach
+        // Tab event handlers so that focus changes are tracked correctly —
+        // without this, clicking the original pane won't update _activePane.
+        _AttachEventHandlersToPane(originalTree);
+        if (originalTree->_IsLeaf() && rootPaneId)
+        {
+            originalTree->Id(rootPaneId.value());
+        }
 
         // After split, Close Pane Menu Item should be visible
         _closePaneMenuItem.Visibility(WUX::Visibility::Visible);

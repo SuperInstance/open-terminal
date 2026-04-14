@@ -134,6 +134,8 @@ public:
                                      winrt::Microsoft::Terminal::Settings::Model::SplitDirection splitType);
     std::shared_ptr<Pane> DetachPane(std::shared_ptr<Pane> pane);
 
+    bool RepositionAgentPane(winrt::Microsoft::Terminal::Settings::Model::SplitDirection splitDirection);
+
     int GetLeafPaneCount() const noexcept;
 
     void Maximize(std::shared_ptr<Pane> zoomedPane);

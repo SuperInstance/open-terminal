@@ -1344,6 +1344,64 @@ std::shared_ptr<Pane> Pane::AttachPane(std::shared_ptr<Pane> pane, SplitDirectio
 }
 
 // Method Description:
+// - Repositions an agent pane child by changing the split direction
+//   in-place (no detach/reattach). Used when the AgentPanePosition
+//   setting changes at runtime.
+// Arguments:
+// - splitDirection: The new desired split direction for the agent pane.
+// Return Value:
+// - true if the layout was changed, false if no change was needed or
+//   this pane doesn't have an agent child.
+bool Pane::RepositionAgentPane(SplitDirection splitDirection)
+{
+    if (_IsLeaf())
+    {
+        return false;
+    }
+
+    const bool firstIsAgent = _firstChild && _firstChild->_isAgentPane;
+    const bool secondIsAgent = _secondChild && _secondChild->_isAgentPane;
+    if (!firstIsAgent && !secondIsAgent)
+    {
+        return false;
+    }
+
+    const auto newSplitState = _convertAutomaticOrDirectionalSplitState(splitDirection);
+    const bool agentShouldBeFirst = (splitDirection == SplitDirection::Up ||
+                                     splitDirection == SplitDirection::Left);
+
+    // Early exit if the layout already matches the desired state.
+    if (_splitState == newSplitState && firstIsAgent == agentShouldBeFirst)
+    {
+        return false;
+    }
+
+    // Swap children if the agent needs to move to the other side.
+    if (firstIsAgent != agentShouldBeFirst)
+    {
+        std::swap(_firstChild, _secondChild);
+        // XAML elements can only have one parent, so clear before re-assigning.
+        _borderFirst.Child(nullptr);
+        _borderSecond.Child(nullptr);
+        _borderFirst.Child(_firstChild->GetRootElement());
+        _borderSecond.Child(_secondChild->GetRootElement());
+        // Flip the split ratio so the agent keeps its size proportion.
+        _desiredSplitPosition = 1.0f - _desiredSplitPosition;
+    }
+
+    _splitState = newSplitState;
+
+    // Rebuild grid layout (same pattern as ToggleSplitOrientation).
+    _borders = _GetCommonBorders();
+    _root.ColumnDefinitions().Clear();
+    _root.RowDefinitions().Clear();
+    _CreateRowColDefinitions();
+    _ApplySplitDefinitions();
+
+    return true;
+}
+
+// Method Description:
 // - Attempts to find the parent of the target pane,
 //   if found remove the pane from the tree and return it.
 // - If the removed pane was (or contained the focus) the first sibling will
