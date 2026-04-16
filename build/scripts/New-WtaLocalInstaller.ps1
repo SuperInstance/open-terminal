@@ -509,6 +509,16 @@ if (-not (Test-Path $resolvedWtaExePath -PathType Leaf)) {
 Write-Status "Injecting wta.exe into the unpackaged payload ..."
 Copy-Item -Path $resolvedWtaExePath -Destination (Join-Path $payloadRoot 'wta.exe') -Force
 
+# wtcli.exe is built by MSBuild (C++) alongside the Terminal.  wta.exe discovers
+# it as a sibling, so it must be co-located in the installed layout.
+$wtcliSource = Join-Path $repoRoot ("bin\{0}\{1}\wtcli\wtcli.exe" -f $Platform, $Configuration)
+if (Test-Path $wtcliSource -PathType Leaf) {
+    Write-Status "Injecting wtcli.exe into the unpackaged payload ..."
+    Copy-Item -Path $wtcliSource -Destination (Join-Path $payloadRoot 'wtcli.exe') -Force
+} else {
+    Write-Warning "wtcli.exe not found at $wtcliSource — autofix and protocol features will not work."
+}
+
 $payloadPromptDir = Join-Path $payloadRoot 'prompts'
 Ensure-Directory -Path $payloadPromptDir
 Write-Status "Injecting planner prompt template into the payload ..."

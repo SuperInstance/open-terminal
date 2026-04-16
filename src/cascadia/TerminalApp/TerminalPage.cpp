@@ -227,6 +227,20 @@ namespace winrt::TerminalApp::implementation
         _WindowProperties.PropertyChanged({ get_weak(), &TerminalPage::_windowPropertyChanged });
     }
 
+    TerminalPage::~TerminalPage()
+    {
+        // Closing the job handle kills the shared host process
+        // (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE).
+        if (_agentHostJob)
+        {
+            CloseHandle(_agentHostJob);
+        }
+        if (_agentHostProcess)
+        {
+            CloseHandle(_agentHostProcess);
+        }
+    }
+
     // Method Description:
     // - implements the IInitializeWithWindow interface from shobjidl_core.
     // - We're going to use this HWND as the owner for the ConPTY windows, via
@@ -721,10 +735,25 @@ namespace winrt::TerminalApp::implementation
     // - The full path to wta.exe, or empty string if not found.
     winrt::hstring TerminalPage::_DetectWtaPath() const
     {
-        // 1. Walk up from the running module to find a local dev build.
-        //    This takes priority so that during development the freshly-built
-        //    wta.exe is always used instead of an older installed copy on PATH.
-        auto cursor = std::filesystem::path{ wil::GetModuleFileNameW<std::wstring>(nullptr) }.parent_path();
+        const auto modulePath = std::filesystem::path{ wil::GetModuleFileNameW<std::wstring>(nullptr) };
+        const auto moduleDir = modulePath.parent_path();
+
+        // 1. Check for wta.exe next to the running module (packaged / installed
+        //    scenario).  A co-located wta.exe inherits the package identity of
+        //    the Terminal process, which is required for COM activation.
+        {
+            const auto sibling = moduleDir / L"wta.exe";
+            std::error_code ec;
+            if (std::filesystem::exists(sibling, ec))
+            {
+                return winrt::hstring{ sibling.lexically_normal().wstring() };
+            }
+        }
+
+        // 2. Walk up from the running module to find a local dev build.
+        //    This is the fallback for development when wta.exe is not
+        //    co-located with the Terminal binary.
+        auto cursor = moduleDir;
         while (!cursor.empty())
         {
             for (const auto& relative : {
@@ -748,7 +777,7 @@ namespace winrt::TerminalApp::implementation
             cursor = parent;
         }
 
-        // 2. Fall back to system PATH (production / installed scenario).
+        // 3. Fall back to system PATH.
         wchar_t buffer[MAX_PATH];
         if (SearchPathW(nullptr, L"wta", L".exe", MAX_PATH, buffer, nullptr) > 0)
         {
@@ -1148,18 +1177,33 @@ namespace winrt::TerminalApp::implementation
 
         OutputDebugStringW(fmt::format(FMT_COMPILE(L"[AgentHost] Launching: {}\n"), cmdline).c_str());
 
+        // Create a Job Object so the host process is automatically killed
+        // when Terminal exits (all job handles close → child is terminated).
+        _agentHostJob = CreateJobObjectW(nullptr, nullptr);
+        if (_agentHostJob)
+        {
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInfo{};
+            jobInfo.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(_agentHostJob, JobObjectExtendedLimitInformation, &jobInfo, sizeof(jobInfo));
+        }
+
         if (CreateProcessW(
                 nullptr,
                 mutableCmdline.data(),
                 nullptr,
                 nullptr,
                 FALSE,
-                CREATE_NO_WINDOW,
+                CREATE_NO_WINDOW | CREATE_SUSPENDED,
                 nullptr,
                 nullptr,
                 &si,
                 &pi))
         {
+            if (_agentHostJob)
+            {
+                AssignProcessToJobObject(_agentHostJob, pi.hProcess);
+            }
+            ResumeThread(pi.hThread);
             CloseHandle(pi.hThread);
             _agentHostProcess = pi.hProcess;
             _agentHostStarted = true;
@@ -1168,6 +1212,11 @@ namespace winrt::TerminalApp::implementation
         else
         {
             _agentPaneLog("_EnsureAgentHostStarted: FAILED to launch, error=" + std::to_string(GetLastError()));
+            if (_agentHostJob)
+            {
+                CloseHandle(_agentHostJob);
+                _agentHostJob = nullptr;
+            }
         }
     }
 
@@ -1176,6 +1225,15 @@ namespace winrt::TerminalApp::implementation
     void TerminalPage::_AutoCreateHiddenAgentPane(winrt::com_ptr<Tab> tab)
     {
         _agentPaneLog("_AutoCreateHiddenAgentPane: entering");
+
+        // Skip non-terminal tabs (e.g. Settings, Scratchpad) — they don't need
+        // an agent pane and have no terminal control to interact with.
+        if (!tab->GetActiveTerminalControl())
+        {
+            _agentPaneLog("_AutoCreateHiddenAgentPane: not a terminal tab, skipping");
+            return;
+        }
+
         _EnsureAgentHostStarted();
         if (!_agentHostStarted)
         {
@@ -1214,6 +1272,10 @@ namespace winrt::TerminalApp::implementation
                 delegateStr.replace(pos, 1, L"\"\"");
             }
             cmdline += fmt::format(FMT_COMPILE(L" --delegate-agent \"{}\""), delegateStr);
+        }
+        if (!globals.AutoFixEnabled())
+        {
+            cmdline += L" --no-autofix";
         }
         cmdline += L" attach";
         _agentPaneLog("_AutoCreateHiddenAgentPane: cmdline=" + winrt::to_string(winrt::hstring{ cmdline }));
@@ -1303,6 +1365,10 @@ namespace winrt::TerminalApp::implementation
                         delegateStr.replace(pos, 1, L"\"\"");
                     }
                     cmdline += fmt::format(FMT_COMPILE(L" --delegate-agent \"{}\""), delegateStr);
+                }
+                if (!globals.AutoFixEnabled())
+                {
+                    cmdline += L" --no-autofix";
                 }
                 cmdline += L" attach";
             }
@@ -1490,8 +1556,8 @@ namespace winrt::TerminalApp::implementation
             }
         }
 
-        // 3b. Append --no-autofix when the setting is disabled.
-        //     Skip for attach mode — autofix is managed by the shared host.
+        // 3b. Append --no-autofix when the setting is disabled (standalone mode).
+        //     Attach mode handles this above when building the attach cmdline.
         if (!_agentHostStarted && !globals.AutoFixEnabled())
         {
             cmdline += L" --no-autofix";
@@ -2957,6 +3023,10 @@ namespace winrt::TerminalApp::implementation
                             if (!page || !term2)
                                 return;
 
+                            // Autofix pipeline: skip forwarding if disabled at runtime.
+                            if (!page->_settings.GlobalSettings().AutoFixEnabled())
+                                return;
+
                             const auto paneIdStr = page->_FindPaneIdForControl(term2);
                             if (paneIdStr.empty())
                                 return;
@@ -3008,6 +3078,10 @@ namespace winrt::TerminalApp::implementation
                             auto page = weakThis.get();
                             auto term2 = weakTerm.get();
                             if (!page)
+                                return;
+
+                            // Autofix pipeline: skip forwarding if disabled at runtime.
+                            if (!page->_settings.GlobalSettings().AutoFixEnabled())
                                 return;
 
                             const auto paneIdStr = term2

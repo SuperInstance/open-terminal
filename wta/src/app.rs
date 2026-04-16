@@ -684,36 +684,52 @@ impl App {
                 self.scroll_to_bottom();
             }
             AppEvent::AgentThoughtChunk(text) => {
-                self.prompt_in_flight = true;
-                if self.progress_status.is_none() {
-                    self.progress_status = Some("Thinking...".to_string());
+                if self.shared_mode {
+                    // In shared mode the host accumulates thoughts and sends
+                    // snapshots — don't duplicate on the client.
+                } else {
+                    self.prompt_in_flight = true;
+                    if self.progress_status.is_none() {
+                        self.progress_status = Some("Thinking...".to_string());
+                    }
+                    append_thought_preview(&mut self.pending_thought_response, &text);
+                    self.scroll_to_bottom();
                 }
-                append_thought_preview(&mut self.pending_thought_response, &text);
-                self.scroll_to_bottom();
             }
             AppEvent::AgentMessageChunk(text) => {
-                self.agent_streaming = true;
-                self.prompt_in_flight = true;
-                self.progress_status = None;
-                self.pending_thought_response.clear();
-                self.pending_agent_response.push_str(&text);
-                self.scroll_to_bottom();
+                if self.shared_mode {
+                    // In shared mode the host accumulates the response and sends
+                    // snapshots — don't build the streaming response on the client.
+                } else {
+                    self.agent_streaming = true;
+                    self.prompt_in_flight = true;
+                    self.progress_status = None;
+                    self.pending_thought_response.clear();
+                    self.pending_agent_response.push_str(&text);
+                    self.scroll_to_bottom();
+                }
             }
             AppEvent::AgentMessageEnd => {
+                // Always reset streaming flags so autofix guards don't get stuck.
                 self.agent_streaming = false;
                 self.prompt_in_flight = false;
                 self.progress_status = None;
                 self.pending_thought_response.clear();
                 self.activity_frame = 0;
-                if let Some(summary) = self.completion_latency_summary() {
-                    self.push_execution_info(summary);
-                }
-                match self.finalize_agent_response() {
-                    FinalizeOutcome::SelectionReady => {
-                        self.clear_completed_turn_history();
+
+                if !self.shared_mode {
+                    // Only the non-shared client finalizes the response locally.
+                    // In shared mode the host does this and sends the result via snapshot.
+                    if let Some(summary) = self.completion_latency_summary() {
+                        self.push_execution_info(summary);
                     }
-                    FinalizeOutcome::None => {
-                        self.scroll_to_bottom();
+                    match self.finalize_agent_response() {
+                        FinalizeOutcome::SelectionReady => {
+                            self.clear_completed_turn_history();
+                        }
+                        FinalizeOutcome::None => {
+                            self.scroll_to_bottom();
+                        }
                     }
                 }
             }

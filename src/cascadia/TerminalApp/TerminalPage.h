@@ -94,6 +94,7 @@ namespace winrt::TerminalApp::implementation
     {
     public:
         TerminalPage(TerminalApp::WindowProperties properties, const TerminalApp::ContentManager& manager);
+        ~TerminalPage();
 
         // This implements shobjidl's IInitializeWithWindow, but due to a XAML Compiler bug we cannot
         // put it in our inheritance graph. https://github.com/microsoft/microsoft-ui-xaml/issues/3331
@@ -302,8 +303,10 @@ namespace winrt::TerminalApp::implementation
         std::optional<uint32_t> _priorPaneId;
 
         // Shared agent host process — started once, persists for the session.
+        // The job object ensures the host is killed when Terminal exits.
         bool _agentHostStarted{ false };
         HANDLE _agentHostProcess{ nullptr };
+        HANDLE _agentHostJob{ nullptr };
         void _EnsureAgentHostStarted();
         void _AutoCreateHiddenAgentPane(winrt::com_ptr<Tab> tab);
 

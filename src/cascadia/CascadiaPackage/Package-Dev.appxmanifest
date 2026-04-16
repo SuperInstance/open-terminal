@@ -18,9 +18,9 @@
   IgnorableNamespaces="uap mp rescap uap3 uap17 desktop6 virtualization">
 
   <Identity
-    Name="WindowsTerminalDev"
-    Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
-    Version="0.0.4.0" />
+    Name="AgenticTerminal"
+    Publisher="CN=Agentic Terminal Dev"
+    Version="0.0.4.5" />
 
   <Properties>
     <DisplayName>ms-resource:AppStoreNameDev</DisplayName>

@@ -1377,22 +1377,74 @@ bool Pane::RepositionAgentPane(SplitDirection splitDirection)
         return false;
     }
 
+    const auto& agentChild = firstIsAgent ? _firstChild : _secondChild;
+
+    if (agentChild->IsHidden())
+    {
+        // The agent pane is hidden — HidePane removed one border from
+        // _root.Children() and collapsed the grid to a single track.
+        // Only update logical state here; RestorePane will do a full
+        // visual tree rebuild when the pane is later toggled visible.
+
+        // Determine which border is currently visible BEFORE any swap.
+        // HidePane keeps the non-agent border in _root.Children().
+        const auto& visibleBorder = firstIsAgent ? _borderSecond : _borderFirst;
+
+        if (firstIsAgent != agentShouldBeFirst)
+        {
+            std::swap(_firstChild, _secondChild);
+            _desiredSplitPosition = 1.0f - _desiredSplitPosition;
+        }
+
+        _splitState = newSplitState;
+
+        // Rebuild the single-track grid in the new split direction so the
+        // visible child continues to fill the full space correctly.
+        _root.ColumnDefinitions().Clear();
+        _root.RowDefinitions().Clear();
+        if (newSplitState == SplitState::Vertical)
+        {
+            auto colDef = Controls::ColumnDefinition();
+            colDef.Width(GridLengthHelper::FromValueAndType(1.0, GridUnitType::Star));
+            _root.ColumnDefinitions().Append(colDef);
+            Controls::Grid::SetColumn(visibleBorder, 0);
+            Controls::Grid::SetRow(visibleBorder, 0);
+        }
+        else
+        {
+            auto rowDef = Controls::RowDefinition();
+            rowDef.Height(GridLengthHelper::FromValueAndType(1.0, GridUnitType::Star));
+            _root.RowDefinitions().Append(rowDef);
+            Controls::Grid::SetRow(visibleBorder, 0);
+            Controls::Grid::SetColumn(visibleBorder, 0);
+        }
+
+        return true;
+    }
+
     // Swap children if the agent needs to move to the other side.
     if (firstIsAgent != agentShouldBeFirst)
     {
         std::swap(_firstChild, _secondChild);
-        // XAML elements can only have one parent, so clear before re-assigning.
-        _borderFirst.Child(nullptr);
-        _borderSecond.Child(nullptr);
-        _borderFirst.Child(_firstChild->GetRootElement());
-        _borderSecond.Child(_secondChild->GetRootElement());
-        // Flip the split ratio so the agent keeps its size proportion.
         _desiredSplitPosition = 1.0f - _desiredSplitPosition;
     }
 
     _splitState = newSplitState;
 
-    // Rebuild grid layout (same pattern as ToggleSplitOrientation).
+    // Full XAML visual tree rebuild (matching RestorePane pattern).
+    // Without the clear + re-append cycle, the XAML rendering engine may
+    // not process the layout change correctly — especially when the tab
+    // is off-screen (e.g. user is on the Settings tab).
+    _root.Children().Clear();
+    _borderFirst.Child(nullptr);
+    _borderSecond.Child(nullptr);
+
+    _borderFirst.Child(_firstChild->GetRootElement());
+    _borderSecond.Child(_secondChild->GetRootElement());
+
+    _root.Children().Append(_borderFirst);
+    _root.Children().Append(_borderSecond);
+
     _borders = _GetCommonBorders();
     _root.ColumnDefinitions().Clear();
     _root.RowDefinitions().Clear();
@@ -1980,6 +2032,9 @@ void Pane::_ApplySplitDefinitions()
     {
         Controls::Grid::SetColumn(_borderFirst, 0);
         Controls::Grid::SetColumn(_borderSecond, 1);
+        // Reset stale Row values from a previous Horizontal layout.
+        Controls::Grid::SetRow(_borderFirst, 0);
+        Controls::Grid::SetRow(_borderSecond, 0);
 
         _firstChild->_borders = _borders | Borders::Right;
         _secondChild->_borders = _borders | Borders::Left;
@@ -1992,6 +2047,9 @@ void Pane::_ApplySplitDefinitions()
     {
         Controls::Grid::SetRow(_borderFirst, 0);
         Controls::Grid::SetRow(_borderSecond, 1);
+        // Reset stale Column values from a previous Vertical layout.
+        Controls::Grid::SetColumn(_borderFirst, 0);
+        Controls::Grid::SetColumn(_borderSecond, 0);
 
         _firstChild->_borders = _borders | Borders::Bottom;
         _secondChild->_borders = _borders | Borders::Top;
@@ -2574,6 +2632,12 @@ void Pane::HidePane(std::shared_ptr<Pane> hiddenPane)
             // Update borders so the visible child gets the full border set.
             visibleChild->_borders = _borders;
             visibleChild->_ApplySplitDefinitions();
+
+            // Reset the parent's wrapper border thickness. During _Split,
+            // _ApplySplitDefinitions runs while _lastActive is still true,
+            // leaving stale non-zero thickness on the border elements.
+            // With only one child visible the split border should be invisible.
+            visibleBorder.BorderThickness(ThicknessHelper::FromLengths(0, 0, 0, 0));
         }
     }
 }

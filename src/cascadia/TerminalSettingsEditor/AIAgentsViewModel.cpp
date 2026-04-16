@@ -5,6 +5,7 @@
 #include "AIAgentsViewModel.h"
 #include "AIAgentsViewModel.g.cpp"
 #include "AgentEntry.g.cpp"
+#include "EnumEntry.h"
 
 using namespace winrt::Windows::Foundation;
 using namespace winrt::Windows::Foundation::Collections;
@@ -126,6 +127,25 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
         _delegateAgentList = winrt::single_threaded_observable_vector(std::move(delegateEntries));
         _MaybeAppendCustomEntry(_delegateAgentList, _GlobalSettings.DelegateCustomCommand(), _GlobalSettings.DelegateAgent());
         _AppendAddNewEntry(_delegateAgentList);
+
+        // Pane position list
+        _agentPanePositionMap = winrt::single_threaded_map<winrt::hstring, Editor::EnumEntry>();
+        std::vector<Editor::EnumEntry> posEntries;
+        static constexpr std::pair<std::wstring_view, std::wstring_view> positions[] = {
+            { L"Bottom", L"bottom" },
+            { L"Right", L"right" },
+            { L"Top", L"top" },
+            { L"Left", L"left" },
+        };
+        for (const auto& [displayName, value] : positions)
+        {
+            auto entry = winrt::make<implementation::EnumEntry>(
+                winrt::hstring{ displayName },
+                winrt::box_value(winrt::hstring{ value }));
+            posEntries.emplace_back(entry);
+            _agentPanePositionMap.Insert(winrt::hstring{ value }, entry);
+        }
+        _agentPanePositionList = winrt::single_threaded_observable_vector<Editor::EnumEntry>(std::move(posEntries));
     }
 
     Editor::AgentEntry AIAgentsViewModel::_FindEntryById(
@@ -421,18 +441,31 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
 
     // ── Pane position ────────────────────────────────────────────────────
 
-    int32_t AIAgentsViewModel::AgentPanePositionIndex()
+    IObservableVector<Editor::EnumEntry> AIAgentsViewModel::AgentPanePositionList()
     {
-        return (_GlobalSettings.AgentPanePosition() == L"bottom") ? 1 : 0;
+        return _agentPanePositionList;
     }
 
-    void AIAgentsViewModel::AgentPanePositionIndex(int32_t value)
+    winrt::Windows::Foundation::IInspectable AIAgentsViewModel::CurrentAgentPanePosition()
     {
-        const auto newVal = (value == 1) ? L"bottom" : L"right";
-        if (_GlobalSettings.AgentPanePosition() != winrt::hstring{ newVal })
+        const auto pos = _GlobalSettings.AgentPanePosition();
+        if (_agentPanePositionMap.HasKey(pos))
         {
-            _GlobalSettings.AgentPanePosition(newVal);
-            _NotifyChanges(L"AgentPanePositionIndex");
+            return winrt::box_value(_agentPanePositionMap.Lookup(pos));
+        }
+        return winrt::box_value(_agentPanePositionMap.Lookup(L"bottom"));
+    }
+
+    void AIAgentsViewModel::CurrentAgentPanePosition(const winrt::Windows::Foundation::IInspectable& value)
+    {
+        if (auto ee = value.try_as<Editor::EnumEntry>())
+        {
+            auto pos = winrt::unbox_value<winrt::hstring>(ee.EnumValue());
+            if (_GlobalSettings.AgentPanePosition() != pos)
+            {
+                _GlobalSettings.AgentPanePosition(pos);
+                _NotifyChanges(L"CurrentAgentPanePosition");
+            }
         }
     }
 }

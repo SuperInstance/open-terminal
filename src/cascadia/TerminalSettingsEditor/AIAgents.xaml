@@ -23,6 +23,11 @@
                            Opacity="{x:Bind local:AIAgents.InstalledOpacity(IsInstalled)}"
                            FontStyle="{x:Bind local:AIAgents.AddNewFontStyle(IsAddNew)}" />
             </DataTemplate>
+
+            <DataTemplate x:Key="EnumComboBoxTemplate"
+                          x:DataType="local:EnumEntry">
+                <TextBlock Text="{x:Bind EnumName, Mode=OneWay}" />
+            </DataTemplate>
         </ResourceDictionary>
     </Page.Resources>
 
@@ -140,21 +145,21 @@
                        Style="{StaticResource SubtitleTextBlockStyle}"
                        Margin="0,16,0,8" />
 
+            <!--  Agent Pane Position  -->
+            <local:SettingContainer x:Name="AgentPanePosition"
+                                    x:Uid="AIAgents_PanePosition">
+                <ComboBox AutomationProperties.AccessibilityView="Content"
+                          ItemTemplate="{StaticResource EnumComboBoxTemplate}"
+                          ItemsSource="{x:Bind ViewModel.AgentPanePositionList, Mode=OneWay}"
+                          SelectedItem="{x:Bind ViewModel.CurrentAgentPanePosition, Mode=TwoWay}"
+                          Style="{StaticResource ComboBoxSettingStyle}" />
+            </local:SettingContainer>
+
             <!--  Auto-Fix  -->
             <local:SettingContainer x:Name="AutoFixEnabled"
                                     x:Uid="AIAgents_AutoFix">
                 <ToggleSwitch IsOn="{x:Bind ViewModel.AutoFixEnabled, Mode=TwoWay}"
                               Style="{StaticResource ToggleSwitchInExpanderStyle}" />
-            </local:SettingContainer>
-
-            <!--  Agent Pane Position  -->
-            <local:SettingContainer x:Name="AgentPanePosition"
-                                    x:Uid="AIAgents_PanePosition">
-                <ComboBox SelectedIndex="{x:Bind ViewModel.AgentPanePositionIndex, Mode=TwoWay}"
-                          Style="{StaticResource ComboBoxSettingStyle}">
-                    <ComboBoxItem Content="Right" Tag="right" />
-                    <ComboBoxItem Content="Bottom" Tag="bottom" />
-                </ComboBox>
             </local:SettingContainer>
         </StackPanel>
     </StackPanel>

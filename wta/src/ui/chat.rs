@@ -160,12 +160,6 @@ fn animated_activity_label(frame: usize) -> Vec<Span<'static>> {
 }
 
 fn activity_preview(app: &App) -> Option<(String, Style)> {
-    // Don't show "Thinking..." preview when the pending thought block
-    // is already visible — it's redundant.
-    if !app.pending_thought_response.trim().is_empty() {
-        return None;
-    }
-
     app.progress_status
         .as_deref()
         // "Thinking..." is redundant now that the animated label says "thinking".
@@ -175,15 +169,10 @@ fn activity_preview(app: &App) -> Option<(String, Style)> {
         .map(|text| (text, theme::DIM))
 }
 
-fn build_pending_stream_lines(app: &App) -> Vec<Line<'_>> {
-    if !app.pending_agent_response.trim().is_empty() {
-        return build_pending_text_lines("Assistant", &app.pending_agent_response, theme::AGENT_TEXT);
-    }
-
-    if !app.pending_thought_response.trim().is_empty() {
-        return build_pending_text_lines("Thinking", &app.pending_thought_response, theme::SYSTEM_TEXT);
-    }
-
+fn build_pending_stream_lines(_app: &App) -> Vec<Line<'_>> {
+    // Don't render the raw agent response (typically JSON) while streaming.
+    // The activity indicator is sufficient feedback; the final parsed
+    // recommendations will appear when the response is finalized.
     Vec::new()
 }
 
