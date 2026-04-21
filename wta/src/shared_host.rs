@@ -267,7 +267,8 @@ impl SharedUiEvent {
             | AppEvent::DebugPipeMessage(_)
             | AppEvent::SharedStateSnapshot(_)
             | AppEvent::SharedPermissionRequest { .. }
-            | AppEvent::PermissionCleared => None,
+            | AppEvent::PermissionCleared
+            | AppEvent::PreflightComplete(_) => None,
             AppEvent::UserMessage(_) => None,
         }
     }
@@ -588,6 +589,11 @@ pub async fn run_host_server(
         delegate_agent_runtimes,
     ));
 
+    // Launch ACP client directly. Pre-flight gating is done on the attach
+    // TUI side — the setup wizard prevents users from connecting to the
+    // shared host until the agent CLI is installed. If the CLI is missing
+    // here the spawn will fail and surface as an AgentError to any attached
+    // client.
     tokio::task::spawn_local(run_acp_client(
         agent_cmd,
         event_tx.clone(),
@@ -1757,6 +1763,7 @@ impl HostSessionState {
             | AppEvent::UserMessage(_)
             | AppEvent::SharedPermissionRequest { .. }
             | AppEvent::PermissionCleared
+            | AppEvent::PreflightComplete(_)
             | AppEvent::Tick
             | AppEvent::Key(_)
             | AppEvent::Resize(_, _)

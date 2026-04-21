@@ -13,6 +13,7 @@ use crate::coordinator::{
     parse_recommendation_set, recommended_choice_index,
     validate_recommendation_set_for_coordinator_target, RecommendationChoice, RecommendationSet,
 };
+use crate::preflight::{CheckStatus, PreflightResult};
 use crate::protocol::acp::client::{prompt_timing_log, PromptSubmission};
 use crate::shared_host::SharedStateSnapshot;
 use crate::ui;
@@ -89,6 +90,25 @@ pub struct PermissionState {
     pub options: Vec<PermOption>,
     pub selected: usize,
     pub responder: Option<tokio::sync::oneshot::Sender<String>>,
+}
+
+// --- Setup / OOBE ---
+
+/// Application mode — controls which UI is shown.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppMode {
+    /// Normal agent chat.
+    Chat,
+    /// Setup wizard (agent not ready — CLI missing or not authenticated).
+    Setup,
+}
+
+/// State for the setup wizard screen.
+#[derive(Debug, Clone)]
+pub struct SetupState {
+    pub preflight: PreflightResult,
+    /// Which check row is currently selected (0 = CLI, 1 = Auth).
+    pub selected_index: usize,
 }
 
 // --- WT Event Notification ---
@@ -293,11 +313,15 @@ pub enum AppEvent {
         pane_id: String,
         params: serde_json::Value,
     },
+    /// Preflight checks completed — transition from Setup to Chat if all passed.
+    PreflightComplete(PreflightResult),
 }
 
 // --- App ---
 
 pub struct App {
+    pub mode: AppMode,
+    pub setup: Option<SetupState>,
     pub state: ConnectionState,
     pub agent_name: String,
     pub agent_model: Option<String>,
@@ -365,6 +389,8 @@ impl App {
         autofix_enabled: bool,
     ) -> Self {
         Self {
+            mode: AppMode::Chat,
+            setup: None,
             state: ConnectionState::Connecting("Starting agent...".to_string()),
             agent_name: String::new(),
             agent_model: None,
@@ -605,6 +631,7 @@ impl App {
             AppEvent::DebugPipeMessage(_) => "debug_pipe_message",
             AppEvent::SharedStateSnapshot(_) => "shared_state_snapshot",
             AppEvent::WtEvent { .. } => "wt_event",
+            AppEvent::PreflightComplete(_) => "preflight_complete",
         }
     }
 
@@ -674,16 +701,72 @@ impl App {
                 self.prompt_name = Some(name);
             }
             AppEvent::AgentError(msg) => {
-                self.state = ConnectionState::Failed(msg.clone());
-                self.prompt_in_flight = false;
-                self.agent_streaming = false;
-                self.progress_status = None;
-                self.pending_thought_response.clear();
-                self.activity_frame = 0;
-                self.pending_agent_response.clear();
-                self.timing_note = None;
-                self.pending_completed_turn = None;
-                self.messages.push(ChatMessage::Error(msg));
+                // Check if this is an auth-related error — if so, show the
+                // Setup wizard with CLI ✓ and Auth ✗ instead of a raw error.
+                let lower = msg.to_ascii_lowercase();
+                let is_auth_error = lower.contains("auth")
+                    || lower.contains("login")
+                    || lower.contains("unauthorized")
+                    || lower.contains("401")
+                    || lower.contains("credentials");
+
+                if is_auth_error && self.mode != AppMode::Setup {
+                    // Extract agent id from the agent_name or fall back
+                    let agent_id = if self.agent_name.is_empty() {
+                        "copilot".to_string()
+                    } else {
+                        self.agent_name.to_ascii_lowercase()
+                    };
+                    let profile = crate::agent_registry::lookup_profile(&agent_id);
+
+                    // Build a preflight result with CLI passed, auth failed
+                    let auth_reason = msg
+                        .lines()
+                        .find(|l| {
+                            let ll = l.to_ascii_lowercase();
+                            ll.contains("auth") || ll.contains("login")
+                        })
+                        .unwrap_or("Not authenticated")
+                        .trim()
+                        .to_string();
+
+                    let preflight = PreflightResult {
+                        agent_id: profile.id.to_string(),
+                        display_name: profile.display_name.to_string(),
+                        cli_status: CheckStatus::Passed,
+                        cli_path: None,
+                        auth_status: CheckStatus::Failed(auth_reason),
+                        install_hint: profile.install_hint.to_string(),
+                        install_url: profile.install_url.to_string(),
+                        auth_hint: profile.auth_hint.to_string(),
+                    };
+
+                    self.mode = AppMode::Setup;
+                    self.setup = Some(SetupState {
+                        preflight,
+                        selected_index: 1, // select auth row
+                    });
+                    self.state = ConnectionState::Disconnected;
+                    self.prompt_in_flight = false;
+                    self.agent_streaming = false;
+                    self.progress_status = None;
+                    self.pending_thought_response.clear();
+                    self.activity_frame = 0;
+                    self.pending_agent_response.clear();
+                    self.timing_note = None;
+                    self.pending_completed_turn = None;
+                } else {
+                    self.state = ConnectionState::Failed(msg.clone());
+                    self.prompt_in_flight = false;
+                    self.agent_streaming = false;
+                    self.progress_status = None;
+                    self.pending_thought_response.clear();
+                    self.activity_frame = 0;
+                    self.pending_agent_response.clear();
+                    self.timing_note = None;
+                    self.pending_completed_turn = None;
+                    self.messages.push(ChatMessage::Error(msg));
+                }
             }
             AppEvent::ExecutionInfo(message) => {
                 self.push_execution_info(message);
@@ -893,6 +976,22 @@ impl App {
                     self.wt_notifications.pop_front();
                 }
             }
+            AppEvent::PreflightComplete(result) => {
+                if result.all_passed() {
+                    // All checks passed — transition to Chat mode
+                    self.mode = AppMode::Chat;
+                    self.setup = None;
+                    self.state = ConnectionState::Connecting("Starting agent...".to_string());
+                } else {
+                    // Show the setup wizard
+                    self.mode = AppMode::Setup;
+                    self.setup = Some(SetupState {
+                        preflight: result,
+                        selected_index: 0,
+                    });
+                    self.state = ConnectionState::Disconnected;
+                }
+            }
         }
     }
 
@@ -906,6 +1005,12 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        // If in setup mode, route keys to setup handler
+        if self.mode == AppMode::Setup {
+            self.handle_setup_key(key);
+            return;
+        }
+
         // If permission modal is showing, route keys there
         if let Some(ref mut perm) = self.permission {
             match key.code {
@@ -1126,6 +1231,45 @@ impl App {
             }
             KeyCode::Char(c) => {
                 self.insert_input_char(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_setup_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.should_quit = true;
+            }
+            KeyCode::Esc => {
+                self.should_quit = true;
+            }
+            KeyCode::Enter => {
+                // Open install URL based on selected row
+                if let Some(ref setup) = self.setup {
+                    if setup.selected_index == 0
+                        && setup.preflight.cli_status != CheckStatus::Passed
+                    {
+                        let url = setup.preflight.install_url.clone();
+                        if !url.is_empty() {
+                            let _ = open_url_in_browser(&url);
+                        }
+                    }
+                }
+            }
+            KeyCode::Up => {
+                if let Some(ref mut setup) = self.setup {
+                    if setup.selected_index > 0 {
+                        setup.selected_index -= 1;
+                    }
+                }
+            }
+            KeyCode::Down => {
+                if let Some(ref mut setup) = self.setup {
+                    if setup.selected_index < 1 {
+                        setup.selected_index += 1;
+                    }
+                }
             }
             _ => {}
         }
@@ -1688,6 +1832,55 @@ impl App {
     }
 
     fn apply_shared_snapshot(&mut self, snapshot: SharedStateSnapshot) {
+        // Check if the snapshot contains an auth-related error — if so,
+        // switch to Setup wizard instead of showing a raw error.
+        if let ConnectionState::Failed(ref msg) = snapshot.state {
+            let lower = msg.to_ascii_lowercase();
+            let is_auth_error = lower.contains("auth")
+                || lower.contains("login")
+                || lower.contains("unauthorized")
+                || lower.contains("401")
+                || lower.contains("credentials");
+
+            if is_auth_error && self.mode != AppMode::Setup {
+                let agent_id = if snapshot.agent_name.is_empty() {
+                    "copilot".to_string()
+                } else {
+                    snapshot.agent_name.to_ascii_lowercase()
+                };
+                let profile = crate::agent_registry::lookup_profile(&agent_id);
+
+                let auth_reason = msg
+                    .lines()
+                    .find(|l| {
+                        let ll = l.to_ascii_lowercase();
+                        ll.contains("auth") || ll.contains("login")
+                    })
+                    .unwrap_or("Not authenticated")
+                    .trim()
+                    .to_string();
+
+                let preflight = PreflightResult {
+                    agent_id: profile.id.to_string(),
+                    display_name: profile.display_name.to_string(),
+                    cli_status: CheckStatus::Passed,
+                    cli_path: None,
+                    auth_status: CheckStatus::Failed(auth_reason),
+                    install_hint: profile.install_hint.to_string(),
+                    install_url: profile.install_url.to_string(),
+                    auth_hint: profile.auth_hint.to_string(),
+                };
+
+                self.mode = AppMode::Setup;
+                self.setup = Some(SetupState {
+                    preflight,
+                    selected_index: 1,
+                });
+                self.state = ConnectionState::Disconnected;
+                return;
+            }
+        }
+
         let recommendations_changed = self.recommendations != snapshot.recommendations;
         let completed_turns_changed = self.completed_turns != snapshot.completed_turns;
         let permission_changed = self
@@ -1943,6 +2136,14 @@ fn autofix_log(msg: &str) {
             msg
         );
     }
+}
+
+/// Open a URL in the default browser (Windows).
+fn open_url_in_browser(url: &str) -> std::io::Result<()> {
+    std::process::Command::new("cmd")
+        .args(["/c", "start", "", url])
+        .spawn()?;
+    Ok(())
 }
 
 fn now_unix_s() -> f64 {

@@ -271,13 +271,25 @@ fn build_message_lines<'a>(
             lines.push(Line::default());
         }
         ChatMessage::Error(text) => {
-            lines.push(Line::from(vec![
-                Span::styled("● ", theme::DOT_ERROR),
-                Span::styled(
-                    truncate_render_text(text),
-                    theme::ERROR_STYLE,
-                ),
-            ]));
+            for (i, line_text) in text.lines().enumerate() {
+                if i == 0 {
+                    lines.push(Line::from(vec![
+                        Span::styled("● ", theme::DOT_ERROR),
+                        Span::styled(
+                            truncate_render_text(line_text),
+                            theme::ERROR_STYLE,
+                        ),
+                    ]));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            truncate_render_text(line_text),
+                            theme::ERROR_STYLE,
+                        ),
+                    ]));
+                }
+            }
             lines.push(Line::default());
         }
     }
