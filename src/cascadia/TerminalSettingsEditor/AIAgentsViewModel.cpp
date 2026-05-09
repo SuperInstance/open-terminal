@@ -4,6 +4,7 @@
 #include "pch.h"
 #include "AIAgentsViewModel.h"
 #include "AIAgentsViewModel.g.cpp"
+#include "AcpModelEntry.g.cpp"
 #include "AgentEntry.g.cpp"
 #include "EnumEntry.h"
 #include "../inc/AgentRegistry.h"
@@ -115,26 +116,55 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
         namespace Reg = ::Microsoft::Terminal::Settings::Model::AgentRegistry;
 
         // ACP-capable agents (shared list — see inc/AgentRegistry.h).
+        // Skip agents whose CLI isn't installed — the dropdown only offers
+        // choices the user can actually launch. If the persisted setting
+        // names a missing agent, the SelectedItem fallback in
+        // CurrentAcpAgent picks the "Add New" entry.
         std::vector<Editor::AgentEntry> acpEntries;
         for (const auto& a : Reg::BuiltinAcpAgents)
         {
+            if (!_IsAgentInstalled(std::wstring{ a.id }.c_str()))
+            {
+                continue;
+            }
             acpEntries.push_back(winrt::make<AgentEntry>(
                 winrt::hstring{ a.id },
                 winrt::hstring{ a.displayName },
-                _IsAgentInstalled(std::wstring{ a.id }.c_str())));
+                true));
         }
         _acpAgentList = winrt::single_threaded_observable_vector(std::move(acpEntries));
         _MaybeAppendCustomEntry(_acpAgentList, _GlobalSettings.AcpCustomCommand(), _GlobalSettings.AcpAgent());
         _AppendAddNewEntry(_acpAgentList);
 
+        // ACP-advertised model list. Populated by TerminalPage::OnAgentStatusChanged
+        // whenever wta pushes a fresh agent_status event. We hold an
+        // observable vector here and re-snapshot it whenever the runtime
+        // cache fires Changed — that's how the dropdown stays in sync after
+        // the user switches agents (cache cleared) or wta reconnects with a
+        // new model list.
+        _acpModelList = winrt::single_threaded_observable_vector<Editor::AcpModelEntry>();
+        _RebuildAcpModelListFromCache();
+        _acpRuntimeChangedToken = Model::AcpRuntimeState::Current().Changed(
+            [weakThis = get_weak()](const auto&, const auto&) {
+                if (auto self = weakThis.get())
+                {
+                    self->_RebuildAcpModelListFromCache();
+                }
+            });
+
         // Delegate agents (shared list — see inc/AgentRegistry.h).
+        // Same install-filter rule as the ACP list above.
         std::vector<Editor::AgentEntry> delegateEntries;
         for (const auto& a : Reg::BuiltinDelegateAgents)
         {
+            if (!_IsAgentInstalled(std::wstring{ a.id }.c_str()))
+            {
+                continue;
+            }
             delegateEntries.push_back(winrt::make<AgentEntry>(
                 winrt::hstring{ a.id },
                 winrt::hstring{ a.displayName },
-                _IsAgentInstalled(std::wstring{ a.id }.c_str())));
+                true));
         }
         _delegateAgentList = winrt::single_threaded_observable_vector(std::move(delegateEntries));
         _MaybeAppendCustomEntry(_delegateAgentList, _GlobalSettings.DelegateCustomCommand(), _GlobalSettings.DelegateAgent());
@@ -169,6 +199,38 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
         _claudeHooksStatus = detecting;
         _geminiHooksStatus = detecting;
         RefreshAgentHooksStatus();
+    }
+
+    AIAgentsViewModel::~AIAgentsViewModel()
+    {
+        if (_acpRuntimeChangedToken.value)
+        {
+            Model::AcpRuntimeState::Current().Changed(_acpRuntimeChangedToken);
+        }
+    }
+
+    void AIAgentsViewModel::_RebuildAcpModelListFromCache()
+    {
+        if (!_acpModelList) return;
+
+        const auto cached = Model::AcpRuntimeState::Current().AvailableModels();
+        const uint32_t newSize = cached ? cached.Size() : 0;
+
+        // Replace contents in-place so x:Bind observers stay attached.
+        _acpModelList.Clear();
+        for (uint32_t i = 0; i < newSize; ++i)
+        {
+            const auto m = cached.GetAt(i);
+            _acpModelList.Append(winrt::make<AcpModelEntry>(
+                m.Id(),
+                m.DisplayName(),
+                m.Description()));
+        }
+
+        _NotifyChanges(L"AcpModelList",
+                       L"HasAcpModelList",
+                       L"ShowAcpModelTextBox",
+                       L"CurrentAcpModelEntry");
     }
 
     Editor::AgentEntry AIAgentsViewModel::_FindEntryById(
@@ -229,6 +291,37 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
 
     // ── ShowModel ────────────────────────────────────────────────────────
 
+    Editor::AcpModelEntry AIAgentsViewModel::CurrentAcpModelEntry()
+    {
+        const auto current = _GlobalSettings.AcpModel();
+        if (!_acpModelList)
+        {
+            return nullptr;
+        }
+        for (uint32_t i = 0; i < _acpModelList.Size(); ++i)
+        {
+            const auto entry = _acpModelList.GetAt(i);
+            if (entry.Id() == current)
+            {
+                return entry;
+            }
+        }
+        return nullptr;
+    }
+
+    void AIAgentsViewModel::CurrentAcpModelEntry(const Editor::AcpModelEntry& value)
+    {
+        if (!value)
+        {
+            return;
+        }
+        if (_GlobalSettings.AcpModel() != value.Id())
+        {
+            _GlobalSettings.AcpModel(value.Id());
+            _NotifyChanges(L"AcpModel", L"CurrentAcpModelEntry");
+        }
+    }
+
     bool AIAgentsViewModel::ShowAcpModel()
     {
         if (_isAddingCustomAcpAgent) return false;
@@ -285,7 +378,20 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
         {
             _isAddingCustomAcpAgent = false;
             _GlobalSettings.AcpAgent(value.Id());
-            _NotifyChanges(L"CurrentAcpAgent", L"IsAddingCustomAcpAgent", L"IsCustomAcpAgentSelected", L"ShowAcpModel");
+            // Stale model list belongs to the previous agent. Clear the
+            // process-wide cache so the dropdown empties immediately; wta
+            // will repopulate it after the new agent's NewSessionResponse.
+            // Also clear the bound model id so the next agent starts on its
+            // default rather than carrying the previous agent's selection.
+            _GlobalSettings.AcpModel(L"");
+            Model::AcpRuntimeState::Current().SetAvailableModels(
+                winrt::single_threaded_vector<Model::AcpModelInfo>().GetView(),
+                L"");
+            _NotifyChanges(L"CurrentAcpAgent",
+                           L"IsAddingCustomAcpAgent",
+                           L"IsCustomAcpAgentSelected",
+                           L"ShowAcpModel",
+                           L"AcpModel");
         }
     }
 

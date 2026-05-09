@@ -17,7 +17,7 @@ fn json_id_as_str(v: &serde_json::Value) -> Option<String> {
 }
 
 /// Resolve the full path to `wtcli.exe` at startup.
-fn resolve_wtcli_path() -> String {
+pub(crate) fn resolve_wtcli_path() -> String {
     // 1. Explicit override via environment variable.
     if let Ok(p) = std::env::var("WT_WTCLI_PATH") {
         if std::path::Path::new(&p).exists() {
@@ -335,7 +335,7 @@ pub fn spawn_wtcli_split_then_focus_with_callback(
 }
 
 /// Channel that invokes `wtcli.exe` for protocol operations.
-/// Replaces the old PipeChannel (named-pipe transport).
+/// Used for read-only methods until those also migrate to PipeChannel.
 pub struct CliChannel {
     available: AtomicBool,
     debug_tx: Option<mpsc::UnboundedSender<DebugMessage>>,
@@ -346,8 +346,8 @@ pub struct CliChannel {
 impl CliChannel {
     pub async fn connect() -> anyhow::Result<Self> {
         // WT_COM_CLSID must be set — wtcli reads it from the environment.
-        if std::env::var("WT_COM_CLSID").is_err() && std::env::var("WT_PIPE_NAME").is_err() {
-            bail!("Neither WT_COM_CLSID nor WT_PIPE_NAME set. Must run inside a Windows Terminal pane.");
+        if std::env::var("WT_COM_CLSID").is_err() {
+            bail!("WT_COM_CLSID not set. Must run inside a Windows Terminal pane.");
         }
 
         Ok(Self {
@@ -479,7 +479,7 @@ impl WtChannel for CliChannel {
             }
             "get_active_pane" => self.run_wtcli(&["active-pane"]).await,
             "read_pane_output" => {
-                let pane_id = params.get("pane_id").and_then(json_id_as_str).unwrap_or_default();
+                let pane_id = params.get("session_id").and_then(json_id_as_str).unwrap_or_default();
                 let max_lines = params.get("max_lines").and_then(|v| v.as_i64()).unwrap_or(200);
                 let source = params.get("source").and_then(|v| v.as_str()).unwrap_or("");
                 let lines_owned = max_lines.to_string();
@@ -495,7 +495,7 @@ impl WtChannel for CliChannel {
                 self.run_wtcli(&args).await
             }
             "get_process_status" => {
-                let pane_id = params.get("pane_id").and_then(json_id_as_str).unwrap_or_default();
+                let pane_id = params.get("session_id").and_then(json_id_as_str).unwrap_or_default();
                 let mut args = vec!["pane-status"];
                 if !pane_id.is_empty() {
                     args.extend(["-t", &pane_id]);
@@ -525,7 +525,7 @@ impl WtChannel for CliChannel {
                 self.run_wtcli(&args).await
             }
             "split_pane" => {
-                let pane_id = params.get("pane_id").and_then(json_id_as_str).unwrap_or_default();
+                let pane_id = params.get("session_id").and_then(json_id_as_str).unwrap_or_default();
                 let cmd = params.get("commandline").and_then(|v| v.as_str()).unwrap_or("");
                 let dir = params.get("direction").and_then(|v| v.as_str()).unwrap_or("");
                 let cmd_owned;
@@ -549,24 +549,16 @@ impl WtChannel for CliChannel {
                 self.run_wtcli(&args).await
             }
             "close_pane" => {
-                let pane_id = params.get("pane_id").and_then(json_id_as_str).unwrap_or_default();
+                let pane_id = params.get("session_id").and_then(json_id_as_str).unwrap_or_default();
                 self.run_wtcli(&["kill-pane", "-t", &pane_id]).await
             }
             "focus_pane" => {
-                let pane_id = params.get("pane_id").and_then(json_id_as_str).unwrap_or_default();
+                let pane_id = params.get("session_id").and_then(json_id_as_str).unwrap_or_default();
                 self.run_wtcli(&["focus-pane", "-t", &pane_id]).await
             }
-            "send_input" => {
-                let pane_id = params.get("pane_id").and_then(json_id_as_str).unwrap_or_default();
-                let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                let text_owned = text.to_string();
-                let mut args = vec!["send-keys"];
-                if !pane_id.is_empty() {
-                    args.extend(["-t", &pane_id]);
-                }
-                args.push(&text_owned);
-                self.run_wtcli(&args).await
-            }
+            // send_input intentionally not handled here. It now requires a
+            // PipeChannel attached via inherited handles — only the wta
+            // processes WT itself launches can satisfy it.
             "get_capabilities" => self.run_wtcli(&["info"]).await,
             "quick_pick" => {
                 let title = params.get("title").and_then(|v| v.as_str()).unwrap_or("");

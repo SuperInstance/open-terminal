@@ -282,7 +282,10 @@ Protocol::AuthResult TerminalProtocolComServer::Authenticate(winrt::hstring cons
 
     Protocol::AuthResult result{};
     result.Authenticated = _authenticated;
-    result.ProtocolVersion = L"1.2";
+    // 2.1 — IProtocolServer no longer exposes SendInput. Keystroke injection
+    // is restricted to per-wta secure pipes (TerminalProtocolPipeServer).
+    // Pane identifiers are GUIDs (WT_SESSION) instead of UInt32 pane ids.
+    result.ProtocolVersion = L"2.1";
     return result;
 }
 
@@ -302,7 +305,6 @@ winrt::hstring TerminalProtocolComServer::GetCapabilities()
         "create_tab",
         "split_pane",
         "close_pane",
-        "send_input",
         "set_session_variable",
         "set_settings",
         "quick_pick",
@@ -413,7 +415,7 @@ Protocol::PaneOutput TerminalProtocolComServer::ReadPaneOutput(
             return info;
     }
 
-    winrt::throw_hresult(E_FAIL);
+    winrt::throw_hresult(E_FAIL); // Pane not found
 }
 
 Protocol::ProcessStatus TerminalProtocolComServer::GetProcessStatus(
@@ -567,7 +569,7 @@ Protocol::TabCreationResult TerminalProtocolComServer::SplitPane(
 
         auto cr = page.SplitProtocolPane(sessionId, splitDir, size, newTermArgs, background).get();
         if (cr.SessionId == winrt::guid{})
-            continue;
+            continue; // pane not in this window
 
         const auto& props = host->Logic().WindowProperties();
         cr.WindowId = props.WindowId();
@@ -595,27 +597,6 @@ void TerminalProtocolComServer::ClosePane(winrt::guid sessionId)
     winrt::throw_hresult(E_FAIL);
 }
 
-void TerminalProtocolComServer::SendInput(
-    winrt::guid sessionId,
-    winrt::hstring const& text)
-{
-    THROW_HR_IF(E_NOT_VALID_STATE, !s_emperor);
-    THROW_HR_IF(E_INVALIDARG, sessionId == winrt::guid{});
-    THROW_HR_IF(E_INVALIDARG, text.empty());
-
-    for (const auto& host : s_emperor->GetWindows())
-    {
-        const auto page = _getPage(host.get());
-        if (!page)
-            continue;
-
-        if (page.SendProtocolInput(sessionId, text).get())
-            return;
-    }
-
-    winrt::throw_hresult(E_FAIL);
-}
-
 void TerminalProtocolComServer::FocusPane(winrt::guid sessionId)
 {
     THROW_HR_IF(E_NOT_VALID_STATE, !s_emperor);
@@ -631,11 +612,7 @@ void TerminalProtocolComServer::FocusPane(winrt::guid sessionId)
             return;
     }
 
-    // Distinguish "pane GUID is unknown" (stale row) from generic E_FAIL so
-    // wta can identify a stuck-IDLE row whose pane was already closed and
-    // demote it to Ended rather than retrying focus indefinitely. wtcli
-    // catches this and surfaces it via the FocusPane stderr/HRESULT.
-    winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_NOT_FOUND));
+    winrt::throw_hresult(E_FAIL);
 }
 
 void TerminalProtocolComServer::SetSessionVariable(

@@ -1,4 +1,4 @@
-// ─── Preflight Checks ────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ Preflight Checks ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 //
 // Pre-flight validation run before launching the ACP agent.
 // Checks CLI presence on PATH and authentication status, producing
@@ -44,7 +44,7 @@ impl PreflightResult {
 }
 
 /// Extract the agent id (bare name) from an agent command string.
-/// e.g. "copilot --acp --stdio" → "copilot"
+/// e.g. "copilot --acp --stdio" ΓåÆ "copilot"
 pub fn extract_agent_id(agent_cmd: &str) -> &str {
     agent_cmd.split_whitespace().next().unwrap_or(agent_cmd)
 }
@@ -197,7 +197,7 @@ async fn check_auth(auth_check_command: &str) -> CheckStatus {
             Err(_) => CheckStatus::Failed("Auth check timed out".to_string()),
         },
         Err(_) => {
-            // Can't run auth check command — probably CLI not fully functional
+            // Can't run auth check command ΓÇö probably CLI not fully functional
             CheckStatus::Failed("Could not run auth check".to_string())
         }
     }

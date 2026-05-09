@@ -1,22 +1,23 @@
 mod agent_registry;
 mod agent_sessions;
 mod agent_hooks_installer;
-mod history_loader;
 mod app;
+mod commands;
 mod coordinator;
 mod event;
+mod history_loader;
 mod logging;
 mod osc52;
 mod preflight;
 mod protocol;
 mod runtime_paths;
-mod shared_host;
+mod pane_context;
 mod shell;
 mod theme;
 mod ui;
 mod ui_trace;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
@@ -30,7 +31,7 @@ use std::io;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use shell::wt_channel::{PipeChannel, WtChannel};
+use shell::wt_channel::{CliChannel, WtChannel};
 use shell::ShellManager;
 
 // ─── CLI Definition ─────────────────────────────────────────────────────────
@@ -51,6 +52,13 @@ struct Cli {
     /// Agent CLI command (e.g. "copilot --acp --stdio")
     #[arg(long, default_value = agent_registry::DEFAULT_ACP_COMMAND)]
     agent: String,
+
+    /// Model override for the ACP agent. Sent via ACP setSessionModel after
+    /// handshake. Used by adapter-style launches (claude, codex via npx)
+    /// where the model can't be passed on the command line; native ACP
+    /// agents (copilot, gemini) use their own --model flag in `agent`.
+    #[arg(long)]
+    acp_model: Option<String>,
 
     /// Delegate agent CLI command (e.g. "codex")
     #[arg(long)]
@@ -90,34 +98,6 @@ enum Command {
 
     /// Test pipe connection to Windows Terminal
     TestPipe,
-
-    /// (Re-)install the wt-agent-hooks bridge into Claude Code and Copilot CLI.
-    ///
-    /// Runs the same idempotent install routine that fires automatically on
-    /// every wta startup. Useful as a repair tool when a CLI's settings.json
-    /// has lost the `hooks` block or the plugin registration entry, or when
-    /// upgrading from an older wta build that wrote a stale path.
-    ///
-    /// Exits 0 even if a CLI is not installed — only writes for present
-    /// `~/.claude/` and `~/.copilot/` directories.
-    ///
-    /// **Hidden alias** for `wta hooks install`. Kept for backward
-    /// compatibility with the Settings UI's "Install hooks" button which
-    /// shells out to `wta install-hooks`. Prefer `wta hooks install` in
-    /// new code.
-    #[command(hide = true)]
-    InstallHooks,
-
-    /// Inspect, install, or remove the wt-agent-hooks bridge.
-    ///
-    /// Source of truth for both the Settings UI ("Install hooks" button)
-    /// and `Verify-AgentHooks.ps1`. `wta hooks status --json` returns a
-    /// per-CLI install report; `wta hooks uninstall` reverses what
-    /// `wta hooks install` produces.
-    Hooks {
-        #[command(subcommand)]
-        action: HooksAction,
-    },
 
     /// List all Windows Terminal windows
     #[command(alias = "lsw")]
@@ -167,9 +147,7 @@ enum Command {
         target: Option<String>,
 
         /// Split horizontally (panes side by side)
-        // Note: no short alias — `-h` is reserved by clap's auto-generated
-        // `--help` flag and would panic clap's debug_asserts at startup.
-        #[arg(long)]
+        #[arg(short = 'h', long)]
         horizontal: bool,
 
         /// Split vertically (panes stacked)
@@ -232,7 +210,7 @@ enum Command {
         target: Option<String>,
     },
 
-    /// Wait for a pane's process to exit (poll get_process_status)
+    /// Wait for a pane's process to exit (delegates to `wtcli wait-for`)
     WaitFor {
         /// Target pane ID
         #[arg(short = 't', long)]
@@ -264,53 +242,6 @@ enum Command {
         /// Filter by pane ID (show events from all panes if omitted)
         #[arg(short = 't', long)]
         target: Option<String>,
-    },
-
-    /// Diagnostic: dump historical sessions discovered by the on-disk loader.
-    #[command(name = "debug-history")]
-    DebugHistory,
-
-    /// Diagnostic: drive the live UI by publishing a synthetic sequence
-    /// of agent events through wtcli (`send-event` / `publish`) so an
-    /// open Agent pane (F2) shows real state transitions over time.
-    /// Run from any Windows Terminal pane (WT_COM_CLSID must be set).
-    #[command(name = "debug-live")]
-    DebugLive {
-        /// Milliseconds to sleep between transitions.
-        #[arg(long, default_value_t = 1500)]
-        interval_ms: u64,
-
-        /// CLI source label to use for the synthetic session ("copilot",
-        /// "claude", or "gemini").
-        #[arg(long, default_value = "copilot")]
-        cli_source: String,
-    },
-    /// Pre-warm the shared host (called by Windows Terminal on startup)
-    #[command(name = "ensure-host")]
-    EnsureHost {
-        /// Agent CLI command
-        #[arg(long)]
-        agent: Option<String>,
-
-        /// Delegate agent CLI command
-        #[arg(long)]
-        delegate_agent: Option<String>,
-
-        /// Model override for the delegate agent
-        #[arg(long)]
-        delegate_model: Option<String>,
-    },
-
-    /// Attach to a running shared host (lightweight agent pane TUI)
-    #[command(name = "attach")]
-    Attach {
-        /// Override the host pipe name (auto-derived from WT pipe if omitted)
-        #[arg(long)]
-        host_pipe: Option<String>,
-
-        /// Initial prompt to submit on attach
-        #[arg(value_name = "PROMPT")]
-        prompt: Option<String>,
     },
 
     /// Delegate a prompt to a new tab with a configured agent (fire-and-forget)
@@ -350,18 +281,24 @@ enum Command {
         #[arg(long)]
         free_input: bool,
     },
+
+    /// Manage the wt-agent-hooks bridge for supported CLI agents
+    /// (Copilot / Claude / Gemini). See `agent_hooks_installer` for
+    /// what each action does.
+    Hooks {
+        #[command(subcommand)]
+        action: HooksAction,
+    },
 }
 
-/// Subcommands for `wta hooks`. See `agent_hooks_installer` for what
-/// each action does.
+/// Subcommands for `wta hooks`.
 #[derive(Subcommand, Debug)]
 enum HooksAction {
     /// (Re-)install the wt-agent-hooks bridge for every supported CLI.
     Install,
 
-    /// Print per-CLI install state. Returns JSON with `--json` (suitable
-    /// for the Settings UI / Verify-AgentHooks.ps1), or a human-readable
-    /// table by default.
+    /// Print per-CLI install state. Returns JSON with `--json`,
+    /// or a human-readable table by default.
     Status,
 
     /// Uninstall the bridge for one or all CLIs. Best-effort: missing
@@ -420,21 +357,6 @@ async fn main() -> Result<()> {
         // Subcommand aliases for legacy modes
         Some(Command::Info) => run_info_mode(&pipe_override).await,
         Some(Command::TestPipe) => run_test_pipe(&pipe_override).await,
-
-        // Run the hooks installer manually. Useful as a repair tool: the
-        // same routine fires automatically on every wta startup, but if a
-        // CLI's settings.json has drifted (e.g. user removed our entry by
-        // hand, or upgraded from an older wta) running this subcommand
-        // resets it without launching the full agent pane.
-        Some(Command::InstallHooks) => run_hooks_install(),
-
-        // New `wta hooks <action>` group. Source of truth for the
-        // Settings UI / Verify-AgentHooks.ps1.
-        Some(Command::Hooks { action }) => match action {
-            HooksAction::Install => run_hooks_install(),
-            HooksAction::Status => run_hooks_status(json_mode),
-            HooksAction::Uninstall { cli } => run_hooks_uninstall(cli, json_mode),
-        },
 
         // ── List commands ──
         Some(Command::ListWindows) => {
@@ -513,7 +435,7 @@ async fn main() -> Result<()> {
                 "automatic"
             };
             let mut params = json!({
-                "pane_id": pane_id,
+                "session_id": pane_id,
                 "direction": split_dir,
             });
             if let Some(s) = size {
@@ -533,7 +455,7 @@ async fn main() -> Result<()> {
             let pane_id = resolve_pane_id(&channel, &target).await?;
             let text = translate_keys(&keys);
             channel
-                .request("send_input", json!({ "pane_id": pane_id, "text": text }))
+                .request("send_input", json!({ "session_id": pane_id, "text": text }))
                 .await?;
             Ok(())
         }
@@ -542,7 +464,7 @@ async fn main() -> Result<()> {
         Some(Command::CapturePane { target, max_lines, last_prompt }) => {
             let channel = connect_channel(&pipe_override).await?;
             let pane_id = resolve_pane_id(&channel, &target).await?;
-            let mut params = json!({ "pane_id": pane_id });
+            let mut params = json!({ "session_id": pane_id });
             if let Some(n) = max_lines {
                 params["max_lines"] = json!(n);
             }
@@ -563,7 +485,7 @@ async fn main() -> Result<()> {
             let channel = connect_channel(&pipe_override).await?;
             let pane_id = resolve_pane_id(&channel, &target).await?;
             channel
-                .request("close_pane", json!({ "pane_id": pane_id }))
+                .request("close_pane", json!({ "session_id": pane_id }))
                 .await?;
             if !json_mode {
                 println!("Pane {} closed.", pane_id);
@@ -583,45 +505,52 @@ async fn main() -> Result<()> {
             let channel = connect_channel(&pipe_override).await?;
             let pane_id = resolve_pane_id(&channel, &target).await?;
             let result = channel
-                .request("get_process_status", json!({ "pane_id": pane_id }))
+                .request("get_process_status", json!({ "session_id": pane_id }))
                 .await?;
             print_output(&result, json_mode, format_pane_status);
             Ok(())
         }
 
         // ── Wait for ──
+        // Delegate to `wtcli wait-for` so the poll loop runs inside a single
+        // wtcli process (one COM handshake) instead of re-spawning wtcli per
+        // tick through CliChannel.
         Some(Command::WaitFor {
             target,
             interval,
             timeout,
         }) => {
-            let channel = connect_channel(&pipe_override).await?;
-            let start = std::time::Instant::now();
-            loop {
-                let result = channel
-                    .request(
-                        "get_process_status",
-                        json!({ "pane_id": target }),
-                    )
-                    .await?;
+            let wtcli = shell::wt_channel::resolve_wtcli_path();
+            let interval_str = interval.to_string();
+            let timeout_str = timeout.to_string();
+            let output = tokio::process::Command::new(&wtcli)
+                .args([
+                    "--json",
+                    "wait-for",
+                    "-t",
+                    &target,
+                    "--interval",
+                    &interval_str,
+                    "--timeout",
+                    &timeout_str,
+                ])
+                .output()
+                .await
+                .context("Failed to spawn wtcli wait-for")?;
 
-                let is_running = result
-                    .get("state")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s == "running")
-                    .unwrap_or(false);
-
-                if !is_running {
-                    print_output(&result, json_mode, format_pane_status);
-                    return Ok(());
-                }
-
-                if timeout > 0 && start.elapsed().as_secs() >= timeout {
-                    bail!("Timeout after {}s waiting for pane {} to exit", timeout, target);
-                }
-
-                tokio::time::sleep(std::time::Duration::from_millis(interval)).await;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("wtcli wait-for failed: {}", stderr.trim());
             }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let trimmed = stdout.trim();
+            if !trimmed.is_empty() {
+                let val: serde_json::Value = serde_json::from_str(trimmed)
+                    .context("Failed to parse wtcli wait-for output")?;
+                print_output(&val, json_mode, format_pane_status);
+            }
+            Ok(())
         }
 
         // ── Pipe discovery ──
@@ -633,12 +562,6 @@ async fn main() -> Result<()> {
         Some(Command::SetEnv { shell }) => {
             run_set_env(&pipe_override, &shell)
         }
-
-        // ── Ensure host — no-op (centralized architecture: no separate host process) ──
-        Some(Command::EnsureHost { .. }) => Ok(()),
-
-        // ── Attach — no-op (centralized architecture: use default TUI mode instead) ──
-        Some(Command::Attach { .. }) => Ok(()),
 
         // ── Delegate prompt to new tab agent ──
         Some(Command::Delegate {
@@ -685,32 +608,130 @@ async fn main() -> Result<()> {
             run_listen(&pipe_override, target.as_deref()).await
         }
 
-        // ── Diagnostic: dump historical sessions discovered on disk ──
-        Some(Command::DebugHistory) => {
-            let sessions = history_loader::load_all();
-            println!("Loaded {} historical session(s):", sessions.len());
-            for s in &sessions {
-                let key_short = if s.key.len() > 36 { &s.key[..36] } else { &s.key };
-                println!(
-                    "  [{:>10?}] {:<36} cwd={:<40} | {}",
-                    s.cli_source,
-                    key_short,
-                    s.cwd.display().to_string(),
-                    s.title.chars().take(60).collect::<String>(),
-                );
-            }
-            Ok(())
-        }
-
-        // ── Diagnostic: drive live UI by publishing synthetic agent events ──
-        Some(Command::DebugLive { interval_ms, cli_source }) => {
-            run_debug_live(interval_ms, &cli_source);
-            Ok(())
-        }
+        // ── Manage agent hooks (install/status/uninstall) ──
+        Some(Command::Hooks { action }) => match action {
+            HooksAction::Install => run_hooks_install(),
+            HooksAction::Status => run_hooks_status(json_mode),
+            HooksAction::Uninstall { cli } => run_hooks_uninstall(cli, json_mode),
+        },
 
         // ── No subcommand = ACP TUI mode (default) ──
         None => run_default_tui(cli, pipe_override).await,
     }
+}
+
+// ─── Hooks subcommand handlers ──────────────────────────────────────────────
+
+fn run_hooks_install() -> Result<()> {
+    // Initialize logging so the install attempt is observable in
+    // %LOCALAPPDATA%\IntelligentTerminal\logs\wta-install-hooks.log.
+    let _guard = logging::init("install-hooks");
+    agent_hooks_installer::ensure_installed();
+    println!(
+        "wt-agent-hooks install attempted (idempotent). \
+         Run `wta hooks status` to inspect the result. \
+         Trace log: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
+    );
+    Ok(())
+}
+
+fn run_hooks_status(json_mode: bool) -> Result<()> {
+    let report = agent_hooks_installer::status();
+    if json_mode {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .unwrap_or_else(|_| serde_json::to_string(&report).unwrap_or_default())
+        );
+    } else {
+        format_hooks_status_human(&report);
+    }
+    Ok(())
+}
+
+fn run_hooks_uninstall(cli: HooksCliFilter, json_mode: bool) -> Result<()> {
+    let report = agent_hooks_installer::uninstall(cli.into_scope());
+    if json_mode {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .unwrap_or_else(|_| serde_json::to_string(&report).unwrap_or_default())
+        );
+    } else {
+        format_hooks_uninstall_human(&report);
+    }
+    Ok(())
+}
+
+fn format_hooks_status_human(r: &agent_hooks_installer::StatusReport) {
+    println!(
+        "bundle source: {}{}",
+        r.bundle_source.kind,
+        r.bundle_source
+            .path
+            .as_deref()
+            .map(|p| format!(" ({})", p))
+            .unwrap_or_default(),
+    );
+    println!();
+    for c in &r.clis {
+        let summary = if !c.binary_on_path {
+            "✗ CLI not on PATH".to_string()
+        } else if c.plugin_installed && c.plugin_enabled && c.marketplace_path_valid {
+            "✓ installed".to_string()
+        } else if c.plugin_installed && !c.marketplace_path_valid {
+            "⚠ marketplace path stale".to_string()
+        } else if c.plugin_installed {
+            "⚠ installed but disabled".to_string()
+        } else {
+            "✗ not installed".to_string()
+        };
+        let detail = format!(
+            "marketplace={}, path_valid={}, plugin={}, enabled={}{}",
+            yn(c.marketplace_registered),
+            yn(c.marketplace_path_valid),
+            yn(c.plugin_installed),
+            yn(c.plugin_enabled),
+            c.detection_fallback
+                .map(|m| format!(", detection={}", m))
+                .unwrap_or_default(),
+        );
+        println!("  {:<10} {:<28}  ({})", c.name, summary, detail);
+        if let Some(p) = c.marketplace_path.as_deref() {
+            println!("    path: {}", p);
+        }
+    }
+}
+
+fn format_hooks_uninstall_human(r: &agent_hooks_installer::UninstallReport) {
+    for c in &r.clis {
+        let summary = if !c.attempted {
+            "skipped (CLI not on PATH)".to_string()
+        } else {
+            let plugin = c
+                .plugin_uninstalled
+                .map(|b| if b { "ok" } else { "failed" })
+                .unwrap_or("-");
+            let mkt = c
+                .marketplace_removed
+                .map(|b| if b { "ok" } else { "failed" })
+                .unwrap_or("-");
+            format!(
+                "plugin={} marketplace={} staging={}",
+                plugin,
+                mkt,
+                if c.staging_dir_removed { "ok" } else { "failed" },
+            )
+        };
+        println!("  {:<10} {}", c.name, summary);
+        for m in &c.messages {
+            println!("    · {}", m);
+        }
+    }
+}
+
+fn yn(b: bool) -> &'static str {
+    if b { "yes" } else { "no" }
 }
 
 // ─── Pipe override (CLI --pipe-name / --pipe-token) ─────────────────────────
@@ -725,12 +746,13 @@ struct PipeOverride {
 fn resolve_pipe_info(po: &PipeOverride) -> Option<shell::wt_channel::ConnectionInfo> {
     use shell::wt_channel::{ConnectionInfo, DiscoverySource, discover_connection_info};
 
-    // 1. CLI override — highest priority
+    // 1. CLI override — highest priority. Reuse ComClsid as the discovery
+    // tag for explicit overrides (the legacy EnvVar variant is gone).
     if let Some(ref name) = po.pipe_name {
         return Some(ConnectionInfo {
             pipe_name: name.clone(),
             token: po.pipe_token.clone().unwrap_or_default(),
-            source: DiscoverySource::EnvVar, // reuse; semantically "explicit"
+            source: DiscoverySource::ComClsid,
         });
     }
 
@@ -740,9 +762,9 @@ fn resolve_pipe_info(po: &PipeOverride) -> Option<shell::wt_channel::ConnectionI
 
 // ─── Helper: connect to WT pipe (no debug channel, no ShellManager) ─────────
 
-async fn connect_channel(po: &PipeOverride) -> Result<PipeChannel> {
+async fn connect_channel(po: &PipeOverride) -> Result<CliChannel> {
     if let Some(info) = resolve_pipe_info(po) {
-        return PipeChannel::connect_with(&info.pipe_name, &info.token).await;
+        return CliChannel::connect_with(&info.pipe_name, &info.token).await;
     }
     bail!("Cannot find Windows Terminal pipe. Use --pipe-name or set WT_PIPE_NAME.");
 }
@@ -754,13 +776,13 @@ async fn wt_call(po: &PipeOverride, method: &str, params: serde_json::Value) -> 
 }
 
 /// Resolve -t target: Some(id) → use it, None → get_active_pane fallback
-async fn resolve_pane_id(channel: &PipeChannel, target: &Option<String>) -> Result<String> {
+async fn resolve_pane_id(channel: &CliChannel, target: &Option<String>) -> Result<String> {
     match target {
         Some(id) => Ok(id.clone()),
         None => {
             let result = channel.request("get_active_pane", json!({})).await?;
             let pane_id = result
-                .get("pane_id")
+                .get("session_id")
                 .and_then(|v| match v {
                     serde_json::Value::String(s) => Some(s.clone()),
                     serde_json::Value::Number(n) => Some(n.to_string()),
@@ -773,7 +795,7 @@ async fn resolve_pane_id(channel: &PipeChannel, target: &Option<String>) -> Resu
 }
 
 /// Get the first window ID from list_windows.
-async fn get_first_window_id(channel: &PipeChannel) -> Result<String> {
+async fn get_first_window_id(channel: &CliChannel) -> Result<String> {
     let result = channel.request("list_windows", json!({})).await?;
     result
         .get("windows")
@@ -786,7 +808,7 @@ async fn get_first_window_id(channel: &PipeChannel) -> Result<String> {
 }
 
 /// Get the first tab ID from a window.
-async fn get_first_tab_id(channel: &PipeChannel, window_id: &str) -> Result<String> {
+async fn get_first_tab_id(channel: &CliChannel, window_id: &str) -> Result<String> {
     let result = channel
         .request("list_tabs", json!({ "window_id": window_id }))
         .await?;
@@ -852,336 +874,6 @@ fn print_output(val: &serde_json::Value, json_mode: bool, formatter: fn(&serde_j
     } else {
         formatter(val);
     }
-}
-
-// ─── `wta hooks <action>` handlers ──────────────────────────────────────────
-
-fn run_hooks_install() -> Result<()> {
-    // Initialize logging so the install attempt is observable in
-    // %LOCALAPPDATA%\IntelligentTerminal\logs\wta-install-hooks.log.
-    // Without this, all tracing calls inside the installer (idempotency
-    // hits, marketplace-add failures, etc.) go to /dev/null and nobody
-    // can diagnose what happened.
-    let _guard = logging::init("install-hooks");
-    agent_hooks_installer::ensure_installed();
-    println!(
-        "wt-agent-hooks install attempted (idempotent). \
-         Run `wta hooks status` to inspect the result. \
-         Trace log: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
-    );
-    Ok(())
-}
-
-fn run_hooks_status(json_mode: bool) -> Result<()> {
-    let report = agent_hooks_installer::status();
-    if json_mode {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report)
-                .unwrap_or_else(|_| serde_json::to_string(&report).unwrap_or_default())
-        );
-    } else {
-        format_hooks_status_human(&report);
-    }
-    Ok(())
-}
-
-fn run_hooks_uninstall(cli: HooksCliFilter, json_mode: bool) -> Result<()> {
-    let report = agent_hooks_installer::uninstall(cli.into_scope());
-    if json_mode {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report)
-                .unwrap_or_else(|_| serde_json::to_string(&report).unwrap_or_default())
-        );
-    } else {
-        format_hooks_uninstall_human(&report);
-    }
-    Ok(())
-}
-
-fn format_hooks_status_human(r: &agent_hooks_installer::StatusReport) {
-    println!(
-        "bundle source: {}{}",
-        r.bundle_source.kind,
-        r.bundle_source
-            .path
-            .as_deref()
-            .map(|p| format!(" ({})", p))
-            .unwrap_or_default(),
-    );
-    println!();
-    for c in &r.clis {
-        let summary = if !c.binary_on_path {
-            "✗ CLI not on PATH".to_string()
-        } else if c.plugin_installed && c.plugin_enabled && c.marketplace_path_valid {
-            "✓ installed".to_string()
-        } else if c.plugin_installed && !c.marketplace_path_valid {
-            // #25: silently-broken state — plugin reports installed but
-            // the registered marketplace path is gone.
-            "⚠ marketplace path stale".to_string()
-        } else if c.plugin_installed {
-            "⚠ installed but disabled".to_string()
-        } else {
-            "✗ not installed".to_string()
-        };
-        let detail = format!(
-            "marketplace={}, path_valid={}, plugin={}, enabled={}{}",
-            yn(c.marketplace_registered),
-            yn(c.marketplace_path_valid),
-            yn(c.plugin_installed),
-            yn(c.plugin_enabled),
-            c.detection_fallback
-                .map(|m| format!(", detection={}", m))
-                .unwrap_or_default(),
-        );
-        println!("  {:<10} {:<28}  ({})", c.name, summary, detail);
-        if let Some(p) = c.marketplace_path.as_deref() {
-            println!("    path: {}", p);
-        }
-    }
-}
-
-fn format_hooks_uninstall_human(r: &agent_hooks_installer::UninstallReport) {
-    for c in &r.clis {
-        let summary = if !c.attempted {
-            "skipped (CLI not on PATH)".to_string()
-        } else {
-            let plugin = c
-                .plugin_uninstalled
-                .map(|b| if b { "ok" } else { "failed" })
-                .unwrap_or("-");
-            let mkt = c
-                .marketplace_removed
-                .map(|b| if b { "ok" } else { "failed" })
-                .unwrap_or("-");
-            format!(
-                "plugin={} marketplace={} staging={}",
-                plugin,
-                mkt,
-                if c.staging_dir_removed { "ok" } else { "failed" },
-            )
-        };
-        println!("  {:<10} {}", c.name, summary);
-        for m in &c.messages {
-            println!("    · {}", m);
-        }
-    }
-}
-
-fn yn(b: bool) -> &'static str {
-    if b {
-        "yes"
-    } else {
-        "no"
-    }
-}
-
-
-// ─── debug-live: drive the real UI via wtcli ────────────────────────────────
-//
-// Pure-state-machine validation lives in unit tests (see agent_sessions.rs).
-// This subcommand publishes a representative sequence of agent events
-// through the same channels real hooks/connection lifecycle use, so an
-// open Agent pane (F2) exhibits real state-color transitions over time:
-//   Idle → Working → Attention → Error → Ended.
-//
-// Requirements:
-//   * Run from a Windows Terminal pane (WT_COM_CLSID is set there).
-//   * Have at least one Agent pane open in WT (the wta TUI in attach mode
-//     is what consumes the events and renders the agents list).
-fn run_debug_live(interval_ms: u64, cli_source: &str) {
-    use std::thread::sleep;
-    use std::time::Duration;
-
-    if std::env::var_os("WT_COM_CLSID").is_none() {
-        eprintln!("WT_COM_CLSID is not set in this environment.");
-        eprintln!("Run `wta debug-live` from a Windows Terminal pane (any profile).");
-        eprintln!("Open an Agent pane (F2) first so the wta TUI is listening for events.");
-        return;
-    }
-
-    // Synthesize stable identifiers for this run. Using a non-zero pane
-    // session id ensures the agent pane's wta won't filter the events out
-    // as "from our own pane".
-    let pid_lo = (std::process::id() & 0xffff_ffff) as u32;
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let pane = format!(
-        "{:08x}-debu-9b7a-0000-{:012x}",
-        pid_lo,
-        now_ms & 0xffff_ffff_ffff
-    );
-    let asid = format!("debug-live-{:08x}", pid_lo);
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| String::from("?"));
-
-    println!("debug-live: publishing synthetic agent events.");
-    println!("  cli_source      : {}", cli_source);
-    println!("  pane_session_id : {}", pane);
-    println!("  agent_session_id: {}", asid);
-    println!("  interval        : {} ms", interval_ms);
-    println!();
-    println!("Open the Agent pane (F2) in WT to watch the row change state.");
-    println!();
-
-    // Sequence: target_status, transition_label, action.
-    // For Error we publish a `connection_state: failed` raw event because no
-    // hook event maps to ConnectionFailed (real Error originates from the
-    // connection lifecycle in C++).
-    let payload_started = serde_json::json!({ "cwd": cwd });
-    let payload_tool_start = serde_json::json!({ "tool_name": "shell.run" });
-    let payload_notify = serde_json::json!({ "message": "approve write to C:\\foo?" });
-    let payload_stopped = serde_json::json!({ "reason": "demo finished" });
-
-    let agent_steps: &[(&str, &str, &serde_json::Value)] = &[
-        ("agent.session.started",  "Idle",      &payload_started),
-        ("agent.tool.starting",    "Working",   &payload_tool_start),
-        ("agent.notification",     "Attention", &payload_notify),
-        // ToolCompleted does *not* clear Attention by design (Attention
-        // requires explicit user resolution). Included to verify that.
-        ("agent.tool.completed",   "Attention (still — needs user resolve)", &serde_json::Value::Null),
-    ];
-
-    for (idx, (event, target, payload)) in agent_steps.iter().enumerate() {
-        println!("[{}/{}] send-event {} -> {}", idx + 1, agent_steps.len() + 2, event, target);
-        let payload_obj: serde_json::Value = (*payload).clone();
-        let wrapper = serde_json::json!({
-            "cli_source":       cli_source,
-            "agent_session_id": asid,
-            "payload":          payload_obj,
-        });
-        let wrapper_str = serde_json::to_string(&wrapper).unwrap_or_else(|_| "{}".into());
-        if let Err(e) = run_wtcli(&["send-event", "-e", event, "-p", &pane, &wrapper_str]) {
-            eprintln!("  wtcli send-event failed: {}", e);
-            return;
-        }
-        sleep(Duration::from_millis(interval_ms));
-    }
-
-    println!("[{}/{}] publish connection_state:failed -> Error", agent_steps.len() + 1, agent_steps.len() + 2);
-    let conn_failed = serde_json::json!({
-        "type":   "event",
-        "method": "connection_state",
-        "params": {
-            "session_id": pane,
-            "state":      "failed",
-            "reason":     "simulated API 503",
-        },
-    });
-    if let Err(e) = run_wtcli(&["publish", &conn_failed.to_string()]) {
-        eprintln!("  wtcli publish failed: {}", e);
-        return;
-    }
-    sleep(Duration::from_millis(interval_ms));
-
-    println!("[{}/{}] send-event agent.session.stopped -> Ended", agent_steps.len() + 2, agent_steps.len() + 2);
-    let stopped_wrapper = serde_json::json!({
-        "cli_source":       cli_source,
-        "agent_session_id": asid,
-        "payload":          payload_stopped,
-    });
-    if let Err(e) = run_wtcli(&["send-event", "-e", "agent.session.stopped", "-p", &pane,
-                                 &stopped_wrapper.to_string()]) {
-        eprintln!("  wtcli send-event failed: {}", e);
-        return;
-    }
-
-    println!();
-    println!("Done. The synthetic session ({}-{}) should now show as Ended.", &asid[..asid.len().min(12)], cli_source);
-    println!("Re-run with `--interval-ms <N>` to slow down or speed up.");
-}
-
-/// Resolve and run a wtcli subcommand, inheriting stderr so users see
-/// COM errors. Searches a few candidate locations because `debug-live`
-/// is most useful when run from the deployed package, but users may also
-/// invoke a dev build directly.
-fn run_wtcli(args: &[&str]) -> std::io::Result<()> {
-    use std::process::{Command, Stdio};
-
-    let exe = locate_wtcli().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "wtcli.exe not found. `debug-live` must run from the deployed \
-             Windows Terminal package (where wta.exe and wtcli.exe sit \
-             together). Open Windows Terminal from Start Menu, then run \
-             `wta debug-live` in any pane. Running `wta\\target\\debug\\wta.exe` \
-             directly will not work because dev builds lack package identity \
-             and cannot reach the COM server.",
-        )
-    })?;
-
-    let status = Command::new(&exe)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .status()?;
-
-    if !status.success() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("wtcli exited with status {}", status),
-        ));
-    }
-    Ok(())
-}
-
-/// Hunt for `wtcli.exe` in plausible locations in priority order:
-///   1. Co-located with the running `wta.exe` (this is the package layout)
-///   2. Sibling MSBuild output dirs when running a cargo dev build, e.g.
-///      `<repo>/wta/target/debug/wta.exe` ->
-///      `<repo>/src/cascadia/CascadiaPackage/bin/x64/{Debug,Release}/AppX/wtcli.exe`
-///   3. Less specific MSBuild layouts (`<root>/bin/x64/{Debug,Release}`)
-///   4. PATH
-fn locate_wtcli() -> Option<std::path::PathBuf> {
-    use std::path::PathBuf;
-
-    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
-
-    // 1. Co-located.
-    if let Some(d) = exe_dir.as_ref() {
-        let p = d.join("wtcli.exe");
-        if p.exists() { return Some(p); }
-    }
-
-    // Walk up looking for a repo root, then probe known build-output layouts.
-    if let Some(d) = exe_dir.as_ref() {
-        let mut cur: Option<&std::path::Path> = Some(d.as_path());
-        for _ in 0..6 {
-            if let Some(c) = cur {
-                for cfg in &["Debug", "Release"] {
-                    // 2. Cascadia package AppX layout (real wtcli.exe lives here).
-                    let appx: PathBuf = c
-                        .join("src").join("cascadia").join("CascadiaPackage")
-                        .join("bin").join("x64").join(cfg).join("AppX").join("wtcli.exe");
-                    if appx.exists() {
-                        return Some(appx);
-                    }
-
-                    // 3. Generic MSBuild output (older layouts / fallback).
-                    let generic: PathBuf = c.join("bin").join("x64").join(cfg).join("wtcli.exe");
-                    if generic.exists() {
-                        return Some(generic);
-                    }
-                }
-                cur = c.parent();
-            }
-        }
-    }
-
-    // 4. PATH lookup.
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            let p = dir.join("wtcli.exe");
-            if p.exists() { return Some(p); }
-        }
-    }
-
-    None
 }
 
 fn format_windows_human(val: &serde_json::Value) {
@@ -1250,7 +942,7 @@ fn format_panes_human(val: &serde_json::Value) {
             "PANE_ID", "PID", "ACTIVE", "ROWS", "COLS"
         );
         for p in panes {
-            let id = json_str_or_num(p, "pane_id");
+            let id = json_str_or_num(p, "session_id");
             let pid = p
                 .get("pid")
                 .and_then(|v| v.as_u64())
@@ -1286,7 +978,7 @@ fn format_panes_human(val: &serde_json::Value) {
 }
 
 fn format_active_pane(val: &serde_json::Value) {
-    let id = json_str_or_num(val, "pane_id");
+    let id = json_str_or_num(val, "session_id");
     let tab = json_str_or_num(val, "tab_id");
     let win = json_str_or_num(val, "window_id");
     println!("Active pane: {} (tab: {}, window: {})", id, tab, win);
@@ -1317,12 +1009,12 @@ fn format_pane_status(val: &serde_json::Value) {
 
 fn format_created_tab(val: &serde_json::Value) {
     let tab_id = json_str_or_num(val, "tab_id");
-    let pane_id = json_str_or_num(val, "pane_id");
+    let pane_id = json_str_or_num(val, "session_id");
     println!("Created tab {} (pane {})", tab_id, pane_id);
 }
 
 fn format_created_pane(val: &serde_json::Value) {
-    let pane_id = json_str_or_num(val, "pane_id");
+    let pane_id = json_str_or_num(val, "session_id");
     println!("Created pane {}", pane_id);
 }
 
@@ -1415,7 +1107,7 @@ async fn run_listen(po: &PipeOverride, pane_filter: Option<&str>) -> Result<()> 
 
     eprintln!("Connected. Listening for events... (Ctrl+C to stop)");
     if let Some(pane) = pane_filter {
-        eprintln!("Filtering: session_id={}", pane);
+        eprintln!("Filtering: pane_id={}", pane);
     }
 
     while let Some(msg) = event_rx.recv().await {
@@ -1424,13 +1116,13 @@ async fn run_listen(po: &PipeOverride, pane_filter: Option<&str>) -> Result<()> 
             continue;
         }
 
-        // Optional session_id filter.
+        // Optional pane_id filter.
         if let Some(filter) = pane_filter {
-            let session_id = msg
+            let pane_id = msg
                 .get("params")
                 .and_then(|p| p.get("session_id"))
                 .and_then(|v| v.as_str());
-            if session_id != Some(filter) {
+            if pane_id != Some(filter) {
                 continue;
             }
         }
@@ -1485,7 +1177,7 @@ async fn delegate_with_context(
     let active = shell_mgr.wt_get_active_pane().await.ok();
     let active_pane_id = active
         .as_ref()
-        .and_then(|v| v.get("pane_id"))
+        .and_then(|v| v.get("session_id"))
         .and_then(|v| match v {
             serde_json::Value::String(s) => Some(s.clone()),
             serde_json::Value::Number(n) => Some(n.to_string()),
@@ -1532,451 +1224,6 @@ async fn delegate_with_context(
     Ok(())
 }
 
-// ─── Ensure host (background mode — no-op in centralized architecture) ──────
-
-async fn run_ensure_host(
-    po: &PipeOverride,
-    agent_cmd: String,
-    delegate_agent_cmd: Option<String>,
-    delegate_model: Option<String>,
-) -> Result<()> {
-    let _guard = logging::init("ensure-host");
-    tracing::info!("=== ensure-host starting ===");
-
-    let local_set = tokio::task::LocalSet::new();
-    local_set
-        .run_until(async move {
-            // Connect to the Windows Terminal protocol pipe.
-            // Must be inside LocalSet because start_reader() uses spawn_local.
-            let (debug_tx, _debug_rx) =
-                tokio::sync::mpsc::unbounded_channel::<app::DebugMessage>();
-            let mut shell_mgr = ShellManager::new();
-            let wt_event_rx = match connect_to_wt_pipe(po, debug_tx).await {
-                Ok(channel) => {
-                    tracing::info!("Connected to WT pipe");
-                    let event_rx = channel.subscribe_events();
-                    let arc_channel = Arc::new(channel);
-                    shell_mgr = shell_mgr.with_wt_channel(
-                        arc_channel.clone() as Arc<dyn shell::wt_channel::WtChannel>,
-                    );
-
-                    tracing::info!("Starting pipe reader...");
-                    arc_channel.start_reader().await;
-                    tracing::info!("Pipe reader started, fetching capabilities...");
-                    match arc_channel
-                        .request("get_capabilities", serde_json::json!({}))
-                        .await
-                    {
-                        Ok(v) => tracing::info!(result = %v, "get_capabilities OK"),
-                        Err(e) => tracing::warn!(error = %e, "get_capabilities FAILED"),
-                    }
-                    Some(event_rx)
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "No WT pipe");
-                    None
-                }
-            };
-            let shell_mgr = Arc::new(shell_mgr);
-
-            // Compute shared host pipe name.  Use resolve_pipe_info so the
-            // hash matches what attach clients compute (they also use it).
-            let wt_info = resolve_pipe_info(&po);
-            let host_pipe_name = shared_host::pipe_name_for(
-                wt_info.as_ref(),
-                Some(agent_cmd.as_str()),
-                delegate_agent_cmd.as_deref(),
-            );
-            tracing::info!(pipe = %host_pipe_name, "Host pipe");
-
-            // Autofix command channel. The host-side WT event listener pushes
-            // Trigger on actionable failures and Execute when the user clicks
-            // the bottom-bar icon / presses Ctrl+. without an attach TUI
-            // running. run_host_server routes them into host_command_tx so
-            // the existing state machine handles both cases.
-            let (autofix_cmd_tx, autofix_cmd_rx) = tokio::sync::mpsc::unbounded_channel::<shared_host::HostAutofixCommand>();
-
-            // Spawn background listener for WT events.
-            if let Some(mut wt_rx) = wt_event_rx {
-                let sm = Arc::clone(&shell_mgr);
-                let agent_for_recs = agent_cmd.clone();
-                let delegate_for_recs = delegate_agent_cmd.clone();
-                let delegate_model_for_recs = delegate_model.clone();
-                let host_autofix_tx = autofix_cmd_tx.clone();
-                tokio::task::spawn_local(async move {
-                    // Create a recommendation executor for delegation.
-                    let (rec_tx, rec_rx) =
-                        tokio::sync::mpsc::unbounded_channel();
-                    let (evt_tx, _evt_rx) = tokio::sync::mpsc::unbounded_channel();
-                    let delegate_agents =
-                        crate::coordinator::default_delegate_agent_runtimes(
-                            delegate_for_recs.as_deref(),
-                            Some(agent_for_recs.as_str()),
-                            delegate_model_for_recs.as_deref(),
-                        );
-                    let delegate_agent_id = delegate_agents
-                        .first()
-                        .map(|r| r.id.clone())
-                        .unwrap_or_else(|| agent_registry::KNOWN_AGENTS[0].id.to_string());
-                    tokio::spawn(crate::coordinator::run_recommendation_executor(
-                        rec_rx,
-                        evt_tx,
-                        sm,
-                        delegate_agents,
-                    ));
-
-                    while let Some(event_json) = wt_rx.recv().await {
-                        let method = event_json
-                            .get("method")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let session_id = event_json
-                            .get("params")
-                            .and_then(|p| p.get("session_id"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let params = event_json
-                            .get("params")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null);
-
-                        if method == "agent_prompt" {
-                            let prompt = params
-                                .get("prompt")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            if !prompt.is_empty() {
-                                tracing::info!(prompt = %prompt, "agent_prompt received");
-                                let choice = crate::coordinator::RecommendationChoice {
-                                    choice: 1,
-                                    title: "Delegate to tab agent".into(),
-                                    rationale: String::new(),
-                                    actions: vec![
-                                        crate::coordinator::RecommendedAction::OpenAndSend {
-                                            target: crate::coordinator::OpenTarget::Tab,
-                                            parent: None,
-                                            input: prompt,
-                                            agent: Some(delegate_agent_id.clone()),
-                                            cwd: None,
-                                            title: None,
-                                            direction: None,
-                                        },
-                                    ],
-                                };
-                                let _ = rec_tx.send(crate::coordinator::ChoiceExecution {
-                                    choice,
-                                    insert_only: false,
-                                });
-                            }
-                            continue;
-                        }
-
-                        // User pressed Ctrl+. or clicked the bottom-bar
-                        // autofix icon — execute the armed recommendation.
-                        if method == "autofix_execute" {
-                            tracing::info!(session_id = %session_id, "host autofix_execute");
-                            let _ = host_autofix_tx.send(
-                                shared_host::HostAutofixCommand::Execute {
-                                    pane_id: session_id.clone(),
-                                },
-                            );
-                            continue;
-                        }
-
-                        // Classify any other event — if actionable (OSC 133;D
-                        // non-zero exit, connection failures, etc.), fire the
-                        // host-side autofix pipeline so the bottom bar goes
-                        // from Idle → Pending → Armed even when no attach
-                        // TUI (agent pane) is running.
-                        let note = crate::app::classify_wt_event(&method, &session_id, &params);
-                        if note.severity == crate::app::WtEventSeverity::Actionable
-                            && method != "agent_prompt"
-                        {
-                            tracing::info!(session_id = %session_id, summary = %note.summary, "host autofix trigger");
-                            let _ = host_autofix_tx.send(
-                                shared_host::HostAutofixCommand::Trigger {
-                                    pane_id: session_id.clone(),
-                                    summary: note.summary.clone(),
-                                },
-                            );
-                        }
-                        // A successful command in an armed pane means the error was
-                        // resolved without the fix. Dismiss the autofix state.
-                        //
-                        // For Suggested state specifically, ANY new prompt activity
-                        // (osc:133;A — shell prompt rendered) in any pane also
-                        // dismisses, because the user is moving on from the prior
-                        // failure. The host's ClearAutofixForPane handler is the
-                        // single arbitration point: it clears Suggested regardless
-                        // of pane_id match (suggestions are global UI state),
-                        // while keeping Armed/Pending strictly same-pane.
-                        if method == "vt_sequence"
-                            && note.severity == crate::app::WtEventSeverity::Informational
-                        {
-                            if let Some(seq) = params.get("sequence").and_then(|v| v.as_str()) {
-                                let is_exit_zero = seq.strip_prefix("osc:133;")
-                                    .and_then(|rest| rest.strip_prefix("D;"))
-                                    .and_then(|code| code.trim().parse::<i32>().ok())
-                                    .map(|c| c == 0)
-                                    .unwrap_or(false);
-                                let is_prompt_start = seq == "osc:133;A";
-                                if is_exit_zero || is_prompt_start {
-                                    tracing::info!(
-                                        session_id = %session_id,
-                                        seq = %seq,
-                                        "host autofix clear on success/prompt-start"
-                                    );
-                                    let _ = host_autofix_tx.send(
-                                        shared_host::HostAutofixCommand::ClearOnSuccess {
-                                            pane_id: session_id.clone(),
-                                        },
-                                    );
-                                }
-                            }
-                        }
-                    }
-                });
-            }
-
-            // Start the shared host server (ACP client + host service).
-            tracing::info!("Starting shared host server...");
-            match shared_host::run_host_server(
-                host_pipe_name,
-                agent_cmd,
-                delegate_agent_cmd,
-                shell_mgr,
-                true, // wt_connected
-                Some(autofix_cmd_rx),
-            )
-            .await
-            {
-                Ok(()) => tracing::info!("Shared host server exited normally"),
-                Err(e) => tracing::warn!(error = %e, "Shared host server FAILED"),
-            }
-            Ok(())
-        })
-        .await
-}
-
-// ─── Attach TUI mode (lightweight pane client) ─────────────────────────────
-
-async fn run_attach_tui(
-    po: PipeOverride,
-    agent: String,
-    delegate_agent: Option<String>,
-    _delegate_model: Option<String>,
-    no_autofix: bool,
-    host_pipe_override: Option<String>,
-    initial_prompt: Option<String>,
-) -> Result<()> {
-    let _guard = logging::init("attach");
-    tracing::info!("=== run_attach_tui started ===");
-
-    let (debug_tx, debug_rx) = tokio::sync::mpsc::unbounded_channel::<app::DebugMessage>();
-
-    // Connect to WT pipe (for pane identity discovery and event forwarding).
-    let mut shell_mgr = ShellManager::new();
-    let mut wt_event_rx = None;
-    let mut wt_pipe_channel: Option<Arc<PipeChannel>> = None;
-    let wt_connected = match connect_to_wt_pipe(&po, debug_tx.clone()).await {
-        Ok(channel) => {
-            tracing::info!("Connected to WT pipe OK");
-            wt_event_rx = Some(channel.subscribe_events());
-            let arc_channel = Arc::new(channel);
-            wt_pipe_channel = Some(Arc::clone(&arc_channel));
-            shell_mgr =
-                shell_mgr.with_wt_channel(arc_channel as Arc<dyn shell::wt_channel::WtChannel>);
-            true
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "NO WT pipe");
-            false
-        }
-    };
-    let shell_mgr = Arc::new(shell_mgr);
-
-    // Discover our own pane identity.
-    let pane_identity = if wt_connected {
-        discover_pane_identity(&shell_mgr).await
-    } else {
-        None
-    };
-    tracing::info!(pane_identity = ?pane_identity, "pane_identity");
-
-    // Compute the shared host pipe name (must match ensure-host).
-    let host_pipe_name = if let Some(name) = host_pipe_override {
-        name
-    } else {
-        let wt_info = resolve_pipe_info(&po);
-        shared_host::pipe_name_for(
-            wt_info.as_ref(),
-            Some(agent.as_str()),
-            delegate_agent.as_deref(),
-        )
-    };
-    tracing::info!(host_pipe_name = %host_pipe_name, "host_pipe_name");
-
-    // Trigger _ensurePageEventsRegistered on the WT server.
-    if let Some(ref pipe_ch) = wt_pipe_channel {
-        pipe_ch.start_reader().await;
-        let _ = pipe_ch
-            .request("get_capabilities", serde_json::json!({}))
-            .await;
-    }
-
-    let autofix_enabled = !no_autofix;
-    let log_agent_events = std::env::var("WTA_LOG_AGENT_EVENT")
-        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false);
-
-    // ── Preflight: check agent CLI before connecting to shared host ──
-    let preflight_result = preflight::check_agent(&agent).await;
-    let start_in_setup = !preflight_result.all_passed();
-
-    // Set up the TUI.
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    // Set pane background via OSC 11 so the terminal chrome pixels match the chat area.
-    execute!(stdout, Print("\x1b]11;#0c0c0c\x07"))?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let local_set = tokio::task::LocalSet::new();
-    let result = local_set
-        .run_until(async {
-            let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
-            let (prompt_tx, prompt_rx) = tokio::sync::mpsc::unbounded_channel();
-            let (recommendation_tx, recommendation_rx) = tokio::sync::mpsc::unbounded_channel();
-            let (permission_tx, permission_rx) = tokio::sync::mpsc::unbounded_channel();
-            let (dismiss_autofix_tx, dismiss_autofix_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-            let debug_capture_enabled = Arc::new(AtomicBool::new(false));
-
-            // Crossterm event reader.
-            let evt_tx = event_tx.clone();
-            tokio::task::spawn_local(event::read_crossterm_events(evt_tx));
-
-            // Debug message forwarder.
-            let dbg_event_tx = event_tx.clone();
-            let mut debug_rx = debug_rx;
-            tokio::task::spawn_local(async move {
-                while let Some(msg) = debug_rx.recv().await {
-                    let _ = dbg_event_tx.send(app::AppEvent::DebugPipeMessage(msg));
-                }
-            });
-
-            // WT event reader (forwards push events to TUI).
-            if let Some(mut wt_rx) = wt_event_rx {
-                let wt_event_tx = event_tx.clone();
-                tokio::task::spawn_local(async move {
-                    while let Some(event_json) = wt_rx.recv().await {
-                        let method = event_json
-                            .get("method")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        // Pane GUIDs arrive in two cases on the wire:
-                        //   - hook bridge events  → lowercase (WT_SESSION env var)
-                        //   - WT-native events    → uppercase (canonical Windows GUID)
-                        // Normalise here so downstream code (registry,
-                        // is_agent_pane lookup, osc:133;A demote, etc.) all
-                        // compare in the same case.
-                        let session_id = event_json
-                            .get("params")
-                            .and_then(|p| p.get("session_id"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_ascii_lowercase();
-                        let params = event_json
-                            .get("params")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null);
-                        let _ = wt_event_tx.send(app::AppEvent::WtEvent {
-                            method,
-                            session_id,
-                            params,
-                        });
-                    }
-                });
-            }
-
-            // Build PaneContext from discovered pane identity.
-            let pane_context = shared_host::PaneContext {
-                session_id: pane_identity.as_ref().map(|(p, _, _)| p.clone()),
-                tab_id: pane_identity.as_ref().map(|(_, t, _)| t.clone()),
-                window_id: pane_identity.as_ref().map(|(_, _, w)| w.clone()),
-                cwd: std::env::var("WTA_SOURCE_CWD").ok().filter(|s| !s.is_empty()),
-                source_session_id: std::env::var("WTA_SOURCE_SESSION_ID")
-                    .ok()
-                    .filter(|s| !s.is_empty()),
-            };
-
-            // Spawn the attach client (replaces run_acp_client in shared mode).
-            // In attach mode, all prompts/recommendations/permissions are forwarded
-            // to the shared host — no local ACP client or recommendation executor.
-            if !start_in_setup {
-                let attach_event_tx = event_tx.clone();
-                tokio::task::spawn_local(shared_host::run_attach_client(
-                    host_pipe_name.clone(),
-                    attach_event_tx,
-                    prompt_rx,
-                    recommendation_rx,
-                    permission_rx,
-                    dismiss_autofix_rx,
-                    pane_context.clone(),
-                    initial_prompt.clone(),
-                    debug_capture_enabled.clone(),
-                ));
-            }
-
-            let (_ui_event_tx, ui_event_rx) = tokio::sync::mpsc::unbounded_channel();
-
-            let mut app_state = app::App::new(
-                prompt_tx,
-                recommendation_tx,
-                permission_tx,
-                debug_capture_enabled.clone(),
-                wt_connected,
-                autofix_enabled,
-                log_agent_events,
-            );
-            app_state.set_app_event_tx(event_tx.clone());
-            let _ = dismiss_autofix_tx; // was used for shared_mode dismiss; no longer needed
-
-            // If preflight failed, enter Setup mode with static guidance
-            // (no retry — user must close and reopen the agent pane).
-            if start_in_setup {
-                let _ = event_tx.send(app::AppEvent::PreflightComplete(preflight_result.clone()));
-            }
-
-            if let Some((pane_id, tab_id, window_id)) = pane_identity {
-                app_state.pane_session_id = Some(pane_id);
-                app_state.tab_id = Some(tab_id);
-                app_state.window_id = Some(window_id);
-            }
-            app_state.source_session_id =
-                std::env::var("WTA_SOURCE_SESSION_ID").ok().filter(|s| !s.is_empty());
-            app_state.source_cwd =
-                std::env::var("WTA_SOURCE_CWD").ok().filter(|s| !s.is_empty());
-
-            app_state.run(&mut terminal, event_rx, ui_event_rx).await
-        })
-        .await;
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), Print("\x1b]111\x07"), DisableMouseCapture, LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-
-    if let Err(e) = result {
-        eprintln!("Error: {e:?}");
-        std::process::exit(1);
-    }
-    Ok(())
-}
-
 // ─── Default ACP TUI mode ───────────────────────────────────────────────────
 
 async fn run_default_tui(cli: Cli, po: PipeOverride) -> Result<()> {
@@ -1989,15 +1236,60 @@ async fn run_default_tui(cli: Cli, po: PipeOverride) -> Result<()> {
     // Try to connect to the Windows Terminal pipe.
     let mut shell_mgr = ShellManager::new();
     let mut wt_event_rx = None;
-    let mut wt_pipe_channel: Option<Arc<PipeChannel>> = None;
+    let mut wt_pipe_channel: Option<Arc<CliChannel>> = None;
     let wt_connected = match connect_to_wt_pipe(&po, debug_tx.clone()).await {
         Ok(channel) => {
             tracing::info!("Connected to WT pipe OK — subscribing to events");
             // Subscribe to push events before wrapping in Arc.
             wt_event_rx = Some(channel.subscribe_events());
-            let arc_channel = Arc::new(channel);
-            wt_pipe_channel = Some(Arc::clone(&arc_channel));
-            shell_mgr = shell_mgr.with_wt_channel(arc_channel as Arc<dyn shell::wt_channel::WtChannel>);
+            let cli_arc = Arc::new(channel);
+            wt_pipe_channel = Some(Arc::clone(&cli_arc));
+
+            // If WT inherited a duplex pipe pair into our process via
+            // STARTUPINFOEX HANDLE_LIST, prefer it for the methods it carries
+            // (initially: send_input). All other methods fall through to the
+            // CliChannel (wtcli + COM) until they migrate too.
+            let wt_channel_for_mgr: Arc<dyn shell::wt_channel::WtChannel> =
+                match shell::wt_channel::PipeChannel::from_env() {
+                    Ok(Some(pipe)) => match pipe.handshake().await {
+                        Ok(()) => {
+                            tracing::info!(
+                                "PipeChannel handshake OK — routing send_input via inherited pipe"
+                            );
+                            let pipe_arc: Arc<dyn shell::wt_channel::WtChannel> =
+                                Arc::new(pipe);
+                            let cli_dyn: Arc<dyn shell::wt_channel::WtChannel> =
+                                cli_arc.clone();
+                            Arc::new(shell::wt_channel::RoutedChannel::new(
+                                pipe_arc,
+                                cli_dyn,
+                                &["send_input"],
+                            )) as Arc<dyn shell::wt_channel::WtChannel>
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "PipeChannel handshake failed; falling back to CliChannel"
+                            );
+                            cli_arc.clone() as Arc<dyn shell::wt_channel::WtChannel>
+                        }
+                    },
+                    Ok(None) => {
+                        tracing::debug!(
+                            "No inherited pipe handles in env; using CliChannel only"
+                        );
+                        cli_arc.clone() as Arc<dyn shell::wt_channel::WtChannel>
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "PipeChannel::from_env error; using CliChannel only"
+                        );
+                        cli_arc.clone() as Arc<dyn shell::wt_channel::WtChannel>
+                    }
+                };
+
+            shell_mgr = shell_mgr.with_wt_channel(wt_channel_for_mgr);
             true
         }
         Err(e) => {
@@ -2043,7 +1335,7 @@ async fn discover_pane_identity(shell_mgr: &ShellManager) -> Option<(String, Str
             for pane in panes_arr {
                 if let Some(pid) = pane.get("pid").and_then(|v| v.as_u64()) {
                     if pid == our_pid as u64 {
-                        let pane_id = match pane.get("pane_id") {
+                        let pane_id = match pane.get("session_id") {
                             Some(serde_json::Value::String(s)) => s.clone(),
                             Some(serde_json::Value::Number(n)) => n.to_string(),
                             _ => continue,
@@ -2064,7 +1356,7 @@ async fn run_acp_tui_mode(
     debug_rx: tokio::sync::mpsc::UnboundedReceiver<app::DebugMessage>,
     pane_identity: Option<(String, String, String)>,
     wt_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>>,
-    wt_pipe_channel: Option<Arc<PipeChannel>>,
+    wt_pipe_channel: Option<Arc<CliChannel>>,
 ) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -2113,15 +1405,15 @@ async fn run_test_pipe(po: &PipeOverride) -> Result<()> {
 async fn connect_to_wt_pipe(
     po: &PipeOverride,
     debug_tx: tokio::sync::mpsc::UnboundedSender<app::DebugMessage>,
-) -> Result<shell::wt_channel::PipeChannel> {
-    use shell::wt_channel::PipeChannel;
+) -> Result<shell::wt_channel::CliChannel> {
+    use shell::wt_channel::CliChannel;
 
     if let Some(info) = resolve_pipe_info(po) {
         eprintln!(
             "[wta] Discovered pipe via {:?}: {}",
             info.source, info.pipe_name
         );
-        let channel = PipeChannel::connect_with(&info.pipe_name, &info.token).await?;
+        let channel = CliChannel::connect_with(&info.pipe_name, &info.token).await?;
         return Ok(channel.with_debug_sender(debug_tx));
     }
 
@@ -2146,8 +1438,8 @@ async fn run_info_mode(po: &PipeOverride) -> Result<()> {
 
     let source_str = match info.source {
         DiscoverySource::VtOsc => "VT OSC discovery",
-        DiscoverySource::EnvVar => "WT_PIPE_NAME env var",
         DiscoverySource::ComClsid => "WT_COM_CLSID env var",
+        DiscoverySource::InheritedPipe => "inherited pipe (WT_PROTOCOL_PIPE_R/W)",
     };
     let token_display = if info.token.is_empty() {
         "(dev bypass)"
@@ -2160,7 +1452,7 @@ async fn run_info_mode(po: &PipeOverride) -> Result<()> {
     println!("  Source: {}", source_str);
     println!();
 
-    let channel = match PipeChannel::connect_with(&info.pipe_name, &info.token).await {
+    let channel = match CliChannel::connect_with(&info.pipe_name, &info.token).await {
         Ok(ch) => ch,
         Err(e) => {
             println!("  Connection failed: {}", e);
@@ -2215,7 +1507,7 @@ async fn run_info_mode(po: &PipeOverride) -> Result<()> {
                                             pane.get("pid").and_then(|v| v.as_u64())
                                         {
                                             if pid == our_pid as u64 {
-                                                let pane_id = match pane.get("pane_id") {
+                                                let pane_id = match pane.get("session_id") {
                                                     Some(serde_json::Value::String(s)) => {
                                                         s.clone()
                                                     }
@@ -2268,7 +1560,7 @@ async fn run_acp_app(
     mut debug_rx: tokio::sync::mpsc::UnboundedReceiver<app::DebugMessage>,
     pane_identity: Option<(String, String, String)>,
     wt_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>>,
-    wt_pipe_channel: Option<Arc<PipeChannel>>,
+    wt_pipe_channel: Option<Arc<CliChannel>>,
 ) -> Result<()> {
     let agent_cmd = cli.agent.clone();
 
@@ -2315,95 +1607,54 @@ async fn run_acp_app(
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        // Pane GUIDs arrive in two cases on the wire:
-                        //   - hook bridge events  → lowercase (WT_SESSION env var)
-                        //   - WT-native events    → uppercase (canonical Windows GUID)
-                        // Normalise here so downstream code (registry,
-                        // is_agent_pane lookup, osc:133;A demote, etc.) all
-                        // compare in the same case.
-                        let session_id = event_json
+                        let pane_id = event_json
                             .get("params")
                             .and_then(|p| p.get("session_id"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
-                            .to_ascii_lowercase();
+                            .to_string();
                         let params = event_json
                             .get("params")
                             .cloned()
                             .unwrap_or(serde_json::Value::Null);
                         let _ = wt_event_tx.send(app::AppEvent::WtEvent {
                             method,
-                            session_id,
+                            pane_id,
                             params,
                         });
                     }
                 });
             }
 
-            // ── Preflight: check agent CLI availability before launching ──
-            let preflight_result = preflight::check_agent(&agent_cmd).await;
-            let start_in_setup = !preflight_result.all_passed();
-
             let shell_mgr_for_recs = Arc::clone(&shell_mgr);
 
-            // Onboarding install request channel: the App fires this when the user
-            // chooses "Install via winget" from the setup wizard.
-            let (install_req_tx, mut install_req_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+            // Cancel channel for Ctrl+C handling: App produces, ACP client
+            // task consumes (one listener task inside run_acp_client).
+            let (cancel_tx, cancel_rx) = tokio::sync::mpsc::unbounded_channel();
+            // /new channel: App emits a NewSessionForTab, the ACP client
+            // drops the cached SessionId for that tab and re-issues
+            // new_session(). The resulting SessionAttached event flows
+            // back through event_tx like the lazy-create path.
+            let (new_session_tx, new_session_rx) = tokio::sync::mpsc::unbounded_channel();
+            // /restart channel: App emits a RestartRequest, the ACP client
+            // kills the agent child process, drops the connection, and
+            // respawns from scratch. State is cleaned up on both sides.
+            let (restart_tx, restart_rx) = tokio::sync::mpsc::unbounded_channel();
 
-            // Single task owns prompt_rx and decides when to spawn the ACP client:
-            // either now (preflight passed) or later (after a successful install).
-            let spawn_event_tx = event_tx.clone();
-            let spawn_shell_mgr = Arc::clone(&shell_mgr);
-            let spawn_agent_cmd = agent_cmd.clone();
-            tokio::task::spawn_local(async move {
-                let mut prompt_rx_opt = Some(prompt_rx);
-                let mut spawned = false;
-
-                if !start_in_setup {
-                    if let Some(rx) = prompt_rx_opt.take() {
-                        tokio::task::spawn_local(protocol::acp::client::run_acp_client(
-                            spawn_agent_cmd.clone(),
-                            spawn_event_tx.clone(),
-                            rx,
-                            Arc::clone(&spawn_shell_mgr),
-                            wt_connected,
-                        ));
-                        spawned = true;
-                    }
-                }
-
-                while let Some(()) = install_req_rx.recv().await {
-                    let _ = spawn_event_tx.send(app::AppEvent::InstallStarted);
-                    let progress_tx = spawn_event_tx.clone();
-                    let result = preflight::winget_install_copilot(move |line| {
-                        let _ = progress_tx.send(app::AppEvent::InstallProgress(line));
-                    })
-                    .await;
-                    let _ = spawn_event_tx
-                        .send(app::AppEvent::InstallComplete(result.clone()));
-
-                    if result.is_ok() && !spawned {
-                        // PATH was refreshed inside winget_install_copilot; rerun preflight.
-                        let new_pf = preflight::check_agent(&spawn_agent_cmd).await;
-                        let all_passed = new_pf.all_passed();
-                        let _ = spawn_event_tx
-                            .send(app::AppEvent::PreflightComplete(new_pf));
-
-                        if all_passed {
-                            if let Some(rx) = prompt_rx_opt.take() {
-                                tokio::task::spawn_local(protocol::acp::client::run_acp_client(
-                                    spawn_agent_cmd.clone(),
-                                    spawn_event_tx.clone(),
-                                    rx,
-                                    Arc::clone(&spawn_shell_mgr),
-                                    wt_connected,
-                                ));
-                                spawned = true;
-                            }
-                        }
-                    }
-                }
-            });
+            // Spawn the ACP client directly. If the agent isn't installed or
+            // fails to authenticate, the error surfaces inline as a Failed
+            // connection state — no FRE / setup wizard.
+            tokio::task::spawn_local(protocol::acp::client::run_acp_client(
+                agent_cmd.clone(),
+                cli.acp_model.clone(),
+                event_tx.clone(),
+                prompt_rx,
+                cancel_rx,
+                new_session_rx,
+                restart_rx,
+                Arc::clone(&shell_mgr),
+                wt_connected,
+            ));
 
             let (recommendation_tx, recommendation_rx) = tokio::sync::mpsc::unbounded_channel();
             let (permission_tx, _permission_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2425,26 +1676,68 @@ async fn run_acp_app(
             ));
 
             let autofix_enabled = !cli.no_autofix;
-            let log_agent_events = std::env::var("WTA_LOG_AGENT_EVENT")
-                .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
-                .unwrap_or(false);
-            let mut app_state = app::App::new(prompt_tx, recommendation_tx, permission_tx, debug_capture_enabled, wt_connected, autofix_enabled, log_agent_events);
-            app_state.set_install_request_tx(install_req_tx);
-            app_state.set_app_event_tx(event_tx.clone());
+            let mut app_state = app::App::new(prompt_tx, recommendation_tx, permission_tx, cancel_tx, new_session_tx, restart_tx, debug_capture_enabled, wt_connected, autofix_enabled);
 
-            // If preflight failed, start in Setup mode
-            if start_in_setup {
-                let _ = event_tx.send(app::AppEvent::PreflightComplete(preflight_result));
-            }
+            // ── Preflight: check the agent CLI before connecting ──────────
+            // If the CLI is missing or unauthenticated we surface the
+            // Setup wizard via AppEvent::PreflightComplete. Sent before
+            // the run loop drains the channel so the wizard appears on
+            // first frame.
+            let preflight_result = preflight::check_agent(&agent_cmd).await;
+            tracing::info!(
+                target: "preflight",
+                agent_id = %preflight_result.agent_id,
+                cli = ?preflight_result.cli_status,
+                auth = ?preflight_result.auth_status,
+                "preflight done"
+            );
+            let _ = event_tx.send(app::AppEvent::PreflightComplete(preflight_result));
+
+            // ── install-hooks request channel ─────────────────────────────
+            // The Settings UI / in-TUI install button signals via this
+            // channel; main.rs runs `agent_hooks_installer::ensure_installed`
+            // off the UI thread so the TUI stays responsive.
+            let (install_req_tx, mut install_req_rx) =
+                tokio::sync::mpsc::unbounded_channel::<()>();
+            tokio::task::spawn_local(async move {
+                while let Some(()) = install_req_rx.recv().await {
+                    tracing::info!(target: "install_hooks", "received install request");
+                    // Run the (potentially slow, IO-bound) installer on the
+                    // blocking pool so we don't park the LocalSet.
+                    let _ = tokio::task::spawn_blocking(|| {
+                        agent_hooks_installer::ensure_installed();
+                    })
+                    .await;
+                }
+            });
+            app_state.set_install_request_tx(install_req_tx);
+
+            // ── seed Agents view from on-disk history ─────────────────────
+            // history_loader scans Claude/Copilot/Gemini per-CLI session
+            // dirs and returns historical AgentSession rows. merge_historical
+            // inserts only those whose key isn't already live.
+            app_state
+                .agent_sessions
+                .merge_historical(history_loader::load_all());
 
             if let Some((pane_id, tab_id, window_id)) = pane_identity {
-                app_state.pane_session_id = Some(pane_id);
+                app_state.pane_id = Some(pane_id);
                 app_state.tab_id = Some(tab_id);
                 app_state.window_id = Some(window_id);
             }
-            // Read source pane context from env vars set by WT when creating the agent pane.
-            app_state.source_session_id = std::env::var("WTA_SOURCE_SESSION_ID").ok().filter(|s| !s.is_empty());
-            app_state.source_cwd = std::env::var("WTA_SOURCE_CWD").ok().filter(|s| !s.is_empty());
+
+            // ── source-pane context (autofix attribution) ─────────────────
+            app_state.source_session_id = std::env::var("WTA_SOURCE_SESSION_ID")
+                .ok()
+                .filter(|s| !s.is_empty());
+            app_state.source_cwd = std::env::var("WTA_SOURCE_CWD")
+                .ok()
+                .filter(|s| !s.is_empty());
+
+            // ── env-gated raw agent_event chat logging (diagnostics) ──────
+            app_state.log_agent_events = std::env::var("WTA_LOG_AGENT_EVENT")
+                .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+                .unwrap_or(false);
 
             // If a prompt was passed via CLI arg (e.g., from command palette creating
             // a new agent pane), delegate it to a new tab agent on startup.
