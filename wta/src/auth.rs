@@ -231,13 +231,15 @@ async fn probe_acp_auth(profile: &AgentProfile) -> AuthStatus {
                     if lower.contains("not logged in")
                         || lower.contains("not authenticated")
                         || lower.contains("unauthorized")
-                        || lower.contains("login")
+                        || lower.contains("/login")
                         || lower.contains("401")
                     {
                         status = AuthStatus::NeedsAuth;
+                        break;
                     }
-                    // Got stderr output but not auth-specific — still NeedsAuth
-                    break;
+                    // Non-auth stderr (startup banner / log) — keep waiting
+                    // for stdout to deliver an ACP response.
+                    continue;
                 }
                 Ok(ProbeResult::Nothing) => continue,
                 Err(_) => break, // timeout
@@ -281,9 +283,24 @@ fn check_credential_files(profile: &AgentProfile) -> Option<AuthStatus> {
             }
         }
         "copilot" => {
-            // Copilot stores token in Windows Credential Manager
-            // We check cmdkey — but this is slow, so return None and let probe handle it
-            None
+            // GitHub Copilot CLI writes ~/.copilot/config.json after sign-in.
+            // The `loggedInUsers` array is non-empty when at least one host is
+            // authenticated. We check this instead of probing the ACP adapter
+            // because Copilot can take 30+ seconds to start, which is well
+            // beyond any reasonable probe timeout.
+            let path = home.join(".copilot").join("config.json");
+            let bytes = std::fs::read(&path).ok()?;
+            // Strip a `// ...` header line if present (Copilot writes a comment
+            // banner on top, which is technically not valid JSON).
+            let text = String::from_utf8_lossy(&bytes);
+            let json_start = text.find('{')?;
+            let json: serde_json::Value = serde_json::from_str(&text[json_start..]).ok()?;
+            let logged_in = json
+                .get("loggedInUsers")
+                .and_then(|v| v.as_array())
+                .map(|a| !a.is_empty())
+                .unwrap_or(false);
+            Some(if logged_in { AuthStatus::Authenticated } else { AuthStatus::NeedsAuth })
         }
         _ => None,
     }
