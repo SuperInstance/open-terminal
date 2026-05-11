@@ -260,8 +260,6 @@ serde = { version = "1", features = ["derive"] }
 - [x] `wta --mcp` — still works (backward compat)
 - [x] `wta pipe-id` — prints discovered pipe name
 - [x] `wta set-env` — prints eval-able export commands
-- [x] `wta --pipe-name <name> list-windows` — uses explicit pipe name
-- [x] `--pipe-name` propagates through to MCP config injection
 
 ### Future
 - [ ] WT C++ side: build WT, verify DoWTAction receives WtaReq

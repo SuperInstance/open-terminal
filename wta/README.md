@@ -81,47 +81,36 @@ eval "$(wta set-env)"                     # bash/zsh
 wta set-env -s powershell | Invoke-Expression   # PowerShell
 wta set-env -s fish | source              # fish
 wta set-env -s cmd                        # cmd (copy-paste output)
-
-# Explicit pipe name (overrides all discovery)
-wta --pipe-name '\\.\pipe\WT-12345' list-windows
-wta --pipe-name '\\.\pipe\WT-12345' --mcp
 ```
 
-### Test pipe connectivity
+### Test connectivity
 
 ```bash
 wta test-pipe
 wta --test-pipe     # legacy flag, still works
 ```
 
-Connects to the WT pipe, authenticates, and prints `list_windows` + `get_capabilities`.
+Connects to the WT protocol, prints `list_windows` + `get_capabilities`.
 
-## Pipe Connection
+## Protocol Connection
 
-WTA uses a priority chain to find the Windows Terminal pipe:
-
-1. **`--pipe-name` CLI flag** (highest priority) -- works with all commands and modes
-2. **VT OSC 9001 discovery** -- sends an escape sequence to WT, works in any pane
-3. **`WT_PIPE_NAME` environment variable** -- set by WT for coordinator panes
+WTA discovers Windows Terminal via the `WT_COM_CLSID` environment variable. WT
+sets this in its own environment at startup and propagates it to every conpty
+shell, so any pane-launched process — including wta and wtcli — inherits it.
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `WT_PIPE_NAME` | No* | Named pipe path, e.g. `\\.\pipe\WindowsTerminal-12345` |
-| `WT_MCP_TOKEN` | No | Auth token. Empty string triggers dev bypass |
+| `WT_COM_CLSID` | Yes* | Stringified GUID of WT's `TerminalProtocolComServer` COM class |
 | `WTA_DEBUG_LOG` | No | Set to `0` to disable `wta-pipe-debug.log` |
 
-\* Not required if running inside Windows Terminal (VT discovery) or using `--pipe-name`.
-
-Windows Terminal sets `WT_PIPE_NAME` and `WT_MCP_TOKEN` automatically for processes launched through its protocol server. For other shells, use `eval "$(wta set-env)"` to auto-detect and export the variables.
+\* Set automatically by WT when it spawns a conpty child. If you launch `wta` from outside WT, run `eval "$(wta set-env)"` to copy the value over (only useful when you've previously captured it from a WT shell).
 
 ## Global CLI Options
 
 | Flag | Description |
 |------|-------------|
-| `--pipe-name <NAME>` | WT pipe path (overrides VT discovery and env var) |
-| `--pipe-token <TOKEN>` | WT auth token (use with `--pipe-name`) |
 | `--json` | Output raw JSON instead of human-readable tables |
 | `--agent <CMD>` | Agent CLI command for ACP mode (default: `copilot --acp --stdio`) |
 
@@ -262,9 +251,6 @@ target/debug/wta.exe
 # Option 2: Set env vars for the session
 eval "$(target/debug/wta.exe set-env)"
 target/debug/wta.exe
-
-# Option 3: Explicit pipe name
-target/debug/wta.exe --pipe-name '\\.\pipe\WindowsTerminal-12345'
 ```
 
 ### Development workflow
@@ -293,7 +279,7 @@ target/debug/wta.exe --pipe-name '\\.\pipe\WindowsTerminal-12345'
 
 - **ShellManager** is shared between ACP and MCP modes via `Arc<ShellManager>`
 - **PipeChannel** holds a single `Mutex<NamedPipeClient>` -- all requests are serialized
-- **Pipe discovery priority**: `--pipe-name` CLI flag > VT OSC 9001 > `WT_PIPE_NAME` env var
+- **Protocol discovery**: `WT_COM_CLSID` env var, inherited from the WT-spawned conpty
 - **CLI subcommands** are thin wrappers over `PipeChannel::request()` -- no ShellManager needed
 - **Pane identity** is discovered at startup via PID matching (list all panes, find ours)
 - **ACP WT contract**: In ACP mode with WT connected, WTA adds prompt context that tells the agent to use local `wta` CLI commands for WT inspection/control. MCP remains a separate headless server mode.

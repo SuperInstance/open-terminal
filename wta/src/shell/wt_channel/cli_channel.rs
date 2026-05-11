@@ -341,7 +341,6 @@ pub struct CliChannel {
     debug_tx: Option<mpsc::UnboundedSender<DebugMessage>>,
     event_tx: std::sync::Mutex<Option<mpsc::UnboundedSender<serde_json::Value>>>,
     wtcli_path: String,
-    com_clsid_override: Option<String>,
 }
 
 impl CliChannel {
@@ -356,24 +355,6 @@ impl CliChannel {
             debug_tx: None,
             event_tx: std::sync::Mutex::new(None),
             wtcli_path: resolve_wtcli_path(),
-            com_clsid_override: None,
-        })
-    }
-
-    pub async fn connect_with(connection_id: &str) -> anyhow::Result<Self> {
-        // Legacy callers still pass this through `--pipe-name`, but the current
-        // protocol route is COM. Treat the value as the WT_COM_CLSID override
-        // that wtcli expects in its environment.
-        if connection_id.is_empty() {
-            bail!("Empty connection identifier");
-        }
-
-        Ok(Self {
-            available: AtomicBool::new(true),
-            debug_tx: None,
-            event_tx: std::sync::Mutex::new(None),
-            wtcli_path: resolve_wtcli_path(),
-            com_clsid_override: Some(connection_id.to_string()),
         })
     }
 
@@ -389,19 +370,17 @@ impl CliChannel {
     }
 
     /// Start background event listener (wraps `wtcli listen --json`).
+    /// wtcli inherits WT_COM_CLSID from this process's env.
     pub async fn start_reader(self: &std::sync::Arc<Self>) {
         let wtcli = self.wtcli_path.clone();
-        let com_clsid_override = self.com_clsid_override.clone();
         let weak = std::sync::Arc::downgrade(self);
         tokio::spawn(async move {
-            let mut cmd = tokio::process::Command::new(&wtcli);
-            cmd.args(["--json", "listen"])
+            let Ok(mut child) = tokio::process::Command::new(&wtcli)
+                .args(["--json", "listen"])
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null());
-            if let Some(clsid) = com_clsid_override {
-                cmd.env("WT_COM_CLSID", clsid);
-            }
-            let Ok(mut child) = cmd.spawn() else {
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            else {
                 return;
             };
 
@@ -430,12 +409,10 @@ impl CliChannel {
     }
 
     /// Run a wtcli subcommand and return the parsed JSON output.
+    /// wtcli inherits WT_COM_CLSID from this process's env.
     async fn run_wtcli(&self, args: &[&str]) -> anyhow::Result<serde_json::Value> {
         let mut cmd = tokio::process::Command::new(&self.wtcli_path);
         cmd.arg("--json").args(args);
-        if let Some(clsid) = &self.com_clsid_override {
-            cmd.env("WT_COM_CLSID", clsid);
-        }
 
         let output = cmd
             .output()

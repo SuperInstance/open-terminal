@@ -173,7 +173,7 @@ Agents that can shell out, and humans debugging WTA, can use WTA as a small WT h
 
 The inherited pipe is separate from COM discovery. It is available only to WTA processes that WT launched with `WT_PROTOCOL_PIPE_R/W`; arbitrary shell-launched WTA processes cannot synthesize those handle capabilities.
 
-Legacy `--pipe-name`, `pipe-id`, and `set-env` CLI surfaces are retained only as compatibility shims around the current COM CLSID routing. They should not be described as a named-pipe security boundary.
+`pipe-id` and `set-env` are diagnostic subcommands that surface the inherited `WT_COM_CLSID` value. They should not be described as a named-pipe security boundary.
 
 ## Pane Identity
 

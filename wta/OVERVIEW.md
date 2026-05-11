@@ -106,7 +106,7 @@ wta split-pane -h                         # 水平分割当前面板
 
 ### WTA ↔ Windows Terminal
 - **命名管道**: `\\.\pipe\WindowsTerminal-<PID>`，换行分隔的 JSON-RPC
-- 管道发现优先级：`--pipe-name` 参数 > VT OSC 9001 发现 > `WT_PIPE_NAME` 环境变量
+- 协议发现：`WT_COM_CLSID` 环境变量（WT 启动时设置，conpty 子进程自动继承）
 - 认证：token-based，空 token = dev bypass
 
 ---

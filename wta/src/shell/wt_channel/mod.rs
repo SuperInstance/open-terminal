@@ -9,29 +9,6 @@ pub use pipe_channel::PipeChannel;
 pub use routed_channel::RoutedChannel;
 pub(crate) use cli_channel::resolve_wtcli_path;
 
-/// Connection info discovered from environment variables.
-#[derive(Debug, Clone)]
-pub struct ConnectionInfo {
-    pub connection_id: String,
-    pub source: DiscoverySource,
-}
-
-#[derive(Debug, Clone)]
-pub enum DiscoverySource {
-    ComClsid,
-}
-
-/// Discover WT protocol connection info from the WT_COM_CLSID env var.
-pub fn discover_connection_info() -> Option<ConnectionInfo> {
-    if let Ok(clsid) = std::env::var("WT_COM_CLSID") {
-        return Some(ConnectionInfo {
-            connection_id: clsid,
-            source: DiscoverySource::ComClsid,
-        });
-    }
-    None
-}
-
 /// Channel for communicating with the Windows Terminal protocol server.
 #[async_trait::async_trait]
 pub trait WtChannel: Send + Sync {

@@ -3513,11 +3513,7 @@ impl App {
         };
         let mut cmd = std::process::Command::new(exe);
         cmd.arg("delegate").arg(prompt);
-
-        // Pass COM routing identity explicitly for the delegated helper.
-        if let Ok(clsid) = std::env::var("WT_COM_CLSID") {
-            cmd.arg("--pipe-name").arg(&clsid);
-        }
+        // The delegate child inherits WT_COM_CLSID from our env; no explicit pass needed.
 
         // Fire-and-forget: spawn hidden, don't wait.
         #[cfg(windows)]
