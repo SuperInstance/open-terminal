@@ -167,8 +167,6 @@ Agents that can shell out, and humans debugging WTA, can use WTA as a small WT h
 | `pane-status` | -- | `get_process_status` |
 | `listen` | `mon` | COM event subscribe |
 
-`send-keys` is intentionally not supported.Direct shell input must flow through a WT-launched WTA process that owns the inherited `WT_PROTOCOL_PIPE_R/W` handles.
-
 ## Connection Discovery
 
 `CliChannel` uses `wtcli.exe`, and `wtcli.exe` discovers WT through `WT_COM_CLSID`. WT injects this environment variable into pane shells.

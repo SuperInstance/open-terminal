@@ -33,8 +33,8 @@ wta --agent "claude-agent-acp --stdio"
 ```
 
 When ACP mode is connected to Windows Terminal, the current agent-facing contract is the local `wta` CLI.
-The agent is expected to shell out to commands like `wta active-pane --json`, `wta list-panes --json`, and `wta send-keys --json`.
-The CLI then talks to Windows Terminal over the named pipe.
+The agent is expected to shell out to commands like `wta active-pane --json`, `wta list-panes --json`, and `wta capture-pane --json`.
+The CLI then talks to Windows Terminal over the protocol.
 
 ### Run (MCP server mode)
 
@@ -56,7 +56,6 @@ wta list-panes                            # list panes in first tab
 wta active-pane                           # show focused pane
 wta new-tab -c "pwsh.exe" -n "Build"      # create tab running pwsh
 wta split-pane -H -c "pwsh.exe"           # split horizontal
-wta send-keys -t 3 "cargo build" Enter    # send keys to pane 3
 wta capture-pane -t 3 -l 50              # read last 50 lines from pane 3
 wta kill-pane -t 3                        # close pane 3
 wta pane-status -t 3                      # check if running

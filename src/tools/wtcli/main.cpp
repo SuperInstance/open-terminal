@@ -323,11 +323,6 @@ int main()
         }
     });
 
-    // send-keys removed: keystroke injection is now confined to per-wta
-    // secure pipes (see TerminalProtocolPipeServer in TerminalApp). Any
-    // caller that previously used `wtcli send-keys` must route through
-    // the wta process WT spawned for it.
-
     // ── new-tab ──
     std::string newTabCommand, newTabTitle, newTabCwd;
     auto* newTabCmd = app.add_subcommand("new-tab", "Create a new tab")->alias("neww");

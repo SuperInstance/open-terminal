@@ -6,7 +6,7 @@ WTA is a Rust application that provides three modes of operation:
 
 - **ACP mode** (default): TUI client that calls an agent subprocess via the Agent Client Protocol (ACP) over stdio
 - **MCP mode** (`wta mcp`): Headless MCP server exposing shell tools for an external agent to call
-- **CLI mode** (subcommands): tmux-like commands (`wta list-panes`, `wta send-keys`, etc.) that talk directly to the WT pipe -- useful for humans and agents that can shell out
+- **CLI mode** (subcommands): tmux-like commands (`wta list-panes`, `wta capture-pane`, etc.) that talk directly to the WT pipe -- useful for humans and agents that can shell out
 
 Both ACP and MCP modes share a common **ShellManager** shell integration layer. CLI subcommands are thin wrappers over `PipeChannel::request()` that don't need ShellManager. A **WtChannel** abstraction enables bidirectional communication with Windows Terminal for tab/pane management and state queries.
 
@@ -253,7 +253,6 @@ serde = { version = "1", features = ["derive"] }
 - [x] `cargo build` — compiles with all subcommands
 - [x] `wta list-windows` — prints windows table
 - [x] `wta list-tabs --json` — prints raw JSON
-- [x] `wta send-keys "echo hello" Enter` — sends to active pane
 - [x] `wta capture-pane -l 5` — prints last 5 lines from active pane
 - [x] `wta new-tab -c "pwsh" -n "Test"` — creates a new tab
 - [x] `wta split-pane -v` — splits active pane vertically

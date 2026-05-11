@@ -28,7 +28,7 @@ wta "帮我列出所有 git branch"
 
 启动一个终端内的聊天界面（用 ratatui 渲染），WTA 作为 **ACP 客户端**，启动一个 AI 代理子进程（默认 Copilot），通过 JSON-RPC stdin/stdout 通信。用户在聊天框输入，AI 可以请求执行命令、创建终端等，WTA 代为执行并展示结果。
 
-当 ACP 模式已经连上 Windows Terminal 时，当前推荐的 agent 控制面是本地 `wta` CLI，而不是在同一会话里依赖 MCP。也就是说，agent 通过 shell out 调 `wta active-pane --json`、`wta list-panes --json`、`wta send-keys --json` 这类命令，CLI 再经由命名管道调用 WT。
+当 ACP 模式已经连上 Windows Terminal 时，当前推荐的 agent 控制面是本地 `wta` CLI，而不是在同一会话里依赖 MCP。也就是说，agent 通过 shell out 调 `wta active-pane --json`、`wta list-panes --json`、`wta capture-pane --json` 这类命令，CLI 再经由协议调用 WT。
 
 ### 2. MCP Server 模式 — 给 AI 用的工具服务器
 
@@ -48,7 +48,6 @@ wta mcp
 ```
 wta list-windows          # 列出所有 WT 窗口
 wta list-tabs             # 列出标签页
-wta send-keys -t 3 "cargo build" Enter    # 向第 3 个 pane 发送按键
 wta capture-pane -t 3 -l 50              # 读取 pane 3 的最近 50 行
 wta new-tab -c "pwsh.exe" -n "Build"      # 创建新标签页
 wta split-pane -h                         # 水平分割当前面板
@@ -146,7 +145,7 @@ wta test-pipe
 
 # 类 tmux 操作
 wta list-windows
-wta send-keys "echo hello" Enter
+wta capture-pane -l 5
 ```
 
 ---
