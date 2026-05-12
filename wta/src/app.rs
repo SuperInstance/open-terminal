@@ -3018,33 +3018,6 @@ impl App {
                     self.current_tab_mut().selected_button = (self.current_tab_mut().selected_button + button_count - 1) % button_count;
                 }
             }
-            KeyCode::F(2) => {
-                // Toggle between Chat (default) and the Agents picker. Per
-                // tab — the active tab's TabSession holds the open state
-                // so other tabs are unaffected.
-                let has_sessions = !self.agent_sessions.iter_sorted().is_empty();
-                let entering_agents = self.current_tab().current_view == View::Chat;
-                {
-                    let tab = self.current_tab_mut();
-                    tab.current_view = match tab.current_view {
-                        View::Chat => {
-                            // Seed selection on first open if there's anything to select.
-                            if tab.agents_list_state.selected().is_none() && has_sessions {
-                                tab.agents_list_state.select(Some(0));
-                            }
-                            View::Agents
-                        }
-                        View::Agents => View::Chat,
-                    };
-                }
-                // Kick off the historical-sessions scan the first time the
-                // user actually asks to see the Agents view. No-op after
-                // the first call.
-                if entering_agents {
-                    self.ensure_history_loaded();
-                }
-                return;
-            }
             KeyCode::F(12) => {
                 self.show_debug_panel = !self.show_debug_panel;
                 self.debug_capture_enabled
