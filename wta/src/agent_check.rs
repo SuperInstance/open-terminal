@@ -30,7 +30,7 @@ pub struct AgentStatus {
 }
 
 impl AgentStatus {
-    /// User-facing status string for FRE agent list.
+    /// User-facing status string for agent list.
     pub fn status_label(&self) -> String {
         if !self.cli_found {
             "Not found".to_string()
@@ -39,6 +39,11 @@ impl AgentStatus {
         } else {
             "Detected".to_string()
         }
+    }
+
+    /// Whether this agent can be auto-installed (e.g. via winget).
+    pub fn can_auto_install(&self) -> bool {
+        self.id == "copilot"
     }
 }
 
@@ -194,6 +199,54 @@ pub fn check_agent(agent_id: &str) -> AgentStatus {
 /// Check all known agents.
 pub fn check_all_agents() -> Vec<AgentStatus> {
     KNOWN_AGENTS.iter().map(|p| check_agent(p.id)).collect()
+}
+
+/// Check an agent from a full command string (e.g. "copilot --acp --stdio"
+/// or "my-custom-agent --acp"). Supports both known and custom agents.
+pub fn check_agent_cmd(agent_cmd: &str) -> AgentStatus {
+    let exe_name = agent_cmd.split_whitespace().next().unwrap_or(agent_cmd);
+
+    // Try to match a known agent first
+    let profile = agent_registry::lookup_profile(exe_name);
+    if profile.id != "unknown" {
+        return check_agent(profile.id);
+    }
+
+    // Custom agent: check if the executable exists on fresh PATH
+    let path_var = fresh_path();
+    let mut cli_path = None;
+
+    // Check as-is (might be a full path)
+    if std::path::Path::new(exe_name).is_file() {
+        cli_path = Some(exe_name.to_string());
+    }
+
+    // Check on PATH with common extensions
+    if cli_path.is_none() {
+        for ext in &["", ".exe", ".cmd"] {
+            let name = format!("{}{}", exe_name, ext);
+            for dir in std::env::split_paths(&path_var) {
+                let candidate = dir.join(&name);
+                if candidate.is_file() {
+                    cli_path = Some(candidate.to_string_lossy().to_string());
+                    break;
+                }
+            }
+            if cli_path.is_some() { break; }
+        }
+    }
+
+    let cli_found = cli_path.is_some();
+
+    AgentStatus {
+        id: exe_name.to_string(),
+        display_name: exe_name.to_string(),
+        cli_found,
+        cli_path,
+        has_credential: false, // unknown for custom agents
+        install_hint: String::new(),
+        auth_hint: format!("Make sure {} is installed and on your PATH.", exe_name),
+    }
 }
 
 /// Ensure an agent is installed: find → install if missing → refresh PATH → find again.

@@ -1804,6 +1804,13 @@ async fn run_acp_app(
                 }
 
                 app_state.mode = app::AppMode::Setup;
+                let all_agent_statuses = agent_check::check_all_agents();
+                let options = app::build_setup_options(&reason, None, &all_agent_statuses);
+                let title = reason.title().to_string();
+                let subtitle = match reason {
+                    app::SetupReason::FirstRun => "Getting started".to_string(),
+                    _ => "Fix the issue below to continue".to_string(),
+                };
                 app_state.setup = Some(app::SetupState {
                     reason,
                     agents,
@@ -1821,6 +1828,9 @@ async fn run_acp_app(
                     install_in_progress: false,
                     install_log: Vec::new(),
                     install_error: None,
+                    options,
+                    title,
+                    subtitle,
                 });
             }
 

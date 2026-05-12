@@ -1,7 +1,7 @@
 use ratatui::prelude::*;
 use crate::app::{App, AppMode, View, DEFAULT_TAB_ID};
 
-use super::{auth, agents_view, chat, command_popup, debug_panel, fre_setup, input, permission, recommendations, setup};
+use super::{auth, agents_view, chat, command_popup, debug_panel, input, permission, recommendations, setup};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -24,27 +24,21 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    // Setup mode: FRE agent selection or preflight wizard
+    // Setup mode: unified setup wizard (FRE + preflight) with input box
     if app.mode == AppMode::Setup {
-        if app.setup.as_ref().map_or(false, |s| s.reason == crate::app::SetupReason::FirstRun) {
-            // FRE: agent selection + getting started screen with input box
-            let input_height = {
-                let tab = app.current_tab();
-                input::input_height(&tab.input, tab.cursor_pos, area.width)
-            };
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(1),
-                    Constraint::Length(input_height),
-                ])
-                .split(area);
-            fre_setup::render(frame, app, chunks[0]);
-            input::render(frame, app, chunks[1]);
-        } else {
-            // Preflight wizard (full-pane, no input)
-            setup::render(frame, app, area);
-        }
+        let input_height = {
+            let tab = app.current_tab();
+            input::input_height(&tab.input, tab.cursor_pos, area.width)
+        };
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(1),
+                Constraint::Length(input_height),
+            ])
+            .split(area);
+        setup::render(frame, app, chunks[0]);
+        input::render(frame, app, chunks[1]);
         return;
     }
 
