@@ -1520,6 +1520,21 @@ namespace winrt::TerminalApp::implementation
         ProtocolVtSequenceReceived.raise(
             *this,
             winrt::to_hstring(Json::writeString(wb, evt)));
+
+        // Mirror the wta-side view switch on the C++ agent bar: in sessions
+        // view, the bar replaces "<agent> <version>" with "Agent sessions"
+        // and hides the agent logo. Tied to _BroadcastAgentSetView (and not
+        // _agentSessionsViewActive directly) because every keyboard- or
+        // icon-driven switch we care about flows through here; the few
+        // remaining `_agentSessionsViewActive = false` sites are pane-closed
+        // paths where the bar is going away anyway.
+        if (const auto pane = _FindAgentPane())
+        {
+            if (const auto agent = pane->GetContent().try_as<winrt::TerminalApp::AgentPaneContent>())
+            {
+                agent.SetSessionsView(view == "sessions");
+            }
+        }
     }
 
     // Reset every tab's AgentPaneOpen() flag. Called when the shared pane is
@@ -2136,6 +2151,7 @@ namespace winrt::TerminalApp::implementation
                 // the view switch lands on the right TabSession.
                 _BroadcastAgentSetView("sessions");
                 _agentSessionsViewActive = true;
+                _UpdateBottomBarState();
                 return;
             }
 
@@ -2165,6 +2181,7 @@ namespace winrt::TerminalApp::implementation
             // Toggle path opens to chat (default) or hides the pane —
             // either way the sessions view is no longer active.
             _agentSessionsViewActive = false;
+            _UpdateBottomBarState();
             return;
         }
 
@@ -2288,6 +2305,21 @@ namespace winrt::TerminalApp::implementation
         // New pane: wta starts in whichever view --initial-view requested
         // (chat by default; sessions when Ctrl+Shift+/ triggered the open).
         _agentSessionsViewActive = intoSessionsView;
+
+        // Mirror that view on the new agent bar's label so the title reads
+        // "Agent sessions" from the very first frame. Without this the bar
+        // would briefly show "<agent> <version>" before any user input,
+        // which is misleading when the wta TUI below is the session list.
+        if (intoSessionsView)
+        {
+            if (const auto& content{ newPane->GetContent() })
+            {
+                if (const auto agent = content.try_as<winrt::TerminalApp::AgentPaneContent>())
+                {
+                    agent.SetSessionsView(true);
+                }
+            }
+        }
 
         _UpdateBottomBarState();
     }
@@ -3551,6 +3583,32 @@ namespace winrt::TerminalApp::implementation
         _UpdateBottomBarState();
     }
 
+    // Open (or reuse) the agent pane and switch wta into the Agents/sessions
+    // view — same toggle semantics as the Ctrl+Shift+/ keybinding:
+    //   - pane not visible on active tab → open + sessions view
+    //   - pane visible AND already in sessions view → close
+    //   - pane visible but in chat view → switch to sessions
+    void TerminalPage::_SessionToggleButtonOnClick(const IInspectable& /*sender*/,
+                                                    const RoutedEventArgs& /*eventArgs*/)
+    {
+        const auto pane = _FindAgentPane();
+        const auto activeTab = _GetFocusedTabImpl();
+        const bool visibleOnActiveTab =
+            pane && activeTab && (_FindTabContainingAgentPane() == activeTab) && !pane->IsHidden();
+
+        if (visibleOnActiveTab && _agentSessionsViewActive)
+        {
+            activeTab->AgentPaneOpen(false);
+            _ReconcileAgentPaneForActiveTab();
+            _agentSessionsViewActive = false;
+            _UpdateBottomBarState();
+            return;
+        }
+
+        _OpenOrReuseAgentPane(L"", /*intoSessionsView*/ true);
+        _UpdateBottomBarState();
+    }
+
     void TerminalPage::_DiagnosticsButtonOnClick(const IInspectable& /*sender*/,
                                                   const RoutedEventArgs& /*eventArgs*/)
     {
@@ -3624,19 +3682,25 @@ namespace winrt::TerminalApp::implementation
         }
         _agentPaneVisible = activeTabWantsOpen;
 
-        // Update AI toggle button visual — use a subtle highlight when active.
+        // The pane-visible highlight follows whichever toggle button "owns"
+        // the current view:
+        //   * chat view     → AgentToggleButton lit, SessionToggleButton dark
+        //   * sessions view → SessionToggleButton lit, AgentToggleButton dark
+        //   * pane hidden   → both dark
+        // Previously AgentToggleButton stayed lit for both views, which made
+        // the session toggle look like it never engaged when Ctrl+Shift+/
+        // opened the sessions list.
+        const auto kLitOverlay = SolidColorBrush{ ColorHelper::FromArgb(30, 255, 255, 255) };
+        const auto kTransparent = SolidColorBrush{ Colors::Transparent() };
+        const bool sessionsLit = _agentPaneVisible && _agentSessionsViewActive;
+        const bool chatLit     = _agentPaneVisible && !_agentSessionsViewActive;
         if (auto toggleBtn = AgentToggleButton())
         {
-            if (_agentPaneVisible)
-            {
-                // Subtle white overlay for both light and dark themes
-                toggleBtn.Background(SolidColorBrush{
-                    ColorHelper::FromArgb(30, 255, 255, 255) });
-            }
-            else
-            {
-                toggleBtn.Background(SolidColorBrush{ Colors::Transparent() });
-            }
+            toggleBtn.Background(chatLit ? kLitOverlay : kTransparent);
+        }
+        if (auto sessionsBtn = SessionToggleButton())
+        {
+            sessionsBtn.Background(sessionsLit ? kLitOverlay : kTransparent);
         }
 
         // Swap the toggle icon to match the current pane position.
