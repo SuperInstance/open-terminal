@@ -67,6 +67,30 @@ pub struct RestartRequest {
     pub agent_cmd: Option<String>,
 }
 
+/// User-initiated request to resume a historical agent session by calling
+/// the ACP `session/load` method, binding the loaded session to a
+/// specific WT tab. Emitted by the session management view's Shift+Enter
+/// handler (after WT has created a new tab and reconciled the agent pane
+/// onto it). The ACP client task calls `conn.load_session(...)`; on
+/// success the loaded SessionId is bound to the tab and `SessionAttached`
+/// propagates to the UI so subsequent prompts on that tab reuse the
+/// rehydrated session. The agent is expected to replay past session
+/// content via `session/update` notifications during/after the
+/// `load_session` call.
+#[derive(Debug, Clone)]
+pub struct LoadSessionForTab {
+    pub tab_id: String,
+    /// The CLI's own session id (Claude UUID, Gemini sessionId, Copilot
+    /// session-state folder name). Sent verbatim as the ACP `sessionId`
+    /// — works when the currently-connected ACP agent matches the
+    /// historical session's CLI source. CLI mismatches surface as
+    /// `AgentError` via the agent's JSON-RPC error response.
+    pub session_id: String,
+    /// Working directory to associate with the loaded session. When
+    /// `None`, falls back to the process-wide `current_dir()`.
+    pub cwd: Option<String>,
+}
+
 /// Drop the ACP session binding for a tab WITHOUT immediately creating a
 /// replacement. Emitted by the Ctrl+C×2 close-pane path when the agent
 /// pane is being hidden on a tab while other tabs still need it: we
@@ -1310,6 +1334,20 @@ impl acp::Client for WtaClient {
             .prompt_timing
             .observe_session_update(&sid, session_update_kind(&args.update));
         match args.update {
+            acp::SessionUpdate::UserMessageChunk(chunk) => {
+                // Replayed historical user prompt from `session/load`.
+                // In the normal prompt flow the agent doesn't emit
+                // these (the client sent the user text itself), so
+                // this branch only fires during a load replay. The
+                // App handler gates on `loading_session` and drops
+                // late-arrivers.
+                if let acp::ContentBlock::Text(text_content) = chunk.content {
+                    let _ = self.state.event_tx.send(AppEvent::UserMessageReplayChunk {
+                        session_id: sid,
+                        text: text_content.text,
+                    });
+                }
+            }
             acp::SessionUpdate::AgentThoughtChunk(chunk) => {
                 if let acp::ContentBlock::Text(text_content) = chunk.content {
                     let _ = self.state.event_tx.send(AppEvent::AgentThoughtChunk {
@@ -1485,6 +1523,7 @@ pub async fn run_acp_client(
     mut prompt_rx: mpsc::UnboundedReceiver<PromptSubmission>,
     mut cancel_rx: mpsc::UnboundedReceiver<CancelRequest>,
     mut new_session_rx: mpsc::UnboundedReceiver<NewSessionForTab>,
+    mut load_session_rx: mpsc::UnboundedReceiver<LoadSessionForTab>,
     mut drop_session_rx: mpsc::UnboundedReceiver<DropSessionRequest>,
     mut restart_rx: mpsc::UnboundedReceiver<RestartRequest>,
     shell_mgr: Arc<ShellManager>,
@@ -1509,6 +1548,7 @@ pub async fn run_acp_client(
             &mut prompt_rx,
             &mut cancel_rx,
             &mut new_session_rx,
+            &mut load_session_rx,
             &mut drop_session_rx,
             &mut restart_rx,
             Arc::clone(&shell_mgr),
@@ -1582,6 +1622,7 @@ async fn run_inner(
     prompt_rx: &mut mpsc::UnboundedReceiver<PromptSubmission>,
     cancel_rx: &mut mpsc::UnboundedReceiver<CancelRequest>,
     new_session_rx: &mut mpsc::UnboundedReceiver<NewSessionForTab>,
+    load_session_rx: &mut mpsc::UnboundedReceiver<LoadSessionForTab>,
     drop_session_rx: &mut mpsc::UnboundedReceiver<DropSessionRequest>,
     restart_rx: &mut mpsc::UnboundedReceiver<RestartRequest>,
     shell_mgr: Arc<ShellManager>,
@@ -1837,6 +1878,11 @@ async fn run_inner(
         .as_ref()
         .and_then(|info| info.title.clone().or_else(|| Some(info.name.clone())))
         .unwrap_or(registry_name);
+    let load_session_supported = init_resp.agent_capabilities.load_session;
+    startup_probe.log(&format!(
+        "Agent capabilities: loadSession={}",
+        load_session_supported
+    ));
     let _ = event_tx.send(AppEvent::AgentConnected {
         name: agent_name,
         model: agent_model,
@@ -1844,6 +1890,7 @@ async fn run_inner(
         session_id: session_id.to_string(),
         available_models,
         current_model_id,
+        load_session_supported,
     });
 
     // Per-tab session cache, shared across all in-flight prompt tasks.
@@ -2007,6 +2054,144 @@ async fn run_inner(
                         available_models: per_tab_models,
                         current_model_id: per_tab_current,
                     });
+                });
+            }
+            Some(req) = load_session_rx.recv() => {
+                tracing::info!(
+                    target: "acp_load_session",
+                    tab = %req.tab_id,
+                    session_id = %req.session_id,
+                    "load_session requested"
+                );
+                let conn_for_load = Arc::clone(&conn);
+                let tab_to_session_for_load = Arc::clone(&tab_to_session);
+                let cancel_signals_for_load = Arc::clone(&cancel_signals);
+                let event_tx_for_load = event_tx.clone();
+                tokio::task::spawn_local(async move {
+                    let cwd = req
+                        .cwd
+                        .clone()
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+                    // If the target tab already holds a session, cancel
+                    // any in-flight prompt for it and drop the binding —
+                    // we're about to replace it with the loaded one.
+                    // Mirrors the new_session_rx prelude.
+                    let old_sid: Option<acp::SessionId> = {
+                        let mut g = tab_to_session_for_load.lock().await;
+                        g.remove(&req.tab_id)
+                    };
+
+                    if let Some(ref old) = old_sid {
+                        let old_str = old.to_string();
+                        if let Some(sig) = cancel_signals_for_load
+                            .lock()
+                            .unwrap()
+                            .remove(&old_str)
+                        {
+                            let _ = sig.send(());
+                        }
+                        let _ = conn_for_load
+                            .cancel(acp::CancelNotification::new(old.clone()))
+                            .await;
+                    }
+
+                    let session_id = acp::SessionId::new(req.session_id.clone());
+                    let load_req = acp::LoadSessionRequest::new(session_id.clone(), cwd);
+
+                    // 60s timeout: matches new_session's first-run npx
+                    // adapter timeout. `session/load` may replay history
+                    // before returning, so on large session stores the
+                    // call can take a while; but a 60s ceiling keeps us
+                    // from hanging forever if the agent never responds.
+                    let load_future = conn_for_load.load_session(load_req);
+                    let load_result = tokio::time::timeout(
+                        std::time::Duration::from_secs(60),
+                        load_future,
+                    )
+                    .await;
+
+                    match load_result {
+                        Ok(Ok(_resp)) => {
+                            tracing::info!(
+                                target: "acp_load_session",
+                                tab = %req.tab_id,
+                                session_id = %req.session_id,
+                                "load_session succeeded"
+                            );
+                            {
+                                let mut g = tab_to_session_for_load.lock().await;
+                                g.insert(req.tab_id.clone(), session_id.clone());
+                            }
+                            // The agent replays past content via
+                            // session/update notifications that route
+                            // through the existing session_to_tab map.
+                            // SessionAttached primes that mapping.
+                            let _ = event_tx_for_load.send(AppEvent::SessionAttached {
+                                tab_id: req.tab_id.clone(),
+                                session_id: session_id.to_string(),
+                                // load_session/LoadSessionResponse does
+                                // not carry the per-session model list
+                                // (only modes); leave the previously-
+                                // published list alone.
+                                available_models: Vec::new(),
+                                current_model_id: None,
+                            });
+                            // Confirmation note so the user sees the
+                            // tab transition out of "Resuming..." even
+                            // if the agent's replay is empty or
+                            // delayed. The "Resuming..." note was
+                            // pushed by the inbound load_session
+                            // handler before this task ran.
+                            let _ = event_tx_for_load.send(AppEvent::TabSystemMessage {
+                                tab_id: req.tab_id.clone(),
+                                message: "Session loaded. Past content from \
+                                          the agent (if any) will appear above."
+                                    .to_string(),
+                            });
+                        }
+                        Ok(Err(e)) => {
+                            tracing::warn!(
+                                target: "acp_load_session",
+                                tab = %req.tab_id,
+                                session_id = %req.session_id,
+                                error = ?e,
+                                "load_session failed"
+                            );
+                            // TabError routes to the specific new tab
+                            // (the historical session has no live
+                            // session_id we could thread through
+                            // AgentError, and AgentError with
+                            // session_id=None would land in the
+                            // currently-active tab instead).
+                            let _ = event_tx_for_load.send(AppEvent::TabError {
+                                tab_id: req.tab_id.clone(),
+                                message: format!(
+                                    "Failed to resume session in agent pane: {}. \
+                                     The connected agent may not recognize this \
+                                     session id (CLI mismatch), or `session/load` \
+                                     is unsupported.",
+                                    e
+                                ),
+                            });
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                target: "acp_load_session",
+                                tab = %req.tab_id,
+                                session_id = %req.session_id,
+                                "load_session timed out after 60s"
+                            );
+                            let _ = event_tx_for_load.send(AppEvent::TabError {
+                                tab_id: req.tab_id.clone(),
+                                message:
+                                    "Resume timed out after 60s — the agent \
+                                     did not respond to `session/load`."
+                                        .to_string(),
+                            });
+                        }
+                    }
                 });
             }
             Some(req) = drop_session_rx.recv() => {

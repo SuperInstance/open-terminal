@@ -4294,6 +4294,117 @@ namespace winrt::TerminalApp::implementation
         // WTA will emit autofix_state:cleared — OnAutofixStateChanged handles the transition.
     }
 
+    // Inbound event from WTA: {method:"resume_in_new_agent_tab",
+    //                          params:{session_id, cwd}}.
+    // Sent by the session view's Shift+Enter handler. We:
+    //   1. Create a new tab with the default profile (using the historical
+    //      session's cwd as the starting directory when provided).
+    //   2. Force the new (now-focused) tab's AgentPaneOpen=true and
+    //      reconcile so the shared agent pane moves onto it.
+    //   3. Publish a `load_session` event BACK to wta carrying the new
+    //      tab's StableId + the original session_id + cwd. wta's
+    //      wt_protocol_event handler picks it up and dispatches a
+    //      LoadSessionForTab into the ACP client, which calls
+    //      `session/load` and binds the loaded session to that tab.
+    //
+    // The shared-agent-pane model means we can't actually have two
+    // independent ACP connections on one window. If the running WTA was
+    // launched with a CLI that doesn't match the historical session's
+    // origin, `session/load` will return an error that surfaces as an
+    // AgentError in the new tab's chat view (best-effort by design — see
+    // plan.md "Constraints established with user").
+    void TerminalPage::OnResumeInNewAgentTabRequested(hstring eventJson)
+    {
+        _agentPaneLog("OnResumeInNewAgentTabRequested: received from wta");
+
+        Json::Value evt;
+        Json::CharReaderBuilder rb;
+        std::string errs;
+        const auto jsonStr = winrt::to_string(eventJson);
+        std::istringstream is{ jsonStr };
+        if (!Json::parseFromStream(rb, is, &evt, &errs))
+        {
+            _agentPaneLog("OnResumeInNewAgentTabRequested: failed to parse JSON: " + errs);
+            return;
+        }
+        if (!evt.isMember("params") || !evt["params"].isObject())
+        {
+            _agentPaneLog("OnResumeInNewAgentTabRequested: missing params object");
+            return;
+        }
+        const auto& params = evt["params"];
+        const std::string sessionIdStr = params.get("session_id", "").asString();
+        const std::string cwdStr = params.get("cwd", "").asString();
+        if (sessionIdStr.empty())
+        {
+            _agentPaneLog("OnResumeInNewAgentTabRequested: empty session_id — ignoring");
+            return;
+        }
+
+        // We need a live agent pane to dispatch session/load against; the
+        // Session view is rendered INSIDE the pane so it must exist at this
+        // point, but check defensively to avoid a no-op tab spawn.
+        if (!_FindAgentPane())
+        {
+            _agentPaneLog("OnResumeInNewAgentTabRequested: no live agent pane — ignoring");
+            return;
+        }
+
+        // Step 1: create a new tab. NewTerminalArgs() uses the default
+        // profile; honor the historical session's cwd when provided so
+        // the new terminal pane lands in the same project root.
+        Settings::Model::NewTerminalArgs newTerminalArgs{};
+        if (!cwdStr.empty())
+        {
+            newTerminalArgs.StartingDirectory(winrt::to_hstring(cwdStr));
+        }
+        const auto hr = _OpenNewTab(newTerminalArgs, /*openInBackground*/ false);
+        if (FAILED(hr))
+        {
+            _agentPaneLog("OnResumeInNewAgentTabRequested: _OpenNewTab failed");
+            return;
+        }
+
+        // Step 2: the new tab is now focused. Flip its AgentPaneOpen=true
+        // and reconcile to move the shared agent pane onto it.
+        const auto newTab = _GetFocusedTabImpl();
+        if (!newTab)
+        {
+            _agentPaneLog("OnResumeInNewAgentTabRequested: no focused tab after _OpenNewTab");
+            return;
+        }
+        const auto newStableId = newTab->StableId();
+        if (newStableId.empty())
+        {
+            _agentPaneLog("OnResumeInNewAgentTabRequested: new tab has empty StableId");
+            return;
+        }
+        newTab->AgentPaneOpen(true);
+        _ReconcileAgentPaneForActiveTab();
+
+        // Step 3: publish load_session back to wta with the new tab's
+        // StableId. ProtocolVtSequenceReceived fans this out to subscribed
+        // COM clients (including wta's `listen` subscription). wta then
+        // calls `session/load` over its existing ACP connection bound to
+        // this new tab.
+        Json::Value outEvt;
+        outEvt["type"] = "event";
+        outEvt["method"] = "load_session";
+        Json::Value outParams;
+        outParams["tab_id"] = winrt::to_string(newStableId);
+        outParams["session_id"] = sessionIdStr;
+        outParams["cwd"] = cwdStr;
+        outEvt["params"] = outParams;
+        Json::StreamWriterBuilder wb;
+        wb["indentation"] = "";
+        ProtocolVtSequenceReceived.raise(
+            *this,
+            winrt::to_hstring(Json::writeString(wb, outEvt)));
+
+        _agentPaneLog("OnResumeInNewAgentTabRequested: load_session event published for tab " +
+                      winrt::to_string(newStableId));
+    }
+
     // Method Description:
     // - Called when the users pressed keyBindings while CommandPaletteElement is open.
     // - As of GH#8480, this is also bound to the TabRowControl's KeyUp event.
@@ -4726,7 +4837,7 @@ namespace winrt::TerminalApp::implementation
 
                             // connection_state is pane-lifecycle plumbing that
                             // wta needs regardless of AutoFix being enabled —
-                            // it drives F2 session-list demotion (PaneClosed)
+                            // it drives session-list demotion (PaneClosed)
                             // when an agent CLI exits and the pane is closed.
                             // Volume is low (a handful of events per pane
                             // lifecycle), so always forward.

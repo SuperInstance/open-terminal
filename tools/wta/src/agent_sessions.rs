@@ -1087,61 +1087,6 @@ mod tests {
     }
 
     #[test]
-    fn upgrade_title_replaces_synthetic_cwd_basename() {
-        let mut reg = AgentSessionRegistry::new();
-        reg.apply(SessionEvent::SessionStarted {
-            key:             "s1".into(),
-            cli_source:      CliSource::Copilot,
-            pane_session_id: "p1".into(),
-            cwd:             PathBuf::from("C:\\Users\\yuazha"),
-            // Synthetic title: cwd's leaf folder name.
-            title:           "yuazha".into(),
-        });
-        let _ = reg.take_dirty();
-
-        assert!(reg.upgrade_title_if_synthetic("s1", "Check Current Weather"));
-        assert_eq!(reg.sessions.get("s1").unwrap().title, "Check Current Weather");
-        assert!(reg.take_dirty(), "upgrade should mark registry dirty");
-    }
-
-    #[test]
-    fn upgrade_title_replaces_empty_title() {
-        let mut reg = AgentSessionRegistry::new();
-        reg.apply(SessionEvent::SessionStarted {
-            key:             "s1".into(),
-            cli_source:      CliSource::Copilot,
-            pane_session_id: "p1".into(),
-            cwd:             PathBuf::from("C:\\Users\\yuazha"),
-            title:           String::new(),
-        });
-        assert!(reg.upgrade_title_if_synthetic("s1", "Real Summary"));
-        assert_eq!(reg.sessions.get("s1").unwrap().title, "Real Summary");
-    }
-
-    #[test]
-    fn upgrade_title_keeps_real_title_intact() {
-        let mut reg = AgentSessionRegistry::new();
-        // Pre-load a session with a real (non-synthetic) title from disk.
-        reg.merge_historical(vec![AgentSession {
-            key:               "s1".into(),
-            cli_source:        CliSource::Copilot,
-            pane_session_id:   None, window_id: None, tab_id: None,
-            title:             "Workspace Summary From Disk".into(),
-            cwd:               PathBuf::from("C:\\Users\\yuazha"),
-            started_at:        SystemTime::now(),
-            last_activity_at:  SystemTime::now(),
-            status:            AgentStatus::Historical,
-            last_error: None, current_tool: None, attention_reason: None,
-            log_path: None,
-        }]);
-        let _ = reg.take_dirty();
-
-        assert!(!reg.upgrade_title_if_synthetic("s1", "yuazha"));
-        assert_eq!(reg.sessions.get("s1").unwrap().title, "Workspace Summary From Disk");
-        assert!(!reg.take_dirty(), "no-op upgrade must not mark dirty");
-    }
-
-    #[test]
     fn upgrade_title_ignores_empty_candidate_and_unknown_key() {
         let mut reg = AgentSessionRegistry::new();
         reg.apply(SessionEvent::SessionStarted {

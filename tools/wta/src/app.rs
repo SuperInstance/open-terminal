@@ -17,6 +17,7 @@ struct DeferredAcpParams {
     prompt_rx: Option<mpsc::UnboundedReceiver<crate::protocol::acp::client::PromptSubmission>>,
     cancel_rx: Option<mpsc::UnboundedReceiver<crate::protocol::acp::client::CancelRequest>>,
     new_session_rx: Option<mpsc::UnboundedReceiver<crate::protocol::acp::client::NewSessionForTab>>,
+    load_session_rx: Option<mpsc::UnboundedReceiver<crate::protocol::acp::client::LoadSessionForTab>>,
     drop_session_rx: Option<mpsc::UnboundedReceiver<crate::protocol::acp::client::DropSessionRequest>>,
     restart_rx: Option<mpsc::UnboundedReceiver<crate::protocol::acp::client::RestartRequest>>,
     shell_mgr: Arc<crate::shell::ShellManager>,
@@ -36,8 +37,8 @@ use crate::coordinator::{
 use crate::pane_context::PaneContext;
 
 use crate::protocol::acp::client::{
-    prompt_timing_log, CancelRequest, DropSessionRequest, NewSessionForTab, PromptSubmission,
-    RestartRequest,
+    prompt_timing_log, CancelRequest, DropSessionRequest, LoadSessionForTab, NewSessionForTab,
+    PromptSubmission, RestartRequest,
 };
 use crate::ui;
 use crate::ui_trace;
@@ -626,6 +627,10 @@ pub struct AcpModelInfo {
 pub enum DispatchedCommandKind {
     FocusPane,
     SplitPaneResume,
+    /// Shift+Enter in the session management view — resume a historical
+    /// session in the agent pane of a new tab via WT-side coordination +
+    /// ACP session/load.
+    ResumeInAgentPane,
 }
 
 #[cfg(test)]
@@ -664,6 +669,12 @@ pub enum AppEvent {
         available_models: Vec<AcpModelInfo>,
         /// ACP-advertised current model id (NewSessionResponse.models.current_model_id).
         current_model_id: Option<String>,
+        /// Whether the agent advertised the `loadSession` capability in
+        /// the initialize response. Used by the session-management
+        /// view's Shift+Enter handler to short-circuit with a clear
+        /// error before opening a new tab when the agent can't
+        /// rehydrate ACP sessions.
+        load_session_supported: bool,
     },
     /// A new ACP session has been created and bound to a tab. Carries the
     /// per-tab model list (each ACP session can advertise its own).
@@ -672,6 +683,23 @@ pub enum AppEvent {
         session_id: String,
         available_models: Vec<AcpModelInfo>,
         current_model_id: Option<String>,
+    },
+    /// Error scoped to a specific tab. Used by paths that know the tab
+    /// (e.g. ACP `session/load` failure) but have no session_id yet
+    /// because the session never came up. Routes into that tab's chat as
+    /// a normal Error message; does NOT bounce through the auth/global
+    /// disconnect fallback that `AgentError` triggers.
+    TabError {
+        tab_id: String,
+        message: String,
+    },
+    /// Informational system message scoped to a specific tab. Used for
+    /// session/load progress notes ("Resuming...", "Session loaded.")
+    /// where we want the user to see something before the agent's
+    /// session/update replay (if any) arrives.
+    TabSystemMessage {
+        tab_id: String,
+        message: String,
     },
     PromptTemplateLoaded {
         name: String,
@@ -696,6 +724,17 @@ pub enum AppEvent {
         text: String,
     },
     AgentMessageChunk {
+        session_id: String,
+        text: String,
+    },
+    /// A `user_message_chunk` SessionUpdate received from the agent
+    /// during an ACP `session/load` replay. Carries the historical
+    /// user prompt that opens the next replayed turn. Accumulated into
+    /// `pending_user_replay` and flushed as a `ChatMessage::User` when
+    /// the next agent/tool/plan chunk lands or the load completes.
+    /// Outside of `loading_session` mode, dropped — copilot uses these
+    /// only during load.
+    UserMessageReplayChunk {
         session_id: String,
         text: String,
     },
@@ -823,6 +862,24 @@ pub struct TabSession {
     pub selected_completed_turn_idx: Option<usize>,
     pub chat_scroll: Scroll,
 
+    // Streaming state
+    pub prompt_in_flight: bool,
+    pub agent_streaming: bool,
+    pub pending_thought_response: String,
+    pub pending_agent_response: String,
+    /// Accumulator for `session/update` user_message_chunk events
+    /// arriving during an ACP `session/load` replay (the historical
+    /// user prompt for the next replayed turn). Flushed as a
+    /// `ChatMessage::User` whenever a turn boundary is detected — an
+    /// agent message / thought / tool call starts, OR the load
+    /// completes (SessionAttached for the loading tab).
+    pub pending_user_replay: String,
+    /// True between the inbound `load_session` event and the
+    /// `SessionAttached` event that closes out the ACP `session/load`
+    /// call. While set, session/update chunk handlers bypass the
+    /// `prompt_in_flight` gate so the agent's replayed history actually
+    /// renders into the new tab.
+    pub loading_session: bool,
     // Explicit per-turn lifecycle. Source of truth in the new state machine
     // (see `doc/specs/turn-state-refactor.md`).
     pub turn: TurnState,
@@ -883,11 +940,30 @@ impl TabSession {
         self.permission = None;
         self.progress_status = None;
         self.activity_frame = 0;
+        self.pending_agent_response.clear();
+        self.pending_user_replay.clear();
+        self.agent_streaming = false;
         self.chat_scroll.reset();
         self.timing_note = None;
         self.selection_visible_pending = false;
         self.turn = TurnState::Idle;
         self.clear_recommendations();
+    }
+
+    /// Flush pending user/agent replay buffers at a turn boundary during
+    /// an ACP `session/load`. Called when a new user_message_chunk
+    /// arrives (the previous agent turn is complete) and again at end
+    /// of load to drain whatever remains. Empty buffers no-op.
+    pub fn flush_load_replay_pending(&mut self) {
+        if !self.pending_user_replay.is_empty() {
+            let text = std::mem::take(&mut self.pending_user_replay);
+            self.messages.push(ChatMessage::User(text));
+        }
+        if !self.pending_agent_response.is_empty() {
+            let text = std::mem::take(&mut self.pending_agent_response);
+            self.messages.push(ChatMessage::Agent(text));
+        }
+        self.pending_thought_response.clear();
     }
 
     /// Cycle the past-turn selection toward older entries.
@@ -1099,6 +1175,7 @@ pub struct App {
     permission_tx: mpsc::UnboundedSender<String>,
     cancel_tx: mpsc::UnboundedSender<CancelRequest>,
     new_session_tx: mpsc::UnboundedSender<NewSessionForTab>,
+    load_session_tx: mpsc::UnboundedSender<LoadSessionForTab>,
     drop_session_tx: mpsc::UnboundedSender<DropSessionRequest>,
     restart_tx: mpsc::UnboundedSender<RestartRequest>,
     debug_capture_enabled: Arc<AtomicBool>,
@@ -1151,10 +1228,17 @@ pub struct App {
     /// + selected row) lives per-tab on `TabSession`.
     pub agent_sessions: crate::agent_sessions::AgentSessionRegistry,
     /// Tracks the lazy load of historical sessions. Flipped to Loading
-    /// on first F2; flipped to Loaded when `HistoricalSessionsLoaded`
-    /// arrives. The agents_view reads this to render a "Loading..."
-    /// row instead of an empty list during the scan.
+    /// on first session-management-view open; flipped to Loaded when
+    /// `HistoricalSessionsLoaded` arrives. The agents_view reads this to
+    /// render a "Loading..." row instead of an empty list during the
+    /// scan.
     pub history_load_state: HistoryLoadState,
+    /// Whether the connected ACP agent advertised the `loadSession`
+    /// capability in its initialize response. Used by the
+    /// session-management view's Shift+Enter handler to short-circuit
+    /// with a clear error before opening a new tab when the agent
+    /// can't rehydrate ACP sessions. Set on `AgentConnected`.
+    pub agent_supports_load_session: bool,
     // Onboarding: signals main.rs to install agent hook plugins on demand.
     install_request_tx: Option<mpsc::UnboundedSender<()>>,
     /// Posts `AppEvent::AgentSessionEvent` from background callbacks
@@ -1247,6 +1331,7 @@ impl App {
         permission_tx: mpsc::UnboundedSender<String>,
         cancel_tx: mpsc::UnboundedSender<CancelRequest>,
         new_session_tx: mpsc::UnboundedSender<NewSessionForTab>,
+        load_session_tx: mpsc::UnboundedSender<LoadSessionForTab>,
         drop_session_tx: mpsc::UnboundedSender<DropSessionRequest>,
         restart_tx: mpsc::UnboundedSender<RestartRequest>,
         debug_capture_enabled: Arc<AtomicBool>,
@@ -1282,6 +1367,7 @@ impl App {
             permission_tx,
             cancel_tx,
             new_session_tx,
+            load_session_tx,
             drop_session_tx,
             restart_tx,
             debug_capture_enabled,
@@ -1302,6 +1388,7 @@ impl App {
             session_to_tab: HashMap::new(),
             agent_sessions: crate::agent_sessions::AgentSessionRegistry::new(),
             history_load_state: HistoryLoadState::NotStarted,
+            agent_supports_load_session: false,
             install_request_tx: None,
             agent_event_tx: None,
             #[cfg(test)]
@@ -1323,6 +1410,7 @@ impl App {
         prompt_rx: mpsc::UnboundedReceiver<crate::protocol::acp::client::PromptSubmission>,
         cancel_rx: mpsc::UnboundedReceiver<crate::protocol::acp::client::CancelRequest>,
         new_session_rx: mpsc::UnboundedReceiver<crate::protocol::acp::client::NewSessionForTab>,
+        load_session_rx: mpsc::UnboundedReceiver<crate::protocol::acp::client::LoadSessionForTab>,
         drop_session_rx: mpsc::UnboundedReceiver<crate::protocol::acp::client::DropSessionRequest>,
         restart_rx: mpsc::UnboundedReceiver<crate::protocol::acp::client::RestartRequest>,
         shell_mgr: Arc<crate::shell::ShellManager>,
@@ -1334,6 +1422,7 @@ impl App {
             prompt_rx: Some(prompt_rx),
             cancel_rx: Some(cancel_rx),
             new_session_rx: Some(new_session_rx),
+            load_session_rx: Some(load_session_rx),
             drop_session_rx: Some(drop_session_rx),
             restart_rx: Some(restart_rx),
             shell_mgr,
@@ -1357,12 +1446,14 @@ impl App {
                 let (ptx, prx) = mpsc::unbounded_channel();
                 let (_ctx, crx) = mpsc::unbounded_channel();
                 let (_ntx, nrx) = mpsc::unbounded_channel();
+                let (_ltx, lrx) = mpsc::unbounded_channel();
                 let (_dtx, drx) = mpsc::unbounded_channel();
                 let (_rtx, rrx) = mpsc::unbounded_channel();
                 self.prompt_tx = ptx;
                 params.prompt_rx = Some(prx);
                 params.cancel_rx = Some(crx);
                 params.new_session_rx = Some(nrx);
+                params.load_session_rx = Some(lrx);
                 params.drop_session_rx = Some(drx);
                 params.restart_rx = Some(rrx);
             }
@@ -1371,12 +1462,14 @@ impl App {
                 Some(prompt_rx),
                 Some(cancel_rx),
                 Some(new_session_rx),
+                Some(load_session_rx),
                 Some(drop_session_rx),
                 Some(restart_rx),
             ) = (
                 params.prompt_rx.take(),
                 params.cancel_rx.take(),
                 params.new_session_rx.take(),
+                params.load_session_rx.take(),
                 params.drop_session_rx.take(),
                 params.restart_rx.take(),
             ) {
@@ -1397,6 +1490,7 @@ impl App {
                     prompt_rx,
                     cancel_rx,
                     new_session_rx,
+                    load_session_rx,
                     drop_session_rx,
                     restart_rx,
                     shell_mgr,
@@ -1586,6 +1680,123 @@ impl App {
                 kind: DispatchedCommandKind::SplitPaneResume,
                 session_id: None,
                 argv,
+            });
+        }
+    }
+
+    /// Shift+Enter handler for terminal-state rows (Ended/Historical) in
+    /// the session management view. Rather than splitting a normal pane
+    /// (which `dispatch_resume` does for plain Enter), this resumes the
+    /// session **inside the agent pane of a new WT tab** via ACP
+    /// `session/load`.
+    ///
+    /// Flow:
+    ///   1. Short-circuit with a system message in the current view when
+    ///      the connected agent didn't advertise the `loadSession`
+    ///      capability — opening a new tab would just dead-end on a
+    ///      `JSON-RPC method not found` from the agent.
+    ///   2. Optimistically apply `ResumeDispatched` to bump
+    ///      Historical/Ended -> Idle so a rapid second Shift+Enter on the
+    ///      same row no-ops (shared with `dispatch_resume`).
+    ///   3. Emit a `resume_in_new_agent_tab` event to WT carrying the
+    ///      session key + cwd. WT is responsible for:
+    ///        - Creating a new tab (default profile, optionally honoring
+    ///          cwd as the starting directory).
+    ///        - Reconciling the shared agent pane onto the new tab.
+    ///        - Publishing a `load_session` event BACK to WTA with the
+    ///          new tab's StableId + the same session key + cwd.
+    ///   4. The inbound `load_session` event handler in
+    ///      `handle_wt_protocol_event` then forwards a `LoadSessionForTab`
+    ///      request to the ACP client, which calls `conn.load_session`.
+    ///
+    /// Silent no-op for CLIs whose `cli_source` doesn't have a recognized
+    /// id (unknown adapters); the inflight check is best-effort because
+    /// only the agent-side knows whether the session id is recognizable.
+    fn dispatch_resume_in_agent_pane(&mut self, s: &crate::agent_sessions::AgentSession) {
+        tracing::info!(
+            target: "agents_view",
+            key = %s.key,
+            status = ?s.status,
+            cli = ?s.cli_source,
+            supports_load = self.agent_supports_load_session,
+            "dispatch_resume_in_agent_pane: Shift+Enter on row",
+        );
+
+        // Capability gate. ACP's `session/load` is opt-in (initialize
+        // advertises `agentCapabilities.loadSession: bool`). Without it
+        // the agent will reject the call — and we'd burn a new WT tab
+        // to land on an error message. Short-circuit here instead and
+        // keep the session management view focused so the user can
+        // press plain Enter to fall back to the split-pane resume path.
+        if !self.agent_supports_load_session {
+            let agent = if self.agent_name.is_empty() {
+                "the connected agent"
+            } else {
+                self.agent_name.as_str()
+            };
+            let msg = format!(
+                "Cannot resume in agent pane: {} did not advertise the ACP \
+                 `loadSession` capability. Press Enter (without Shift) to \
+                 resume in a new terminal pane instead.",
+                agent
+            );
+            tracing::warn!(
+                target: "agents_view",
+                key = %s.key,
+                agent = %self.agent_name,
+                "dispatch_resume_in_agent_pane: agent does not support loadSession",
+            );
+            let tab = self.current_tab_mut();
+            tab.messages.push(ChatMessage::System(msg));
+            tab.scroll_to_bottom();
+            #[cfg(test)]
+            {
+                self.last_dispatched_command = Some(DispatchedCommand {
+                    kind: DispatchedCommandKind::ResumeInAgentPane,
+                    session_id: Some(s.key.clone()),
+                    argv: vec!["resume_in_new_agent_tab".to_string(), "--unsupported".to_string()],
+                });
+            }
+            return;
+        }
+
+        let key = s.key.clone();
+        let cwd_string = s.cwd.to_string_lossy().to_string();
+
+        // Mirror dispatch_resume's optimistic state flip so a rapid
+        // double press doesn't double-dispatch.
+        self.agent_sessions
+            .apply(crate::agent_sessions::SessionEvent::ResumeDispatched { key: key.clone() });
+
+        let evt = serde_json::json!({
+            "type": "event",
+            "method": "resume_in_new_agent_tab",
+            "params": {
+                "session_id": key,
+                "cwd": cwd_string,
+            }
+        });
+        send_wt_protocol_event(evt.to_string());
+
+        tracing::info!(
+            target: "agents_view",
+            key = %s.key,
+            cwd = %cwd_string,
+            "dispatch_resume_in_agent_pane: resume_in_new_agent_tab event published",
+        );
+
+        #[cfg(test)]
+        {
+            self.last_dispatched_command = Some(DispatchedCommand {
+                kind: DispatchedCommandKind::ResumeInAgentPane,
+                session_id: Some(s.key.clone()),
+                argv: vec![
+                    "resume_in_new_agent_tab".to_string(),
+                    "--session-id".to_string(),
+                    s.key.clone(),
+                    "--cwd".to_string(),
+                    cwd_string,
+                ],
             });
         }
     }
@@ -2280,12 +2491,15 @@ impl App {
             AppEvent::ProgressStatus { .. } => "progress_status",
             AppEvent::AgentConnected { .. } => "agent_connected",
             AppEvent::SessionAttached { .. } => "session_attached",
+            AppEvent::TabError { .. } => "tab_error",
+            AppEvent::TabSystemMessage { .. } => "tab_system_message",
             AppEvent::PromptTemplateLoaded { .. } => "prompt_template_loaded",
             AppEvent::AgentError { .. } => "agent_error",
             AppEvent::AgentBusy { .. } => "agent_busy",
             AppEvent::ExecutionInfo(_) => "execution_info",
             AppEvent::AgentThoughtChunk { .. } => "agent_thought_chunk",
             AppEvent::AgentMessageChunk { .. } => "agent_message_chunk",
+            AppEvent::UserMessageReplayChunk { .. } => "user_message_replay_chunk",
             AppEvent::AgentMessageEnd { .. } => "agent_message_end",
             AppEvent::TimingMetric { .. } => "timing_metric",
             AppEvent::ToolCall { .. } => "tool_call",
@@ -2400,6 +2614,7 @@ impl App {
                 session_id,
                 available_models,
                 current_model_id,
+                load_session_supported,
             } => {
                 self.agent_name = name;
                 self.agent_model = model;
@@ -2407,6 +2622,7 @@ impl App {
                 self.session_id = session_id.clone();
                 self.available_models = available_models.clone();
                 self.current_model_id = current_model_id.clone();
+                self.agent_supports_load_session = load_session_supported;
                 self.state = ConnectionState::Connected;
                 // Show welcome hint on first-ever connect (persisted in state.json)
                 if !welcome_shown_in_state() {
@@ -2433,6 +2649,19 @@ impl App {
                     .insert(session_id.clone(), tab_id.clone());
                 let tab = self.tab_mut(&tab_id);
                 tab.session_id = Some(session_id);
+                // Close the session/load replay window if it was open.
+                // The agent has finished returning the load_session
+                // RPC; any straggling session/update notifications
+                // arriving after this point would have been pushed
+                // already (the spec requires they precede the
+                // PromptResponse-equivalent). Flush any pending
+                // user/agent buffers as a final turn boundary.
+                if tab.loading_session {
+                    tab.flush_load_replay_pending();
+                    tab.loading_session = false;
+                    tab.agent_streaming = false;
+                    tab.scroll_to_bottom();
+                }
                 // Per-session model lists could differ — surface the new
                 // tab's models when the agent_status event publishes for
                 // this session in the future. For now we keep
@@ -2445,6 +2674,29 @@ impl App {
                     self.current_model_id = current_model_id;
                 }
                 self.publish_agent_status();
+            }
+            AppEvent::TabError { tab_id, message } => {
+                // Scoped error for a specific tab. Bypasses the global
+                // auth-fallback / ConnectionState::Failed flip in
+                // AgentError because the error is local to one tab's
+                // session-load attempt, not the whole connection.
+                let tab = self.tab_mut(&tab_id);
+                tab.prompt_in_flight = false;
+                tab.agent_streaming = false;
+                tab.loading_session = false;
+                tab.progress_status = None;
+                tab.pending_thought_response.clear();
+                tab.pending_agent_response.clear();
+                tab.pending_user_replay.clear();
+                tab.timing_note = None;
+                tab.pending_completed_turn = None;
+                tab.messages.push(ChatMessage::Error(message));
+                tab.scroll_to_bottom();
+            }
+            AppEvent::TabSystemMessage { tab_id, message } => {
+                let tab = self.tab_mut(&tab_id);
+                tab.messages.push(ChatMessage::System(message));
+                tab.scroll_to_bottom();
             }
             AppEvent::PromptTemplateLoaded { name } => {
                 self.prompt_name = Some(name);
@@ -2527,22 +2779,66 @@ impl App {
                 self.current_tab_mut().scroll_to_bottom();
             }
             AppEvent::AgentThoughtChunk { session_id, text } => {
-                // Late chunk after cancel / completion is dropped by
-                // `turn_observe_chunk` (state isn't Submitted/Streaming).
-                self.turn_observe_chunk(&session_id, ChunkKind::Thought, &text);
+                let tab = self.session_tab_mut(&session_id);
+                // If the user cancelled this prompt (or it already
+                // completed) we drop the late chunk rather than re-arming
+                // the spinner. During session/load replay
+                // (`loading_session`) we accept chunks regardless.
+                if !tab.prompt_in_flight && !tab.loading_session {
+                    return;
+                }
+                if tab.progress_status.is_none() {
+                    tab.progress_status = Some("Thinking...".to_string());
+                }
+                append_thought_preview(&mut tab.pending_thought_response, &text);
             }
             AppEvent::AgentMessageChunk { session_id, text } => {
+                let tab = self.session_tab_mut(&session_id);
+                if !tab.prompt_in_flight && !tab.loading_session {
+                    return;
+                }
+                // Turn boundary detection during replay: an agent
+                // message chunk after a buffered user_message_chunk
+                // means the previous user turn is complete — flush it
+                // as a ChatMessage::User so the chat stays in turn
+                // order.
+                if tab.loading_session && !tab.pending_user_replay.is_empty() {
+                    let text = std::mem::take(&mut tab.pending_user_replay);
+                    tab.messages.push(ChatMessage::User(text));
+                }
+                tab.agent_streaming = true;
+                tab.progress_status = None;
+                tab.pending_thought_response.clear();
+                tab.pending_agent_response.push_str(&text);
+
                 // Append to the streaming buffer. The state machine drops
                 // late chunks and handles the stale-autofix generation check
                 // before returning whether the buffer actually grew.
                 let advanced =
                     self.turn_observe_chunk(&session_id, ChunkKind::Message, &text);
+
                 // Surface the card the moment the streamed JSON parses,
                 // instead of waiting for AgentMessageEnd (gated behind
                 // Copilot's Stop/SessionEnd hooks, ~8s on Windows).
                 if advanced {
                     self.turn_try_eager_surface(&session_id);
                 }
+            }
+            AppEvent::UserMessageReplayChunk { session_id, text } => {
+                // Replayed historical user prompt from a `session/load`
+                // SessionUpdate. Only meaningful during the load window;
+                // dropped otherwise. A new user_message_chunk after a
+                // buffered agent response marks the turn boundary —
+                // flush the previous agent message first.
+                let tab = self.session_tab_mut(&session_id);
+                if !tab.loading_session {
+                    return;
+                }
+                if !tab.pending_agent_response.is_empty() {
+                    let prev = std::mem::take(&mut tab.pending_agent_response);
+                    tab.messages.push(ChatMessage::Agent(prev));
+                }
+                tab.pending_user_replay.push_str(&text);
             }
             AppEvent::AgentMessageEnd { session_id } => {
                 if let Some(summary) = self.session_completion_latency_summary(&session_id) {
@@ -2556,8 +2852,22 @@ impl App {
             }
             AppEvent::ToolCall { session_id, id, title, status } => {
                 let tab = self.session_tab_mut(&session_id);
+                if !tab.prompt_in_flight && !tab.loading_session {
+                    return;
+                }
                 if !tab.turn.is_in_flight() {
                     return;
+                }
+                // Turn boundary during replay (see AgentMessageChunk).
+                if tab.loading_session {
+                    if !tab.pending_user_replay.is_empty() {
+                        let text = std::mem::take(&mut tab.pending_user_replay);
+                        tab.messages.push(ChatMessage::User(text));
+                    }
+                    if !tab.pending_agent_response.is_empty() {
+                        let text = std::mem::take(&mut tab.pending_agent_response);
+                        tab.messages.push(ChatMessage::Agent(text));
+                    }
                 }
                 tab.tool_calls
                     .insert(id.clone(), (title.clone(), status.clone()));
@@ -2567,7 +2877,11 @@ impl App {
             }
             AppEvent::ToolCallUpdate { session_id, id, status } => {
                 let tab = self.session_tab_mut(&session_id);
+                if !tab.prompt_in_flight && !tab.loading_session {
+                    return;
+                }
                 if !tab.turn.is_in_flight() {
+
                     return;
                 }
                 if let Some(entry) = tab.tool_calls.get_mut(&id) {
@@ -2589,8 +2903,21 @@ impl App {
             }
             AppEvent::Plan { session_id, entries } => {
                 let tab = self.session_tab_mut(&session_id);
+                if !tab.prompt_in_flight && !tab.loading_session {
+                    return;
+                }
                 if !tab.turn.is_in_flight() {
                     return;
+                }
+                if tab.loading_session {
+                    if !tab.pending_user_replay.is_empty() {
+                        let text = std::mem::take(&mut tab.pending_user_replay);
+                        tab.messages.push(ChatMessage::User(text));
+                    }
+                    if !tab.pending_agent_response.is_empty() {
+                        let text = std::mem::take(&mut tab.pending_agent_response);
+                        tab.messages.push(ChatMessage::Agent(text));
+                    }
                 }
                 tab.messages.push(ChatMessage::Plan(entries));
                 tab.scroll_to_bottom();
@@ -2602,6 +2929,9 @@ impl App {
                 responder,
             } => {
                 let tab = self.session_tab_mut(&session_id);
+                if !tab.prompt_in_flight && !tab.loading_session {
+                    return;
+                }
                 if !tab.turn.is_in_flight() {
                     // Auto-deny if the user cancelled before the agent
                     // got around to asking. Dropping the responder yields
@@ -2760,6 +3090,75 @@ impl App {
                     } else {
                         tracing::warn!(target: "tab_session", "reset_tab_session: missing tab_id in params");
                     }
+                    return;
+                }
+
+                // load_session: WT-side replay of WTA's
+                // `resume_in_new_agent_tab` request. After WT creates a
+                // new tab and reconciles the shared agent pane onto it,
+                // it publishes this event with the new tab's StableId,
+                // the historical session id, and the cwd. We forward to
+                // the ACP client which calls `conn.load_session` and
+                // binds the loaded session to the tab via
+                // `SessionAttached`. Best-effort: if the agent doesn't
+                // recognize the session id (e.g. CLI mismatch), the
+                // client emits a `TabError` scoped to this tab. We also
+                // pre-switch the target tab back to the Chat view, clear
+                // its local chat, and post a "Resuming..." system note
+                // so the user sees something even if the agent's
+                // session/update replay is delayed or absent.
+                if method == "load_session" {
+                    let tab_id = params
+                        .get("tab_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let session_id = params
+                        .get("session_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let cwd = params
+                        .get("cwd")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.is_empty());
+                    tracing::info!(
+                        target: "acp_load_session",
+                        tab_id,
+                        session_id,
+                        cwd = ?cwd,
+                        "inbound load_session event from WT"
+                    );
+                    if tab_id.is_empty() || session_id.is_empty() {
+                        tracing::warn!(
+                            target: "acp_load_session",
+                            "load_session: missing tab_id or session_id in params"
+                        );
+                        return;
+                    }
+                    {
+                        let tab = self.tab_mut(tab_id);
+                        tab.current_view = View::Chat;
+                        tab.clear_chat_history();
+                        tab.completed_turns.clear();
+                        tab.selected_completed_turn_idx = None;
+                        tab.session_id = None;
+                        // Open the replay window: chunk handlers will
+                        // now accept session/update events for this
+                        // tab even though `prompt_in_flight` is false.
+                        // Closed by the SessionAttached handler when
+                        // `conn.load_session` returns.
+                        tab.loading_session = true;
+                        tab.messages.push(ChatMessage::System(format!(
+                            "Resuming session {}...",
+                            session_id
+                        )));
+                        tab.scroll_to_bottom();
+                    }
+                    let _ = self.load_session_tx.send(LoadSessionForTab {
+                        tab_id: tab_id.to_string(),
+                        session_id: session_id.to_string(),
+                        cwd,
+                    });
                     return;
                 }
 
@@ -3300,7 +3699,21 @@ impl App {
                             .get(idx)
                             .map(|s| (*s).clone());
                         if let Some(s) = selected {
-                            self.activate_agent_session(&s);
+                            use crate::agent_sessions::AgentStatus::*;
+                            // Shift+Enter on a terminal-state row resumes
+                            // the session in the agent pane of a new WT
+                            // tab via ACP session/load. Plain Enter keeps
+                            // the legacy behaviour (split a normal pane
+                            // running `<cli> --resume <key>` for terminal
+                            // rows, or focus the existing pane for live
+                            // rows).
+                            if key.modifiers.contains(KeyModifiers::SHIFT)
+                                && matches!(s.status, Ended | Historical)
+                            {
+                                self.dispatch_resume_in_agent_pane(&s);
+                            } else {
+                                self.activate_agent_session(&s);
+                            }
                         }
                     }
                 }
@@ -5567,10 +5980,11 @@ mod tests {
         let (permission_tx, _permission_rx) = tokio::sync::mpsc::unbounded_channel();
         let (cancel_tx, _cancel_rx) = tokio::sync::mpsc::unbounded_channel();
         let (new_session_tx, _new_session_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (load_session_tx, _load_session_rx) = tokio::sync::mpsc::unbounded_channel();
         let (drop_session_tx, _drop_session_rx) = tokio::sync::mpsc::unbounded_channel();
         let (restart_tx, _restart_rx) = tokio::sync::mpsc::unbounded_channel();
         let debug_capture = Arc::new(AtomicBool::new(false));
-        App::new(prompt_tx, recommendation_tx, permission_tx, cancel_tx, new_session_tx, drop_session_tx, restart_tx, debug_capture, true, false)
+        App::new(prompt_tx, recommendation_tx, permission_tx, cancel_tx, new_session_tx, load_session_tx, drop_session_tx, restart_tx, debug_capture, true, false)
     }
 
     // ─── word boundary helpers ──────────────────────────────────────────────
@@ -6035,6 +6449,121 @@ mod tests {
             "expected cd /d prefix to original session cwd; argv: {}",
             argv
         );
+    }
+
+    #[test]
+    fn shift_enter_on_history_row_dispatches_resume_in_agent_pane() {
+        // Shift+Enter on a terminal-state row should route to the
+        // ResumeInAgentPane path, NOT the legacy SplitPaneResume — it
+        // emits `resume_in_new_agent_tab` to WT instead of splitting a
+        // normal pane locally. The dispatched-command tape captures the
+        // shape so downstream wiring can be regression-checked.
+        use crate::agent_sessions::{CliSource, SessionEvent};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use std::path::PathBuf;
+        let mut app = test_app();
+        // Capability gate: dispatch is only attempted when the agent
+        // advertised loadSession. Without this, the handler
+        // short-circuits with a system message instead.
+        app.agent_supports_load_session = true;
+        app.agent_sessions.apply(SessionEvent::SessionStarted {
+            key: "abc-123".into(),
+            cli_source: CliSource::Claude,
+            pane_session_id: "p".into(),
+            cwd: PathBuf::from("/work/proj"),
+            title: "t".into(),
+        });
+        app.agent_sessions.apply(SessionEvent::SessionStopped {
+            key: "abc-123".into(),
+            reason: "user_exit".into(),
+        });
+
+        app.current_tab_mut().current_view = View::Agents;
+        app.current_tab_mut().agents_list_state.select(Some(0));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+
+        let cmd = app
+            .last_dispatched_command_for_test()
+            .expect("a command was dispatched");
+        assert_eq!(cmd.kind, DispatchedCommandKind::ResumeInAgentPane);
+        assert_eq!(cmd.session_id.as_deref(), Some("abc-123"));
+        let argv = cmd.argv.join(" ");
+        assert!(
+            argv.contains("resume_in_new_agent_tab"),
+            "argv: {}",
+            argv
+        );
+        assert!(argv.contains("--session-id abc-123"), "argv: {}", argv);
+        assert!(argv.contains("--cwd /work/proj"), "argv: {}", argv);
+    }
+
+    #[test]
+    fn shift_enter_history_row_without_load_session_capability_shows_hint() {
+        // Capability gate: when the agent doesn't advertise loadSession,
+        // Shift+Enter must not open a new tab. Instead it pushes a
+        // system message in the session management view explaining the
+        // fallback (plain Enter). The dispatched-command tape captures
+        // the gated path so the regression is observable.
+        use crate::agent_sessions::{CliSource, SessionEvent};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use std::path::PathBuf;
+        let mut app = test_app();
+        // No `agent_supports_load_session = true` — default is false.
+        app.agent_sessions.apply(SessionEvent::SessionStarted {
+            key: "abc-123".into(),
+            cli_source: CliSource::Claude,
+            pane_session_id: "p".into(),
+            cwd: PathBuf::from("/work/proj"),
+            title: "t".into(),
+        });
+        app.agent_sessions.apply(SessionEvent::SessionStopped {
+            key: "abc-123".into(),
+            reason: "user_exit".into(),
+        });
+
+        app.current_tab_mut().current_view = View::Agents;
+        app.current_tab_mut().agents_list_state.select(Some(0));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+
+        let cmd = app
+            .last_dispatched_command_for_test()
+            .expect("a command was dispatched");
+        assert_eq!(cmd.kind, DispatchedCommandKind::ResumeInAgentPane);
+        let argv = cmd.argv.join(" ");
+        assert!(argv.contains("--unsupported"), "argv: {}", argv);
+        // The current tab gets a System hint message.
+        let has_hint = app.current_tab().messages.iter().any(|m| {
+            matches!(m, ChatMessage::System(text)
+                if text.contains("loadSession")
+                    && text.contains("Press Enter"))
+        });
+        assert!(has_hint, "expected system hint message in the current tab");
+    }
+
+    #[test]
+    fn shift_enter_on_live_row_falls_back_to_focus() {
+        // Live rows have no historical state to "load" — Shift+Enter on
+        // them must NOT trigger the resume-in-agent-pane flow. It falls
+        // through to the same FocusPane dispatch as plain Enter.
+        use crate::agent_sessions::{CliSource, SessionEvent};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use std::path::PathBuf;
+        let mut app = test_app();
+        app.agent_sessions.apply(SessionEvent::SessionStarted {
+            key: "a".into(),
+            cli_source: CliSource::Claude,
+            pane_session_id: "00000000-0000-0000-0000-0000000000aa".into(),
+            cwd: PathBuf::from("/x"),
+            title: "t".into(),
+        });
+        app.current_tab_mut().current_view = View::Agents;
+        app.current_tab_mut().agents_list_state.select(Some(0));
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+        let cmd = app
+            .last_dispatched_command_for_test()
+            .expect("a command was dispatched");
+        assert_eq!(cmd.kind, DispatchedCommandKind::FocusPane);
     }
 
     #[test]
