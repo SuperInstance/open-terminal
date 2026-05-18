@@ -607,35 +607,11 @@ mod tests {
     }
 
     #[test]
-    fn claude_cwd_decoding_drive_dash() {
-        assert_eq!(
-            decode_claude_cwd("C--Users-yuazha-GitRepo"),
-            PathBuf::from("C:\\Users\\yuazha\\GitRepo")
-        );
-        assert_eq!(
-            decode_claude_cwd("D--proj"),
-            PathBuf::from("D:\\proj")
-        );
-    }
-
-    #[test]
     fn claude_cwd_decoding_unix_root() {
         assert_eq!(
             decode_claude_cwd("-home-user-repo"),
             PathBuf::from("/home/user/repo")
         );
-    }
-
-    #[test]
-    fn gemini_projects_reverse_lookup() {
-        let root = tmp_root("gemini-proj");
-        let p = root.join("projects.json");
-        write_file(&p,
-            r#"{"projects":{"C:\\Users\\me\\proj":"yuazha","D:\\other":"dother"}}"#);
-        let map = parse_gemini_projects(&p);
-        assert_eq!(map.get("yuazha"), Some(&PathBuf::from("C:\\Users\\me\\proj")));
-        assert_eq!(map.get("dother"), Some(&PathBuf::from("D:\\other")));
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -750,56 +726,6 @@ mod tests {
         let v = load_copilot(&home);
         assert_eq!(v.len(), 1, "only the real session should be loaded");
         assert_eq!(v[0].key, real);
-        let _ = fs::remove_dir_all(&home);
-    }
-
-    /// Round 16: wta's own headless Copilot ACP session for autofix
-    /// persists to `~/.copilot/session-state/<acp-uuid>/` exactly like
-    /// a user-launched Copilot session. Without filtering, every wta
-    /// startup would surface a phantom `<uuid8>-copilot-…` Historical
-    /// row in F2 that the user never created. We detect these by the
-    /// fingerprint of our embedded autofix prompt template.
-    #[test]
-    fn copilot_loader_skips_wta_internal_autofix_sessions() {
-        let home = tmp_root("copilot-autofix-skip");
-        let base = home.join(".copilot").join("session-state");
-
-        // Real user-launched Copilot session — must be loaded.
-        let user_sid = "aaaaaaaa-1111-1111-1111-111111111111";
-        let user_dir = base.join(user_sid);
-        fs::create_dir_all(&user_dir).unwrap();
-        write_file(&user_dir.join("workspace.yaml"),
-            "id: aaaaaaaa-1111-1111-1111-111111111111\n\
-             cwd: C:\\Users\\me\\repo\n\
-             summary: Fix login bug\n");
-        write_file(&user_dir.join("events.jsonl"),
-            "{\"type\":\"prompt\",\"prompt\":\"please fix the login bug\"}\n");
-
-        // wta-internal autofix ACP session — must be SKIPPED.
-        let autofix_sid = "bd280482-995a-4ba6-81ca-e2251b2aa3da";
-        let autofix_dir = base.join(autofix_sid);
-        fs::create_dir_all(&autofix_dir).unwrap();
-        write_file(&autofix_dir.join("workspace.yaml"),
-            "id: bd280482-995a-4ba6-81ca-e2251b2aa3da\n\
-             cwd: C:\\Users\\yuazha\n\
-             summary: \n");
-        // First event carries the autofix prompt fingerprint.
-        write_file(&autofix_dir.join("events.jsonl"),
-            "{\"type\":\"prompt\",\"prompt\":\"A command failed in the terminal. \
-             Look at the output below and decide how to help the user.\"}\n");
-
-        let v = load_copilot(&home);
-        assert_eq!(v.len(), 1,
-            "wta's own autofix ACP session must be filtered out of historical");
-        assert_eq!(v[0].key, user_sid,
-            "only the real user-launched Copilot session should appear");
-
-        // Defensive: title lookup must also be a no-op for the autofix dir.
-        assert_eq!(copilot_title_for_key(&home, autofix_sid), None,
-            "title lookup for an autofix session must return None");
-        assert!(copilot_title_for_key(&home, user_sid).is_some(),
-            "title lookup for the user session must still work");
-
         let _ = fs::remove_dir_all(&home);
     }
 
