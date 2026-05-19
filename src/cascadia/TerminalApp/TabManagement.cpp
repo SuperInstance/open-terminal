@@ -232,7 +232,8 @@ namespace winrt::TerminalApp::implementation
         // and _AutoCreateHiddenAgentPane only does local work (filesystem
         // path detection + creating + hiding a child pane), so it is safe
         // to call synchronously here.
-        if (!_agentPane.lock())
+        // Skip agent pane creation during FRE — _OnFreCompleted handles it.
+        if (!_agentPane.lock() && !_IsFreRequired())
         {
             _AutoCreateHiddenAgentPane(newTabImpl);
         }
@@ -549,9 +550,20 @@ namespace winrt::TerminalApp::implementation
 
         const auto focusedTabIndex{ _GetFocusedTabIndex() };
 
+        // Capture the stable id before Shutdown clears state, then tell wta
+        // to drop the matching TabSession so a future tab that reuses any
+        // index slot starts with a clean conversation.
+        winrt::hstring closedTabStableId{};
+        if (const auto tabImpl = _GetTabImpl(tab))
+        {
+            closedTabStableId = tabImpl->StableId();
+        }
+
         // Removing the tab from the collection should destroy its control and disconnect its connection,
         // but it doesn't always do so. The UI tree may still be holding the control and preventing its destruction.
         tab.Shutdown();
+
+        _NotifyAgentTabClosed(closedTabStableId);
 
         uint32_t mruIndex{};
         if (_mruTabs.IndexOf(tab, mruIndex))
@@ -1224,9 +1236,9 @@ namespace winrt::TerminalApp::implementation
                 const auto tab{ _tabs.GetAt(selectedIndex) };
                 _UpdatedSelectedTab(tab);
             }
-            // Reconcile the shared agent pane against the newly active tab's
-            // AgentPaneOpen() flag — makes per-tab open/closed state independent.
-            // Also refreshes the bottom bar internally.
+            // Flush any deferred agent-stack rebuild before reconciling
+            // so the freshly-created pane participates in the reconcile.
+            _FlushPendingAgentRebuild();
             _ReconcileAgentPaneForActiveTab();
         }
     }

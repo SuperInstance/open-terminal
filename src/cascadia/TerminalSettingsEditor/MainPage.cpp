@@ -177,7 +177,10 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
                 continue;
             }
 
-            navItem.Icon(_fontIconForNavTag(*stringTag));
+            if (!navItem.Icon())
+            {
+                navItem.Icon(_fontIconForNavTag(*stringTag));
+            }
             if (const auto navItemContentString = navItem.Content().try_as<hstring>())
             {
                 WUX::Controls::ToolTipService::SetToolTip(navItem, box_value(*navItemContentString));

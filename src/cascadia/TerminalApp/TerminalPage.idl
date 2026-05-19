@@ -131,5 +131,24 @@ namespace TerminalApp
         // Called by the COM server on the UI thread; the page forwards the values
         // to the AgentPaneContent so the XAML agent bar can refresh.
         void OnAgentStatusChanged(String eventJson);
+
+        // Inbound event from WTA carrying {method:"close_agent_pane",params:{...}}.
+        // Emitted when the user presses Ctrl+C twice in the agent pane TUI.
+        // The page tears down the shared agent pane; wta dies with its ConPty.
+        void OnCloseAgentPaneRequested(String eventJson);
+
+        // Inbound event from WTA carrying {method:"view_changed",params:{view}}.
+        // Emitted when the wta TUI flips its internal view (Esc out of Agents,
+        // `/sessions` slash command). Mirrors the new view onto C++ state so
+        // the agent bar title + bottom bar highlight stay in sync.
+        void OnAgentViewChanged(String eventJson);
+
+        // Inbound event from WTA carrying
+        // {method:"resume_in_new_agent_tab",params:{session_id,cwd}}.
+        // Emitted by the session view's Shift+Enter handler. The page
+        // creates a new tab, reconciles the shared agent pane onto it, then
+        // publishes a `load_session` event back to wta carrying the new
+        // tab's StableId so wta calls ACP `session/load` for that tab.
+        void OnResumeInNewAgentTabRequested(String eventJson);
     }
 }
