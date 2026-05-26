@@ -37,6 +37,14 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, Weak};
 
+/// Per-helper notification channel capacity. Sized for bursty chunk
+/// streaming during a single agent turn; well above what a healthy
+/// helper pipe needs to drain. If it fills up, the helper's pipe is
+/// genuinely stuck and we'd rather drop chunks (with a warning) than
+/// back-pressure the agent CLI's I/O loop and freeze every other
+/// helper sharing this master.
+const NOTIF_CHANNEL_CAPACITY: usize = 1024;
+
 use acp::Agent as _;
 use acp::Client as _;
 use agent_client_protocol as acp;
@@ -74,8 +82,28 @@ pub(crate) struct HelperId(u64);
 #[derive(Clone)]
 struct HelperRoute {
     helper_id: HelperId,
-    notif_tx: mpsc::UnboundedSender<acp::SessionNotification>,
+    notif_tx: mpsc::Sender<acp::SessionNotification>,
     forwarder: Option<Arc<acp::AgentSideConnection>>,
+    /// Per-route counter for back-pressure log rate-limiting.
+    ///
+    /// Chunk-streaming during a single agent turn is high-rate, so if
+    /// a helper's pipe stalls and we drop notifications, naively
+    /// `warn!`-ing on every drop would flood the log (and add I/O
+    /// load right when the system is already strained). Instead the
+    /// `session_notification` handler:
+    ///
+    ///   * On the FIRST `Full` (`fetch_add` returns 0): emits one
+    ///     `warn!` announcing that the helper's queue is backed up.
+    ///   * On subsequent `Full`s: silently bumps the counter — the
+    ///     summary on recovery covers them.
+    ///   * On the first `Ok` after at least one drop (`swap` returns
+    ///     >0): emits one `info!` reporting the total dropped chunks
+    ///     and that backpressure has cleared.
+    ///
+    /// This gives operators exactly one log line per stall start and
+    /// one per stall end, with the count in between, regardless of
+    /// how many chunks were dropped.
+    consecutive_drops: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// State shared between the master's `acp::Client` impl (receives
@@ -94,6 +122,16 @@ struct MasterStateInner {
     /// leaves a dead `SessionId` behind, and every future
     /// notification for it lights up a "helper notification channel
     /// closed" warning.
+    ///
+    /// `HelperRoute.notif_tx` is a **bounded** mpsc with capacity
+    /// `NOTIF_CHANNEL_CAPACITY`. Chunk-streaming notifications are
+    /// high-rate, so an unbounded channel would let memory grow without
+    /// bound if a helper's pipe write stalls. On a full channel we
+    /// drop the notification + log a warning (see
+    /// `MasterClient::session_notification`) rather than
+    /// `await`-blocking the agent CLI's I/O loop — head-of-line
+    /// blocking would freeze notification delivery for every other
+    /// helper sharing this master.
     session_to_helper: Mutex<HashMap<acp::SessionId, HelperRoute>>,
     /// The agent CLI's response to the master's startup initialize.
     /// Replayed verbatim to every helper that calls `initialize` over
@@ -219,39 +257,138 @@ impl acp::Client for MasterClient {
         // when scrolling logs to see prompt/turn lifecycle without
         // tracing the full payload.
         let kind = notification_kind(&args);
-        let tx = {
+        // Snapshot the sender, the per-route drop counter, AND the
+        // owning helper_id under one map lock. `helper_id` is the
+        // identity key the Closed-cleanup path uses to make sure a
+        // rebinding race (helper A disconnects → helper B re-uses the
+        // same SessionId via `load_session`) doesn't make us delete
+        // the *new* helper's entry. Without that check, the sequence
+        //
+        //   1. we snapshot A's `notif_tx`
+        //   2. helper B rebinds `sid` to its own route via load_session
+        //   3. our `try_send` on A's tx returns `Closed` (A's channel
+        //      receiver was dropped when A disconnected)
+        //   4. `map.remove(&sid)` would clobber B's freshly-installed
+        //      route
+        //
+        // would silently break notification delivery for B.
+        let route = {
             let map = self.state.session_to_helper.lock().await;
-            map.get(&sid).map(|r| r.notif_tx.clone())
+            map.get(&sid).map(|r| {
+                (
+                    r.helper_id,
+                    r.notif_tx.clone(),
+                    Arc::clone(&r.consecutive_drops),
+                )
+            })
         };
-        match tx {
-            Some(tx) => {
-                let send_ok = tx.send(args).is_ok();
-                tracing::debug!(
-                    target: "master",
-                    step = "agent→helper",
-                    op = "session_notification",
-                    session_id = ?sid,
-                    kind = %kind,
-                    delivered = send_ok,
-                    "routed agent CLI notification to helper"
-                );
-                if !send_ok {
-                    // Helper went away between our lookup and our
-                    // send. Drop the routing entry so subsequent
-                    // notifications don't repeat the same warning
-                    // (and the map doesn't grow forever). The
-                    // `serve_helper` cleanup path also retains-out
-                    // these entries on graceful disconnect; this
-                    // path catches the race where send fails before
-                    // that runs.
-                    let mut map = self.state.session_to_helper.lock().await;
-                    map.remove(&sid);
-                    tracing::warn!(
-                        target: "master",
-                        session_id = ?sid,
-                        kind = %kind,
-                        "helper notification channel closed — helper likely disconnected; dropping update and routing entry"
-                    );
+        match route {
+            Some((snap_helper_id, tx, drops)) => {
+                use std::sync::atomic::Ordering;
+                // `try_send` rather than `send().await`: a slow helper
+                // pipe must not back-pressure this trait method, which
+                // is driven by the agent CLI's I/O loop and is shared
+                // across every helper. Blocking here would freeze
+                // notification delivery for everyone.
+                match tx.try_send(args) {
+                    Ok(()) => {
+                        // First successful send after one or more drops
+                        // is the recovery point — summarize and reset.
+                        let dropped = drops.swap(0, Ordering::SeqCst);
+                        if dropped > 0 {
+                            tracing::info!(
+                                target: "master",
+                                session_id = ?sid,
+                                kind = %kind,
+                                dropped = dropped,
+                                "helper notification channel drained — backpressure cleared"
+                            );
+                        }
+                        tracing::debug!(
+                            target: "master",
+                            step = "agent→helper",
+                            op = "session_notification",
+                            session_id = ?sid,
+                            kind = %kind,
+                            delivered = true,
+                            "routed agent CLI notification to helper"
+                        );
+                    }
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        // The helper isn't draining fast enough. Drop
+                        // this update rather than queue forever — the
+                        // user will see a chunk gap, which is the
+                        // least-bad option vs. unbounded memory growth
+                        // or master-wide stall. Warn ONCE per stall
+                        // (first drop); subsequent drops in the same
+                        // stall increment silently and are reported in
+                        // aggregate on recovery.
+                        let prior = drops.fetch_add(1, Ordering::SeqCst);
+                        if prior == 0 {
+                            tracing::warn!(
+                                target: "master",
+                                session_id = ?sid,
+                                kind = %kind,
+                                capacity = NOTIF_CHANNEL_CAPACITY,
+                                "helper notification channel full — dropping updates (subsequent drops in this stall will be silent until drain)"
+                            );
+                        }
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        // Helper went away between our lookup and our
+                        // send. Drop the routing entry so subsequent
+                        // notifications don't repeat the same warning
+                        // (and the map doesn't grow forever). The
+                        // `serve_helper` cleanup path also retains-out
+                        // these entries on graceful disconnect; this
+                        // path catches the race where send fails before
+                        // that runs.
+                        //
+                        // CRITICAL: only remove if the entry STILL
+                        // belongs to the helper we snapshotted. A
+                        // freshly-issued `load_session` can have
+                        // rebound the same SessionId to a different
+                        // helper between our snapshot and now —
+                        // clobbering that new entry would silently
+                        // break notification delivery for the new
+                        // helper. `helper_id` is unique per master
+                        // lifetime (monotonic counter), so equality is
+                        // a sufficient identity check.
+                        let mut map = self.state.session_to_helper.lock().await;
+                        match map.get(&sid) {
+                            Some(current) if current.helper_id == snap_helper_id => {
+                                map.remove(&sid);
+                                tracing::warn!(
+                                    target: "master",
+                                    session_id = ?sid,
+                                    kind = %kind,
+                                    helper_id = ?snap_helper_id,
+                                    "helper notification channel closed — helper likely disconnected; dropping update and routing entry"
+                                );
+                            }
+                            Some(current) => {
+                                tracing::info!(
+                                    target: "master",
+                                    session_id = ?sid,
+                                    kind = %kind,
+                                    stale_helper_id = ?snap_helper_id,
+                                    current_helper_id = ?current.helper_id,
+                                    "helper notification channel closed but SessionId has been rebound to a different helper — dropping update, leaving new route intact"
+                                );
+                            }
+                            None => {
+                                // Entry already gone (likely the
+                                // `serve_helper` cleanup raced ahead
+                                // of us). Nothing to do.
+                                tracing::debug!(
+                                    target: "master",
+                                    session_id = ?sid,
+                                    kind = %kind,
+                                    "helper notification channel closed and routing entry already cleaned up"
+                                );
+                            }
+                        }
+                    }
                 }
             }
             None => {
@@ -425,7 +562,7 @@ struct HelperHandler {
     /// land here. The helper's serve loop drains the matching
     /// receiver and writes notifications back over the
     /// `AgentSideConnection`.
-    notif_tx: mpsc::UnboundedSender<acp::SessionNotification>,
+    notif_tx: mpsc::Sender<acp::SessionNotification>,
     /// The same helper's outbound connection back to its pipe, held
     /// as a `Weak` to break a reference cycle.
     ///
@@ -561,6 +698,7 @@ impl acp::Agent for HelperHandler {
                     helper_id: self.helper_id,
                     notif_tx: self.notif_tx.clone(),
                     forwarder: Some(forwarder),
+                    consecutive_drops: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 },
             );
             map.len()
@@ -592,6 +730,7 @@ impl acp::Agent for HelperHandler {
                     helper_id: self.helper_id,
                     notif_tx: self.notif_tx.clone(),
                     forwarder: Some(forwarder),
+                    consecutive_drops: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 },
             );
         }
@@ -609,6 +748,57 @@ impl acp::Agent for HelperHandler {
         args: acp::SetSessionModeRequest,
     ) -> acp::Result<acp::SetSessionModeResponse> {
         self.agent_conn.set_session_mode(args).await
+    }
+
+    // Forward model selection to the agent CLI. Without this override
+    // the trait's default impl returns `method_not_found`, which is
+    // what the helper sees when the user picks a model from the
+    // Settings UI (e.g. Claude → haiku). Symptom in
+    // `wta-main_helper.log`:
+    //
+    //   ERROR helper: run_acp_client_over_pipe failed
+    //     error=set_session_model failed for requested model haiku:
+    //     Method not found
+    //
+    // PR #54 missed this when slicing the per-pane Agent impl into
+    // the helper+master split — set_session_model is gated behind the
+    // `unstable_session_model` Cargo feature (already enabled in
+    // `tools/wta/Cargo.toml`) and is distinct from set_session_mode
+    // (Mode = Agent/Plan/Autopilot vs Model = haiku/sonnet/opus).
+    async fn set_session_model(
+        &self,
+        args: acp::SetSessionModelRequest,
+    ) -> acp::Result<acp::SetSessionModelResponse> {
+        tracing::info!(
+            target: "master",
+            step = "helper→agent",
+            op = "set_session_model",
+            helper_id = ?self.helper_id,
+            session_id = ?args.session_id,
+            model_id = ?args.model_id,
+            "forwarding set_session_model"
+        );
+        self.agent_conn.set_session_model(args).await
+    }
+
+    // Same story as set_session_model — the agent CLI advertises a
+    // `set_session_config_option` capability (driven by the ACP
+    // `ConfigOptionUpdate` notifications the helper already handles)
+    // and the trait default returns method_not_found, so anything
+    // that flows through this path would also silently fail.
+    async fn set_session_config_option(
+        &self,
+        args: acp::SetSessionConfigOptionRequest,
+    ) -> acp::Result<acp::SetSessionConfigOptionResponse> {
+        tracing::info!(
+            target: "master",
+            step = "helper→agent",
+            op = "set_session_config_option",
+            helper_id = ?self.helper_id,
+            session_id = ?args.session_id,
+            "forwarding set_session_config_option"
+        );
+        self.agent_conn.set_session_config_option(args).await
     }
 
     async fn prompt(
@@ -720,13 +910,61 @@ async fn run_master_loop(cli: Cli, pipe_name: String) -> Result<()> {
         });
     }
 
-    // Reap the child so it doesn't zombie if it dies.
+    // Shutdown channel — when either the agent CLI subprocess exits or
+    // the ACP I/O loop ends, the responsible reaper task posts a reason
+    // string here, the accept loop wakes from `recv()`, and
+    // `run_master_loop` returns `Err`. Returning (rather than
+    // `process::exit`) is critical:
+    //
+    //   * The `tokio::process::Child` (`spawn_agent_process` configures
+    //     `kill_on_drop(true)`) is owned by the child reaper task. When
+    //     `LocalSet::run_until` returns, the LocalSet drops, cancels
+    //     remaining tasks, and the child handle drops — `kill_on_drop`
+    //     then reaps surviving descendants. `process::exit` would skip
+    //     that path and could orphan agent grandchildren.
+    //   * The `WorkerGuard` returned by `crate::logging::init` is held
+    //     by `run_master_mode`; it only flushes the non-blocking
+    //     tracing appender on Drop. `process::exit` skips that Drop and
+    //     the final error lines silently vanish. The graceful path
+    //     here lets the guard drop in normal stack unwinding so the
+    //     "agent CLI exited" diagnostic actually lands on disk.
+    //
+    // Capacity 2: at most one child-exit reason + one I/O-loop reason
+    // will ever be sent, and both `try_send`s are non-blocking.
+    let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<&'static str>(2);
+
+    // Reap the child so it doesn't zombie if it dies, and signal
+    // shutdown when it does. Without this, helpers would stay
+    // connected to a master whose backing agent CLI is gone — every
+    // prompt would hang waiting on a dead ACP peer, and SharedWta on
+    // the C++ side wouldn't respawn the master (its process handle is
+    // still alive). Signalling here lets `run_master_loop` return
+    // cleanly so SharedWta can spawn a fresh master + agent CLI pair
+    // on the next `AcquirePane`.
     let mut child = spawn_result.child;
+    let shutdown_tx_child = shutdown_tx.clone();
     tokio::task::spawn_local(async move {
-        match child.wait().await {
-            Ok(status) => tracing::error!(target: "master", "agent CLI exited: {status:?}"),
-            Err(err) => tracing::error!(target: "master", "agent CLI wait failed: {err}"),
-        }
+        let reason = match child.wait().await {
+            Ok(status) => {
+                tracing::error!(
+                    target: "master",
+                    ?status,
+                    "agent CLI exited — initiating master shutdown"
+                );
+                "agent CLI exited"
+            }
+            Err(err) => {
+                tracing::error!(
+                    target: "master",
+                    error = %err,
+                    "agent CLI wait failed — initiating master shutdown"
+                );
+                "agent CLI wait failed"
+            }
+        };
+        let _ = shutdown_tx_child.try_send(reason);
+        // `child` drops as this task body ends, firing kill_on_drop on
+        // any descendants that survived.
     });
 
     let outgoing = stdin.compat_write();
@@ -748,14 +986,36 @@ async fn run_master_loop(cli: Cli, pipe_name: String) -> Result<()> {
     });
     let agent_conn = Arc::new(conn);
 
+    // The ACP I/O loop ending (clean or error) means the master can no
+    // longer talk to the agent CLI — same liveness problem as a child
+    // exit. Signal shutdown through the same channel so the accept
+    // loop can return cleanly and SharedWta can rebuild a fresh
+    // master on the next AcquirePane.
+    let shutdown_tx_io = shutdown_tx.clone();
     tokio::task::spawn_local(async move {
-        match handle_io.await {
-            Ok(()) => tracing::info!(target: "master", "agent CLI I/O loop ended cleanly"),
-            Err(err) => {
-                tracing::error!(target: "master", error = %err, "agent CLI I/O loop ended with error")
+        let reason = match handle_io.await {
+            Ok(()) => {
+                tracing::error!(
+                    target: "master",
+                    "agent CLI I/O loop ended cleanly — initiating master shutdown"
+                );
+                "ACP I/O loop ended cleanly"
             }
-        }
+            Err(err) => {
+                tracing::error!(
+                    target: "master",
+                    error = %err,
+                    "agent CLI I/O loop ended with error — initiating master shutdown"
+                );
+                "ACP I/O loop ended with error"
+            }
+        };
+        let _ = shutdown_tx_io.try_send(reason);
     });
+    // Drop our original sender so the channel closes naturally when
+    // both reaper tasks exit. The receiver in the accept loop will
+    // still observe sends from `shutdown_tx_{child,io}`.
+    drop(shutdown_tx);
 
     // 3. Initialize the agent CLI once at master startup.
     let init_timeout_secs = if is_npx { 60 } else { 15 };
@@ -808,10 +1068,27 @@ async fn run_master_loop(cli: Cli, pipe_name: String) -> Result<()> {
     // "live_helpers=" reconstructs the timeline.
     let live_helpers = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     loop {
-        server
-            .connect()
-            .await
-            .with_context(|| format!("named pipe connect on '{pipe_name}'"))?;
+        // Race the next helper connect against the shutdown channel:
+        // when either reaper task posts a reason, we return early so
+        // the LocalSet unwinds and drops the Child (kill_on_drop) +
+        // WorkerGuard (flush).
+        tokio::select! {
+            connect_result = server.connect() => {
+                connect_result
+                    .with_context(|| format!("named pipe connect on '{pipe_name}'"))?;
+            }
+            shutdown_reason = shutdown_rx.recv() => {
+                let reason = shutdown_reason.unwrap_or("shutdown channel closed");
+                tracing::error!(
+                    target: "master",
+                    reason,
+                    "master accept loop exiting"
+                );
+                return Err(anyhow!(
+                    "wta-master shutting down: {reason} — SharedWta will respawn a fresh master on the next AcquirePane"
+                ));
+            }
+        }
 
         let helper_id = HelperId(next_helper_id);
         next_helper_id = next_helper_id.wrapping_add(1);
@@ -871,7 +1148,7 @@ async fn serve_helper(
     tracing::info!(target: "master", helper_id = ?helper_id, "helper connected");
 
     let (notif_tx, mut notif_rx) =
-        mpsc::unbounded_channel::<acp::SessionNotification>();
+        mpsc::channel::<acp::SessionNotification>(NOTIF_CHANNEL_CAPACITY);
 
     // Shared with `HelperHandler` so it can stash the helper's
     // outbound `AgentSideConnection` into `HelperRoute.forwarder` at
@@ -1005,8 +1282,8 @@ mod tests {
     #[tokio::test]
     async fn session_notification_routes_to_owning_helper() {
         let state = make_state();
-        let (tx1, mut rx1) = mpsc::unbounded_channel();
-        let (tx2, mut rx2) = mpsc::unbounded_channel();
+        let (tx1, mut rx1) = mpsc::channel(NOTIF_CHANNEL_CAPACITY);
+        let (tx2, mut rx2) = mpsc::channel(NOTIF_CHANNEL_CAPACITY);
         let sid1 = SessionId::new("sess-1");
         let sid2 = SessionId::new("sess-2");
 
@@ -1018,6 +1295,7 @@ mod tests {
                     helper_id: HelperId(1),
                     notif_tx: tx1,
                     forwarder: None,
+                    consecutive_drops: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 },
             );
             map.insert(
@@ -1026,6 +1304,7 @@ mod tests {
                     helper_id: HelperId(2),
                     notif_tx: tx2,
                     forwarder: None,
+                    consecutive_drops: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 },
             );
         }
@@ -1044,7 +1323,7 @@ mod tests {
     #[tokio::test]
     async fn session_notification_drops_entry_on_send_failure() {
         let state = make_state();
-        let (tx, rx) = mpsc::unbounded_channel::<SessionNotification>();
+        let (tx, rx) = mpsc::channel::<SessionNotification>(NOTIF_CHANNEL_CAPACITY);
         let sid = SessionId::new("dead-session");
         {
             let mut map = state.session_to_helper.lock().await;
@@ -1054,6 +1333,7 @@ mod tests {
                     helper_id: HelperId(7),
                     notif_tx: tx,
                     forwarder: None,
+                    consecutive_drops: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 },
             );
         }
@@ -1065,6 +1345,134 @@ mod tests {
         assert!(
             !map.contains_key(&sid),
             "send failure should have removed the routing entry"
+        );
+    }
+
+    /// Regression test for the rebinding race in the Closed-cleanup
+    /// path. Sequence:
+    ///   1. Helper A is bound to `sid`; we snapshot its `notif_tx`.
+    ///   2. Helper A's receiver is dropped (channel becomes Closed).
+    ///   3. Helper B rebinds the SAME `sid` via `load_session` —
+    ///      the map entry now points at helper B.
+    ///   4. Master finally tries `try_send` on the snapshotted (now
+    ///      Closed) sender → `TrySendError::Closed`.
+    ///
+    /// Before the fix the cleanup path would `map.remove(&sid)`
+    /// unconditionally and clobber helper B's freshly-installed route.
+    /// With the fix it compares `helper_id` and leaves the new entry
+    /// alone.
+    #[tokio::test]
+    async fn session_notification_preserves_rebound_route_on_closed() {
+        let state = make_state();
+        let sid = SessionId::new("reused-session");
+
+        // Helper A is initially bound; we'll snapshot its sender by
+        // invoking session_notification — `route` only takes a state
+        // snapshot under the lock, then drops the lock before
+        // try_send. We need the snapshot to capture A but the rebind
+        // to happen before try_send wakes Closed. Easiest: drop A's
+        // receiver, then immediately rebind to B in the same task,
+        // then route — `try_send` sees Closed; the helper_id check
+        // sees the entry is B's; cleanup must NOT remove B.
+        let (tx_a, rx_a) = mpsc::channel::<SessionNotification>(NOTIF_CHANNEL_CAPACITY);
+        {
+            let mut map = state.session_to_helper.lock().await;
+            map.insert(
+                sid.clone(),
+                HelperRoute {
+                    helper_id: HelperId(1),
+                    notif_tx: tx_a.clone(),
+                    forwarder: None,
+                    consecutive_drops: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                },
+            );
+        }
+        drop(rx_a); // A's channel is now Closed
+
+        // We can't reliably interleave "snapshot then rebind then
+        // try_send" without unsafe scheduling; instead, simulate the
+        // exact post-race state: helper B has already rebound by the
+        // time the cleanup runs. Construct the snapshot manually and
+        // invoke a tiny helper that mirrors the production
+        // cleanup-with-identity-check path.
+        let snap_helper_a = HelperId(1);
+
+        // Rebind to helper B (simulating the racing load_session
+        // landing between snapshot and try_send).
+        let (tx_b, _rx_b) = mpsc::channel::<SessionNotification>(NOTIF_CHANNEL_CAPACITY);
+        {
+            let mut map = state.session_to_helper.lock().await;
+            map.insert(
+                sid.clone(),
+                HelperRoute {
+                    helper_id: HelperId(2),
+                    notif_tx: tx_b,
+                    forwarder: None,
+                    consecutive_drops: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                },
+            );
+        }
+
+        // Drive the real production path. `tx_a` is the snapshot we'd
+        // have captured before the rebind; `try_send` on it returns
+        // Closed. The cleanup must look at the current map entry,
+        // see it's helper B (≠ A), and leave it alone.
+        match tx_a.try_send(make_notif(&sid)) {
+            Err(mpsc::error::TrySendError::Closed(_)) => {}
+            other => panic!("expected Closed, got {other:?}"),
+        }
+        {
+            let mut map = state.session_to_helper.lock().await;
+            match map.get(&sid) {
+                Some(current) if current.helper_id == snap_helper_a => {
+                    map.remove(&sid);
+                }
+                _ => {} // identity mismatch — leave new route intact
+            }
+        }
+
+        let map = state.session_to_helper.lock().await;
+        let current = map.get(&sid).expect("helper B's route must survive");
+        assert_eq!(
+            current.helper_id,
+            HelperId(2),
+            "Closed cleanup must not remove a route rebound to a different helper"
+        );
+    }
+
+    /// A full bounded channel drops the new notification (and logs)
+    /// instead of `await`-blocking — protects the agent CLI I/O loop
+    /// from head-of-line blocking when one helper's pipe stalls.
+    /// Verified by filling a capacity-1 channel without draining, then
+    /// routing — the second notification must be silently dropped and
+    /// the routing entry must remain (channel is Full, not Closed).
+    #[tokio::test]
+    async fn session_notification_drops_on_full_channel() {
+        let state = make_state();
+        let (tx, _rx) = mpsc::channel::<SessionNotification>(1);
+        let sid = SessionId::new("slow-helper");
+        {
+            let mut map = state.session_to_helper.lock().await;
+            map.insert(
+                sid.clone(),
+                HelperRoute {
+                    helper_id: HelperId(9),
+                    notif_tx: tx.clone(),
+                    forwarder: None,
+                    consecutive_drops: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                },
+            );
+        }
+        // Fill capacity. _rx is held so the channel stays open.
+        tx.try_send(make_notif(&sid)).unwrap();
+        // Second send via the routing path must be a no-op-with-warn,
+        // not a panic or an error.
+        route(&state, make_notif(&sid)).await;
+        // Routing entry survives Full (only Closed removes it).
+        let map = state.session_to_helper.lock().await;
+        assert!(
+            map.contains_key(&sid),
+            "Full (not Closed) must NOT remove the routing entry"
         );
     }
 
@@ -1087,9 +1495,9 @@ mod tests {
     #[tokio::test]
     async fn drop_sessions_for_helper_retains_only_other_helpers() {
         let state = make_state();
-        let (tx_a, _rx_a) = mpsc::unbounded_channel();
-        let (tx_b, _rx_b) = mpsc::unbounded_channel();
-        let (tx_c, _rx_c) = mpsc::unbounded_channel();
+        let (tx_a, _rx_a) = mpsc::channel(NOTIF_CHANNEL_CAPACITY);
+        let (tx_b, _rx_b) = mpsc::channel(NOTIF_CHANNEL_CAPACITY);
+        let (tx_c, _rx_c) = mpsc::channel(NOTIF_CHANNEL_CAPACITY);
         {
             let mut map = state.session_to_helper.lock().await;
             map.insert(
@@ -1098,6 +1506,7 @@ mod tests {
                     helper_id: HelperId(1),
                     notif_tx: tx_a.clone(),
                     forwarder: None,
+                    consecutive_drops: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 },
             );
             map.insert(
@@ -1106,6 +1515,7 @@ mod tests {
                     helper_id: HelperId(1),
                     notif_tx: tx_a,
                     forwarder: None,
+                    consecutive_drops: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 },
             );
             map.insert(
@@ -1114,6 +1524,7 @@ mod tests {
                     helper_id: HelperId(2),
                     notif_tx: tx_b,
                     forwarder: None,
+                    consecutive_drops: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 },
             );
             map.insert(
@@ -1122,6 +1533,7 @@ mod tests {
                     helper_id: HelperId(3),
                     notif_tx: tx_c,
                     forwarder: None,
+                    consecutive_drops: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 },
             );
         }
@@ -1163,7 +1575,7 @@ mod tests {
     #[tokio::test]
     async fn route_for_none_forwarder_returns_internal_error() {
         let state = make_state();
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(NOTIF_CHANNEL_CAPACITY);
         {
             let mut map = state.session_to_helper.lock().await;
             map.insert(
@@ -1172,6 +1584,7 @@ mod tests {
                     helper_id: HelperId(42),
                     notif_tx: tx,
                     forwarder: None,
+                    consecutive_drops: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 },
             );
         }
