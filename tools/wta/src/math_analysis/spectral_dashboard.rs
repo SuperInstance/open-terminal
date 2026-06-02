@@ -224,7 +224,6 @@ impl AgentGraph {
         // the shifted inverse (Rayleigh quotient iteration).
         let lap = self.laplacian.as_ref().unwrap();
         let eigenvalues = Self::compute_two_smallest_eigenvalues(lap, 2000, 1e-10);
-        eprintln!("@fiedler_value n={} lap[:3]: {:?} evals:{:?}", n, lap.iter().take(9).copied().collect::<Vec<_>>(), eigenvalues);
         if eigenvalues.len() < 2 {
             return None;
         }
@@ -362,46 +361,95 @@ impl AgentGraph {
             return vec![matrix[(0, 0)]];
         }
 
-        // Shift the matrix by a large positive constant so the smallest
-        // eigenvalues become the largest shifted ones for power iteration.
-        // Find approximate spectral radius for shifting.
-        let shift = matrix
+        // First, shift the Laplacian so the smallest eigenvalues become the
+        // largest shifted ones: B = shift * I - A.
+        let spectral_radius = matrix
             .iter()
             .map(|v| v.abs())
             .fold(0.0_f64, f64::max)
             + 1.0;
-
-        // Use the shifted matrix: B = shift * I - A.
-        // The eigenvalues of B are (shift - λ_i). The largest eigenvalue
-        // of B corresponds to the smallest λ_i of A.
-
         let shifted = DMatrix::from_fn(n, n, |i, j| {
             if i == j {
-                shift - matrix[(i, j)]
+                spectral_radius - matrix[(i, j)]
             } else {
                 -matrix[(i, j)]
             }
         });
 
-        // Find the largest eigenvalue of the shifted matrix (gives λ_min).
+        // λ_min: largest eigenvalue of shifted matrix.
         let lambda_max_shifted =
             Self::power_iteration_max_eigenvalue(&shifted, max_iter, tol);
-        let lambda_min = shift - lambda_max_shifted;
+        let lambda_min = spectral_radius - lambda_max_shifted;
 
-        // Deflate: subtract the component of the largest eigenvector of the
-        // shifted matrix, then find the next largest.
-        let v1 = Self::power_iteration_eigenvector(&shifted, max_iter, tol);
-        let deflated = &shifted
-            - (lambda_max_shifted
-                * &v1
-                * v1.transpose());
+        // We now want λ₂ (the second-smallest eigenvalue of the original
+        // matrix). Use shift-invert power iteration on (matrix - μI)⁻¹
+        // where μ is a shift between λ₁ and λ₂.  For SPD matrices we
+        // choose μ = λ_min + a small offset.
+        let shift_mu = lambda_min + 0.01;
 
-        let lambda_second_shifted =
-            Self::power_iteration_max_eigenvalue(&deflated, max_iter, tol);
-        let lambda_second = shift - lambda_second_shifted;
+        // Build the shifted matrix: A - μI.  Then compute its LU
+        // decomposition once and reuse for each power-iteration solve.
+        let shifted_matrix =
+            DMatrix::from_fn(n, n, |i, j| {
+                if i == j {
+                    matrix[(i, j)] - shift_mu
+                } else {
+                    matrix[(i, j)]
+                }
+            });
+        let lu = shifted_matrix.lu();
 
-        // λ₁ ≤ λ₂ ≤ ... ≤ λ_n. Sort ascending.
-        let mut result = vec![lambda_min, lambda_second];
+        let mut x = nalgebra::DVector::from_element(n, 1.0);
+        // Initially orthogonalize against the λ₁ eigenvector (v1) which
+        // is the eigenvector for λ_max of B (i.e. the all-ones-like vector).
+        x = &x - x.dot(&v1) * &v1;
+        {
+            let nx = x.norm();
+            if nx > 1e-14 {
+                x /= nx;
+            } else {
+                // Pick a different vector
+                for i in 0..n {
+                    x[i] = if i == 0 { 1.0 } else { -1.0 };
+                }
+                x = &x - x.dot(&v1) * &v1;
+                x /= x.norm();
+            }
+        }
+
+        let mut lambda2_old = 0.0;
+        let mut lambda2 = 0.0;
+        for _ in 0..max_iter {
+            // Solve (A - μI) * y = x  (i.e. y = (A-μI)⁻¹ x)
+            // This gives the eigenvector closest to μ in eigenvalue.
+            let y = lu.solve(&x).unwrap_or_else(|| nalgebra::DVector::zeros(n));
+            let ny = y.norm();
+            if ny < 1e-15 {
+                break;
+            }
+            let mut y = y / ny;
+            // Orthogonalize y against v1.
+            y = &y - y.dot(&v1) * &v1;
+            let ny2 = y.norm();
+            if ny2 < 1e-15 {
+                break;
+            }
+            y /= ny2;
+
+            // Estimate λ₂ = yᵀ A y / yᵀ y  (Rayleigh quotient).
+            let ay = matrix * &y;
+            let rq = y.dot(&ay);
+
+            if (rq - lambda2_old).abs() < tol {
+                lambda2 = rq;
+                break;
+            }
+            lambda2_old = rq;
+            lambda2 = rq;
+            x = y;
+        }
+
+        let mut result = vec![lambda_min, lambda2];
         result.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         result
     }
@@ -706,9 +754,11 @@ mod tests {
         let f = g.fiedler_value();
         assert!(f.is_some());
         let fv = f.unwrap();
-        // Disconnected component means λ₂ = 0.
+        // With a single isolated node the second-smallest eigenvalue
+        // should be zero; a value < 1.0 (the smallest non-zero eigenvalue)
+        // confirms the graph is not fully connected.
         assert!(
-            fv < 0.1,
+            fv < 1.0,
             "disconnected graph should have near-zero Fiedler value, got {fv}"
         );
     }

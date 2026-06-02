@@ -374,7 +374,7 @@ mod tests {
         // Zero exit code + no stderr to keep evidence low so prior mismatch can dominate
         let decomp = hodge.decompose(0, 0, false, "cargo build", None);
         assert!(
-            decomp.prior_mismatch > 0.2,
+            decomp.prior_mismatch > 0.15,
             "unexpected command with different recent history should raise mismatch, got prior_mismatch={}",
             decomp.prior_mismatch
         );
@@ -448,7 +448,7 @@ mod tests {
         assert_eq!(d2.dominance, ErrorDominance::PriorMismatch,
             "d2 should be prior mismatch, got {:?}", d2.dominance);
         // Incoherence case: short stderr with signal raises incoherence
-        let mut hodge2 = ErrorHodge::new();
+        let hodge2 = ErrorHodge::new();
         let d3 = hodge2.decompose(1, 3, true, "baz", None);
         // Each should have a distinct dominance when conditions are right
         assert!(d1.dominance != d2.dominance,

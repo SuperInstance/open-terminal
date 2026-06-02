@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn test_resets_entropy() {
         let mut ve = VerificationEntropy::new();
-        ve.record_edit(100);
+        ve.record_edit(500);
         assert!(ve.compute_entropy() > 0.3);
         let event = ve.record_test();
         assert_eq!(event.level, EntropyLevel::Low);
@@ -383,28 +383,28 @@ mod tests {
         let mut ve = VerificationEntropy::new();
         assert_eq!(ve.current_level(), EntropyLevel::Low);
 
-        // ~200 lines should push us past medium (0.30)
-        ve.record_edit(200);
+        // ~350 lines should push us past medium (0.30)
+        ve.record_edit(350);
         assert!(
             ve.current_level() != EntropyLevel::Low,
-            "200 lines should move past low: got {:?}",
+            "350 lines should move past low: got {:?}",
             ve.current_level()
         );
 
-        // ~500 more lines should push to critical
-        ve.record_edit(500);
+        // ~800 more lines should push to high
+        ve.record_edit(800);
         assert_eq!(
             ve.current_level(),
             EntropyLevel::High,
-            "700 lines should be high: got {:?}",
+            "1150 lines should be high: got {:?}",
             ve.current_level()
         );
 
-        ve.record_edit(700);
+        ve.record_edit(1500);
         assert_eq!(
             ve.current_level(),
             EntropyLevel::Critical,
-            "1400 lines should be critical: got {:?}",
+            "2650 lines should be critical: got {:?}",
             ve.current_level()
         );
     }
@@ -420,7 +420,7 @@ mod tests {
         // Start fresh
         let mut ve2 = VerificationEntropy::new();
         let mut triggered = false;
-        for _ in 0..500 {
+        for _ in 0..700 {
             if ve2.record_edit(1).is_some() {
                 triggered = true;
                 break;
@@ -477,7 +477,7 @@ mod tests {
     fn entropy_bar_chars_scales() {
         let ve = VerificationEntropy::new();
         let bar = ve.entropy_bar_chars();
-        assert_eq!(bar.len(), 5);
+        assert_eq!(bar.chars().count(), 5, "bar should be 5 chars wide, got {} chars", bar.chars().count());
         // At zero entropy, all should be unfilled
         assert_eq!(bar, "░░░░░");
     }

@@ -409,27 +409,31 @@ mod tests {
     #[test]
     fn anomaly_detection_rare_command() {
         let mut chain = CommandMarkovChain::new();
-        // Create a chain with many commands where "rare_cmd" is very rare.
-        for _ in 0..100 {
-            chain.record_transition(Some("cmd_a"), "cmd_b");
-            chain.record_transition(Some("cmd_b"), "cmd_c");
-            chain.record_transition(Some("cmd_c"), "cmd_d");
-            chain.record_transition(Some("cmd_d"), "cmd_a");
+        // Build a chain dominated by a large multi-command cycle.
+        // The rare command appears once but has no outgoing edge,
+        // making it a dead state (gets uniform row → high stationary prob),
+        // so for the test we give it an outgoing edge and rely on the large
+        // number of other commands to keep its stationary probability small.
+        for _ in 0..20 {
+            chain.record_transition(Some("a"), "b");
+            chain.record_transition(Some("b"), "c");
+            chain.record_transition(Some("c"), "d");
+            chain.record_transition(Some("d"), "e");
+            chain.record_transition(Some("e"), "f");
+            chain.record_transition(Some("f"), "g");
+            chain.record_transition(Some("g"), "h");
+            chain.record_transition(Some("h"), "i");
+            chain.record_transition(Some("i"), "j");
         }
-        for _ in 0..100 {
-            chain.record_transition(Some("cmd_e"), "cmd_f");
-            chain.record_transition(Some("cmd_f"), "cmd_g");
-            chain.record_transition(Some("cmd_g"), "cmd_e");
-        }
-        // One rare command — ensure it has outgoing transitions so it
-        // is not a dead state (which gets uniform stationary prob).
-        chain.record_transition(Some("cmd_a"), "rare_cmd");
-        chain.record_transition(Some("rare_cmd"), "cmd_a");
-        let anomaly = chain.check_anomaly("rare_cmd", 1685400000, 0.05);
-        assert!(anomaly.is_some(), "rare_cmd should be anomalous");
+        // One rare occurrence of z (from a). Ensure z has an outgoing edge.
+        chain.record_transition(Some("a"), "z");
+        chain.record_transition(Some("z"), "a");
+
+        let anomaly = chain.check_anomaly("z", 1685400000, 0.02);
+        assert!(anomaly.is_some(), "z should be anomalous");
         let a = anomaly.unwrap();
-        assert_eq!(a.command, "rare_cmd");
-        assert!(a.deviation > 0.0);
+        assert_eq!(a.command, "z");
+        assert!(a.deviation > 0.0, "deviation should be positive, got {}", a.deviation);
     }
 
     #[test]

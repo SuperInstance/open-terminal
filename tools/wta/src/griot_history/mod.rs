@@ -13,6 +13,7 @@
 //! - [`pattern`] — Command pattern mining and workflow detection
 //! - [`adinkra`] — Context-aware compression and alias suggestion
 //! - [`persistence`] — Barcode visualization of command persistence
+//! - [`skill_detector`] — Renormalization-based skill detection
 
 #[cfg(feature = "griot-history")]
 pub mod adinkra;
@@ -22,6 +23,8 @@ pub mod decay;
 pub mod pattern;
 #[cfg(feature = "griot-history")]
 pub mod persistence;
+#[cfg(feature = "griot-history")]
+pub mod skill_detector;
 
 // Re-export the public API surface.
 #[cfg(feature = "griot-history")]
