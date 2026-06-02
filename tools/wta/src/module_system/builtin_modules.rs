@@ -115,10 +115,11 @@ impl TerminalModule for ErrorHodgeModule {
     }
 
     fn trigger(&self, event: &super::TerminalEvent) -> bool {
-        matches!(event,
-            super::TerminalEvent::Error { .. }
-            | super::TerminalEvent::CommandCompleted { exit_code, .. } if *exit_code != 0
-        )
+        match event {
+            super::TerminalEvent::Error { .. } => true,
+            super::TerminalEvent::CommandCompleted { exit_code, .. } => *exit_code != 0,
+            _ => false,
+        }
     }
 
     fn activate(&mut self, _ctx: &ModuleContext) {
@@ -308,7 +309,7 @@ impl TerminalModule for SpectralDashboardModule {
     fn activate(&mut self, ctx: &ModuleContext) {
         // Seed from existing agent IDs.
         for id in &ctx.active_agent_ids {
-            self.dashboard.graph.add_node(id.clone(), id.clone(), true);
+            self.dashboard.graph.add_node(&id, &id, true);
         }
         self.active = true;
     }
@@ -316,7 +317,7 @@ impl TerminalModule for SpectralDashboardModule {
     fn handle_event(&mut self, event: &super::TerminalEvent) -> Vec<ModuleOutput> {
         match event {
             super::TerminalEvent::AgentStarted { agent_id } => {
-                self.dashboard.graph.add_node(agent_id.clone(), agent_id.clone(), true);
+                self.dashboard.graph.add_node(agent_id, agent_id, true);
             }
             super::TerminalEvent::AgentEnded { agent_id } => {
                 // Mark as not alive rather than removing (preserves graph structure).
