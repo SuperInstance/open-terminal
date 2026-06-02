@@ -89,7 +89,7 @@ impl AgentGraph {
             label: label.to_string(),
             alive,
         });
-        self.dirty = true;
+        self.invalidate_cache();
     }
 
     /// Add a weighted edge between two agents by their id strings.
@@ -224,6 +224,7 @@ impl AgentGraph {
         // the shifted inverse (Rayleigh quotient iteration).
         let lap = self.laplacian.as_ref().unwrap();
         let eigenvalues = Self::compute_two_smallest_eigenvalues(lap, 2000, 1e-10);
+        eprintln!("@fiedler_value n={} lap[:3]: {:?} evals:{:?}", n, lap.iter().take(9).copied().collect::<Vec<_>>(), eigenvalues);
         if eigenvalues.len() < 2 {
             return None;
         }

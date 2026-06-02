@@ -244,7 +244,7 @@ impl TerminalModule for VerificationEntropyModule {
             let bar = self.entropy.status_bar_label();
 
             let mut outputs = vec![ModuleOutput::status_bar(bar)];
-            if matches!(level, crate::math_analysis::EntropyLevel::High | crate::math_analysis::EntropyLevel::Critical) {
+            if matches!(level, crate::math_analysis::verification_entropy::EntropyLevel::High | crate::math_analysis::verification_entropy::EntropyLevel::Critical) {
                 outputs.push(ModuleOutput::notification(format!(
                     "Verification entropy {:?}: run tests soon", level
                 )));
@@ -898,7 +898,7 @@ mod tests {
         let ids = registry.module_ids();
         let mut seen = std::collections::HashSet::new();
         for id in &ids {
-            assert!(!seen.contains(id), "duplicate module id: {}", id);
+            assert!(!seen.contains(*id), "duplicate module id: {}", id);
             seen.insert(id.to_string());
         }
     }

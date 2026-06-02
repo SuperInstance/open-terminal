@@ -158,14 +158,6 @@ impl ModuleRegistry {
             .map(|r| r.module.as_ref())
     }
 
-    /// Get a mutable reference to a module by ID.
-    pub fn get_module_mut(&mut self, id: &str) -> Option<&mut dyn TerminalModule> {
-        self.modules
-            .iter_mut()
-            .find(|r| r.module.id() == id)
-            .map(|r| r.module.as_mut())
-    }
-
     /// Activate a specific module.
     pub fn activate_module(&mut self, id: &str, ctx: &ModuleContext) -> bool {
         if let Some(reg) = self.modules.iter_mut().find(|r| r.module.id() == id) {
@@ -585,7 +577,7 @@ mod tests {
 
     #[test]
     fn serialize_deserialize_default() {
-        let m = TestModule::new("cargo");
+        let mut m = TestModule::new("cargo");
         assert!(m.serialize_state().is_empty());
         assert!(m.deserialize_state(&[]));
     }

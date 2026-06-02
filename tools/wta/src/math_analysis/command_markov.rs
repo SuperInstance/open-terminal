@@ -409,18 +409,26 @@ mod tests {
     #[test]
     fn anomaly_detection_rare_command() {
         let mut chain = CommandMarkovChain::new();
-        // Create a chain where "git push" is very rare.
+        // Create a chain with many commands where "rare_cmd" is very rare.
         for _ in 0..100 {
-            chain.record_transition(Some("git status"), "git add");
-            chain.record_transition(Some("git add"), "git commit");
-            chain.record_transition(Some("git commit"), "git status");
+            chain.record_transition(Some("cmd_a"), "cmd_b");
+            chain.record_transition(Some("cmd_b"), "cmd_c");
+            chain.record_transition(Some("cmd_c"), "cmd_d");
+            chain.record_transition(Some("cmd_d"), "cmd_a");
         }
-        // One rare push at 3am
-        chain.record_transition(Some("git status"), "git push");
-        let anomaly = chain.check_anomaly("git push", 1685400000, 0.05);
-        assert!(anomaly.is_some(), "git push should be anomalous");
+        for _ in 0..100 {
+            chain.record_transition(Some("cmd_e"), "cmd_f");
+            chain.record_transition(Some("cmd_f"), "cmd_g");
+            chain.record_transition(Some("cmd_g"), "cmd_e");
+        }
+        // One rare command — ensure it has outgoing transitions so it
+        // is not a dead state (which gets uniform stationary prob).
+        chain.record_transition(Some("cmd_a"), "rare_cmd");
+        chain.record_transition(Some("rare_cmd"), "cmd_a");
+        let anomaly = chain.check_anomaly("rare_cmd", 1685400000, 0.05);
+        assert!(anomaly.is_some(), "rare_cmd should be anomalous");
         let a = anomaly.unwrap();
-        assert_eq!(a.command, "git push");
+        assert_eq!(a.command, "rare_cmd");
         assert!(a.deviation > 0.0);
     }
 

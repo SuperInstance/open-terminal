@@ -23,9 +23,8 @@ pub struct MemoryBudget {
     /// Current usage: module_id → bytes.
     usage: Vec<(String, usize)>,
     /// Base directory for serialized state.
-    state_dir: PathBuf,
+    pub state_dir: PathBuf,
 }
-
 impl MemoryBudget {
     /// Create a new budget tracker.
     pub fn new(budget: usize, state_dir: PathBuf) -> Self {
