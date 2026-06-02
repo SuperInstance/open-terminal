@@ -17,13 +17,13 @@ use std::collections::HashMap;
 const DEFAULT_HALF_LIFE_SECS: f64 = 432_000.0;
 
 /// Decay constant λ = ln(2) / half_life
-const LAMBDA: f64 = std::f64::consts::LN_2 / DEFAULT_HALF_LIFE_SECS;
+pub(crate) const LAMBDA: f64 = std::f64::consts::LN_2 / DEFAULT_HALF_LIFE_SECS;
 
 /// Reinforcement factor: each retelling multiplies strength by this amount.
 const RETELLING_BOOST: f64 = 0.3;
 
 /// Minimum strength to be considered "persisting" in the barcode.
-const PERSISTENCE_THRESHOLD: f64 = 0.1;
+pub(crate) const PERSISTENCE_THRESHOLD: f64 = 0.1;
 
 /// A normalized retelling strength value in [0.0, 1.0+].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -180,7 +180,7 @@ impl DecayModel {
         for i in 0..num_points {
             let age = step * i as f64;
             let decay = (-LAMBDA * age).exp();
-            let boost = 1.0 + (*count as f64) * RETELLING_BOOST;
+            let boost = 1.0 + (count as f64) * RETELLING_BOOST;
             curve.push((age, decay * boost));
         }
         curve

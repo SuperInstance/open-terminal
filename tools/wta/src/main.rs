@@ -8,6 +8,8 @@ mod agent_registry;
 mod agent_sessions;
 mod app;
 mod commands;
+#[cfg(feature = "context-triggers")]
+pub mod context_trigger;
 mod coordinator;
 mod cwd_util;
 mod event;
@@ -1233,40 +1235,45 @@ async fn run_sessions_list(
 async fn fetch_sessions_from_master(
     master_override: Option<String>,
 ) -> Result<Vec<session_registry::SessionInfo>> {
-    let pipe_name = resolve_master_pipe(master_override).await?;
     #[cfg(windows)]
-    let pipe = open_master_pipe_for_cli(&pipe_name).await?;
-    #[cfg(not(windows))]
-    let pipe = anyhow::bail!("named pipes are Windows-only");
-    let (read_half, write_half) = tokio::io::split(pipe);
-    let outgoing = write_half.compat_write();
-    let incoming = read_half.compat();
-    let (conn, handle_io) = acp::ClientSideConnection::new(SessionsCliClient, outgoing, incoming, |fut| {
-        tokio::task::spawn_local(fut);
-    });
-    tokio::task::spawn_local(async move {
-        let _ = handle_io.await;
-    });
+    {
+        let pipe_name = resolve_master_pipe(master_override).await?;
+        let pipe = open_master_pipe_for_cli(&pipe_name).await?;
+        let (read_half, write_half) = tokio::io::split(pipe);
+        let outgoing = write_half.compat_write();
+        let incoming = read_half.compat();
+        let (conn, handle_io) = acp::ClientSideConnection::new(SessionsCliClient, outgoing, incoming, |fut| {
+            tokio::task::spawn_local(fut);
+        });
+        tokio::task::spawn_local(async move {
+            let _ = handle_io.await;
+        });
 
-    conn.initialize(
-        acp::InitializeRequest::new(acp::ProtocolVersion::V1)
-            .client_capabilities(acp::ClientCapabilities::new())
-            .client_info(
-                acp::Implementation::new("wta-sessions", env!("CARGO_PKG_VERSION"))
-                    .title("Windows Terminal Agent sessions CLI"),
-            ),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!(MASTER_NOT_RUNNING))?;
-
-    let req = session_registry::build_sessions_list_request();
-    let resp = conn
-        .ext_method(req)
+        conn.initialize(
+            acp::InitializeRequest::new(acp::ProtocolVersion::V1)
+                .client_capabilities(acp::ClientCapabilities::new())
+                .client_info(
+                    acp::Implementation::new("wta-sessions", env!("CARGO_PKG_VERSION"))
+                        .title("Windows Terminal Agent sessions CLI"),
+                ),
+        )
         .await
         .map_err(|_| anyhow::anyhow!(MASTER_NOT_RUNNING))?;
-    let parsed = session_registry::parse_sessions_list_response(&resp.0)
-        .context("parse sessions/list response")?;
-    Ok(parsed.sessions)
+
+        let req = session_registry::build_sessions_list_request();
+        let resp = conn
+            .ext_method(req)
+            .await
+            .map_err(|_| anyhow::anyhow!(MASTER_NOT_RUNNING))?;
+        let parsed = session_registry::parse_sessions_list_response(&resp.0)
+            .context("parse sessions/list response")?;
+        Ok(parsed.sessions)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = master_override;
+        anyhow::bail!("named pipes are Windows-only")
+    }
 }
 
 async fn resolve_master_pipe(master_override: Option<String>) -> Result<String> {

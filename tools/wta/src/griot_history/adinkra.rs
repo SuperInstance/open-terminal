@@ -182,7 +182,7 @@ impl AdinkraCompressor {
         let mut compressed = Vec::new();
         for cmd in commands {
             for suggestion in &context.suggested_aliases {
-                if cmd == suggestion.expansion {
+                if cmd == &suggestion.expansion {
                     compressed.push((suggestion.alias.clone(), cmd.clone()));
                     break;
                 }
