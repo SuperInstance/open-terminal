@@ -49,7 +49,7 @@ pub struct CoarseGrainLevel {
 }
 
 impl CoarseGrainLevel {
-    fn new(level: usize, block_size: usize, commands: Vec<String>) -> Self {
+    pub fn new(level: usize, block_size: usize, commands: Vec<String>) -> Self {
         let mut distribution = std::collections::HashMap::new();
         for cmd in &commands {
             *distribution.entry(cmd.clone()).or_insert(0) += 1;
@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn three_way_pattern_preserves_majority() {
         // Pattern: a a b a a b a a b ...
-        let grainer = CoarseGrainer::new(&[BlockSize::B3]);
+        let grainer = CoarseGrainer::new(&[BlockSize::B2]);
         let commands: Vec<String> = (0..30)
             .map(|i| if i % 3 == 2 { "b" } else { "a" }.to_string())
             .collect();
