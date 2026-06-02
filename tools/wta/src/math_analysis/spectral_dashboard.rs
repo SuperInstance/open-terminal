@@ -381,10 +381,13 @@ impl AgentGraph {
             Self::power_iteration_max_eigenvalue(&shifted, max_iter, tol);
         let lambda_min = spectral_radius - lambda_max_shifted;
 
-        // We now want λ₂ (the second-smallest eigenvalue of the original
-        // matrix). Use shift-invert power iteration on (matrix - μI)⁻¹
-        // where μ is a shift between λ₁ and λ₂.  For SPD matrices we
-        // choose μ = λ_min + a small offset.
+        // Compute the eigenvector for λ₁ (the constant vector for
+        // Laplacians), which we need to orthogonalize against.
+        let v1 = Self::power_iteration_eigenvector(&shifted, max_iter, tol);
+
+        // Now find λ₂ using shift-invert power iteration on
+        // (matrix - μI)⁻¹ with μ = λ_min + offset, orthogonalizing
+        // against v1 at each step.
         let shift_mu = lambda_min + 0.01;
 
         // Build the shifted matrix: A - μI.  Then compute its LU
@@ -400,15 +403,13 @@ impl AgentGraph {
         let lu = shifted_matrix.lu();
 
         let mut x = nalgebra::DVector::from_element(n, 1.0);
-        // Initially orthogonalize against the λ₁ eigenvector (v1) which
-        // is the eigenvector for λ_max of B (i.e. the all-ones-like vector).
+        // Orthogonalize initial vector against v1.
         x = &x - x.dot(&v1) * &v1;
         {
             let nx = x.norm();
             if nx > 1e-14 {
                 x /= nx;
             } else {
-                // Pick a different vector
                 for i in 0..n {
                     x[i] = if i == 0 { 1.0 } else { -1.0 };
                 }
@@ -420,15 +421,13 @@ impl AgentGraph {
         let mut lambda2_old = 0.0;
         let mut lambda2 = 0.0;
         for _ in 0..max_iter {
-            // Solve (A - μI) * y = x  (i.e. y = (A-μI)⁻¹ x)
-            // This gives the eigenvector closest to μ in eigenvalue.
             let y = lu.solve(&x).unwrap_or_else(|| nalgebra::DVector::zeros(n));
             let ny = y.norm();
             if ny < 1e-15 {
                 break;
             }
             let mut y = y / ny;
-            // Orthogonalize y against v1.
+            // Orthogonalize against v1.
             y = &y - y.dot(&v1) * &v1;
             let ny2 = y.norm();
             if ny2 < 1e-15 {
@@ -436,7 +435,6 @@ impl AgentGraph {
             }
             y /= ny2;
 
-            // Estimate λ₂ = yᵀ A y / yᵀ y  (Rayleigh quotient).
             let ay = matrix * &y;
             let rq = y.dot(&ay);
 

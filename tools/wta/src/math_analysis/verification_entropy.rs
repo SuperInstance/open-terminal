@@ -383,28 +383,29 @@ mod tests {
         let mut ve = VerificationEntropy::new();
         assert_eq!(ve.current_level(), EntropyLevel::Low);
 
-        // ~350 lines should push us past medium (0.30)
-        ve.record_edit(350);
+        // ~250 lines should push past medium (0.30)
+        ve.record_edit(250);
         assert!(
             ve.current_level() != EntropyLevel::Low,
-            "350 lines should move past low: got {:?}",
+            "250 lines should move past low: got {:?}",
             ve.current_level()
         );
 
-        // ~800 more lines should push to high
-        ve.record_edit(800);
+        // ~400 more lines should push to high (total 650 > 549)
+        ve.record_edit(400);
         assert_eq!(
             ve.current_level(),
             EntropyLevel::High,
-            "1150 lines should be high: got {:?}",
+            "650 lines should be high: got {:?}",
             ve.current_level()
         );
 
-        ve.record_edit(1500);
+        // ~400 more lines should push to critical (total 1050 > 965)
+        ve.record_edit(400);
         assert_eq!(
             ve.current_level(),
             EntropyLevel::Critical,
-            "2650 lines should be critical: got {:?}",
+            "1050 lines should be critical: got {:?}",
             ve.current_level()
         );
     }
