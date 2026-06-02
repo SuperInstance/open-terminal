@@ -4,12 +4,33 @@
     </picture>
 </p>
 
-# Welcome to the Intelligent Terminal repo
+<h1 align="center">Intelligent Terminal <sup style="color:#58a6ff">+ SuperInstance</sup></h1>
+
+<p align="center"><strong>The first terminal that doesn't wait for you to ask.</strong></p>
+
+<p align="center">
+  Your terminal already knows your workflow's mathematics.<br>
+  We wired up the gauges.
+</p>
+
+---
+
+> **This is a fork of [Microsoft's Intelligent Terminal](https://github.com/microsoft/intelligent-terminal)** — an experimental Windows Terminal with native ACP agent integration. We preserve every line of the original. Then we add mathematical awareness. Zero cost when you don't need it. Profound when you do.
+
+---
 
 <details>
   <summary><strong>Table of Contents</strong></summary>
 
 - [What is Intelligent Terminal?](#what-is-intelligent-terminal)
+- [SuperInstance Enhancements](#superinstance-enhancements)
+  - [The Idea](#the-idea)
+  - [Math-Aware Command Analysis](#math-aware-command-analysis-math-tools)
+  - [Griot Command History](#griot-command-history-griot-history)
+  - [Zero-Cost Promise](#zero-cost-promise)
+  - [Architecture](#architecture)
+  - [Enabling Features](#enabling-features)
+  - [Coming Soon](#coming-soon)
 - [Installing and running Intelligent Terminal](#installing-and-running-intelligent-terminal)
   - [Microsoft Store](#microsoft-store-recommended)
   - [WinGet](#winget)
@@ -42,9 +63,190 @@ Intelligent Terminal is an experimental fork of [Windows Terminal](https://githu
 
 Intelligent Terminal works with any [Agent Client Protocol (ACP)-compatible](https://agentclientprotocol.com/get-started/agents) agent CLI. All you need is to install your preferred agent CLI on your PC. If you don't have a preferred agent, we'll get you setup with [GitHub Copilot CLI](https://github.com/features/copilot/cli/).
 
-Intelligent Terminal takes all the features you love in Windows Terminal such as:  tabs, profiles, themes, settings, shells, and keyboard shortcuts, which all work the way you expect.
+Intelligent Terminal takes all the features you love in Windows Terminal such as: tabs, profiles, themes, settings, shells, and keyboard shortcuts, which all work the way you expect.
 
 Read the [announcement blog post](https://devblogs.microsoft.com/commandline/announcing-intelligent-terminal-version-0-1/) for more details.
+
+---
+
+## SuperInstance Enhancements
+
+### The Idea
+
+Intelligent Terminal is already a strong foundation: ACP protocol integration, multi-agent detection, per-tab autofix, session management, and a ratatui-based TUI. But it's a *transport layer* — it moves prompts to agents and renders responses.
+
+The leap from "terminal with an agent pane" to "terminal that *thinks*" requires plugging in mathematical tooling at exactly the right extension points. That's what SuperInstance does.
+
+**Intelligent Terminal + mathematical awareness = the terminal that sees your workflow.**
+
+### Math-Aware Command Analysis (`math-tools`)
+
+Feature-gated under `math-tools`. Four subsystems, each a pure-local computation:
+
+#### Verification Entropy Tracker
+
+Tracks the edit-to-test ratio per session. Verification entropy is *conserved*: every line you edit without running tests accumulates entropy that manifests as latent bugs. This isn't a heuristic — it's a thermodynamic law of software development.
+
+```
+┌──────────────────────────────────────────────────┐
+│ 📝 Verification │ ▓▓▓░░░░░░░ 350 lines edited   │
+│                 │   without testing              │
+└──────────────────────────────────────────────────┘
+```
+
+Color coding: **Green** (healthy) → **Yellow** (accumulating) → **Orange** (run your tests soon) → **Red** (bugs are coming, conservation of entropy is a law not a suggestion).
+
+#### Hodge Error Decomposition
+
+When a command fails, decomposes the error into three orthogonal components:
+
+- **Evidence** — what actually happened (raw signal)
+- **Coherence** — does the error message make internal sense
+- **Prior mismatch** — expectation vs reality (your mental model vs what happened)
+
+```
+Error: ModuleNotFoundError: No module named 'numpy'
+
+  Prior mismatch: 70% — venv was built with Python 3.12, you're on 3.11
+  Evidence:       20% — numpy is genuinely not in this environment
+  Incoherence:    10% — the error is clear but the cause isn't stated
+```
+
+#### Ergodic Command Markov Chain
+
+Builds a Markov chain from your command history. Your past behavior is a statistically valid predictor of your next command — ergodic theory says time averages converge to ensemble averages. The module predicts resource footprints *before* execution and flags anomalies in real time.
+
+#### Spectral Agent Dashboard
+
+When you're using multiple agents (Copilot, Claude, Codex, Gemini), builds a collaboration graph and computes spectral metrics:
+
+- **Fiedler value** (algebraic connectivity) — how well-connected is your agent network
+- **Cheeger constant** — identifies bottleneck agents
+- **Mixing time** — how fast information propagates between agents
+
+### Griot Command History (`griot-history`)
+
+Feature-gated under `griot-history`. Inspired by West African knowledge systems, not Silicon Valley metaphors.
+
+#### Decaying Persistence
+
+Each command has a "retelling strength" that decays exponentially. A command from 5 minutes ago is 10× more relevant than one from 5 days ago. But — re-running the same command *strengthens* all prior instances. Frequently-told stories persist longer in memory. That's how griots work.
+
+```
+█████░░░░░█████████░░░████░░░░░░░████████
+^Rust  ^Node          ^Git        ^Docker
+```
+
+#### Adinkra Compression
+
+Detects your project type (Rust, Node, Python, Go…) and suggests context-aware aliases. In a Rust project, `cb` means `cargo build`. In a Node project, `cb` means something else entirely. The terminal adapts to your project, not the other way around.
+
+#### Pattern Mining
+
+Detects repetitive multi-command sequences (e.g., `cargo fmt && cargo clippy && cargo test`) and offers compressed aliases. Detects learning plateaus — when you've been doing the same workflow for 90 days without advancing, it suggests next steps.
+
+### Zero-Cost Promise
+
+All enhancements are **feature-gated**. Disable any feature and the code doesn't exist — not hidden, not dormant, **compiled out**. Zero overhead, zero config.
+
+```toml
+[features]
+default = []
+math-tools = ["nalgebra", "serde"]
+griot-history = ["serde"]
+all = ["math-tools", "griot-history"]
+```
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  Intelligent Terminal                     │
+│                                                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐  │
+│  │  Agent    │  │  Agent   │  │   Agent Management   │  │
+│  │  Pane     │  │  Status  │  │                      │  │
+│  │  (ACP)    │  │  Bar     │  │                      │  │
+│  └────┬─────┘  └────┬─────┘  └──────────────────────┘  │
+│       │              │                                   │
+│       ▼              ▼                                   │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │              Module Registry                     │    │
+│  │   (lazy-loaded, feature-gated, event-driven)     │    │
+│  │                                                  │    │
+│  │  ┌─────────────────┐  ┌──────────────────────┐  │    │
+│  │  │  math-tools      │  │  griot-history        │  │    │
+│  │  │                  │  │                       │  │    │
+│  │  │  • Verification  │  │  • Decay model        │  │    │
+│  │  │    Entropy       │  │  • Pattern mining     │  │    │
+│  │  │  • Hodge Error   │  │  • Adinkra aliases    │  │    │
+│  │  │    Decomposition │  │  • Persistence        │  │    │
+│  │  │  • Command       │  │    barcode            │  │    │
+│  │  │    Markov Chain  │  │                       │  │    │
+│  │  │  • Spectral      │  └──────────────────────┘  │    │
+│  │  │    Dashboard     │                             │    │
+│  │  └─────────────────┘  ┌──────────────────────┐  │    │
+│  │                       │  Coming Soon          │  │    │
+│  │                       │  • Context triggers   │  │    │
+│  │                       │  • Module registry    │  │    │
+│  │                       │  • Spectral dashboard │  │    │
+│  │                       │    (live TUI)         │  │    │
+│  │                       └──────────────────────┘  │    │
+│  └─────────────────────────────────────────────────┘    │
+│       │                                                  │
+│       ▼                                                  │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │              Event Bus (AppEvent)                 │    │
+│  │  Tick → module.tick() | Key → module.on_input()  │    │
+│  │  VT osc:133 → module.on_command_done()           │    │
+│  └─────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Enabling Features
+
+```bash
+# Build with mathematical analysis only
+cargo build --features math-tools
+
+# Build with griot history only
+cargo build --features griot-history
+
+# Build with everything
+cargo build --features math-tools,griot-history
+
+# Or use the convenience flag
+cargo build --features all
+```
+
+Features can also be configured at runtime via `modules.toml`:
+
+```toml
+# ~/.config/intelligent-terminal/modules.toml
+
+[math-tools]
+enabled = true
+
+[math-tools.verification_entropy]
+alpha = 0.005
+red_threshold = 0.8
+
+[math-tools.hodge]
+enabled = true
+
+[griot-history]
+enabled = true
+decay_rate = 0.1
+```
+
+### Coming Soon
+
+- **Context Triggers** — modules that activate based on what you're doing, not what you configured
+- **Module Registry** — discoverable, pluggable modules with a standard trait interface (`TerminalModule`)
+- **Spectral Dashboard** — live TUI rendering of agent collaboration networks with Fiedler values and Cheeger constants
+- **Sheaf-Theoretic Error Analysis** — when multiple agents disagree, compute cohomology to determine if the disagreement is structural or resolvable
+- **Free Probability Model Selection** — predict which LLM handles your prompt best using Marchenko-Pastur spectral analysis of attention patterns
+- **Renormalization for Command History** — multi-scale skill analysis that detects learning plateaus and suggests breakthroughs
 
 ---
 
@@ -202,6 +404,10 @@ All of this is held in memory for the active session only and discarded when the
 
 Intelligent Terminal only collects usage data and sends it to Microsoft to help improve our products and services. Read our [privacy statement](https://go.microsoft.com/fwlink/?LinkID=824704) to learn more. See [PRIVACY.md](./PRIVACY.md) for details and instructions on how to disable telemetry.
 
+### SuperInstance Privacy
+
+All SuperInstance modules are **pure-local computation**. No network calls, no external services, no API calls. The math — Hodge decomposition, spectral graph theory, ergodic Markov chains, exponential decay — runs locally on your machine. Your command history never leaves your terminal. The verification entropy tracker, error decomposition, and griot persistence models are all computed in-process and discarded on exit.
+
 ### Data Collection
 
 The software may collect information about you and your use of the software and send it to Microsoft. Microsoft may use this information to provide services and improve our products and services. You may turn off the telemetry as described in the repository. There are also some features in the software that may enable you and Microsoft to collect data from users of your applications. If you use these features, you must comply with applicable law, including providing appropriate notices to users of your applications together with a copy of Microsoft's privacy statement. Our privacy statement is located at https://go.microsoft.com/fwlink/?LinkID=824704. You can learn more about data collection and use in the help documentation and our privacy statement. Your use of the software operates as your consent to these practices.
@@ -211,6 +417,22 @@ The software may collect information about you and your use of the software and 
 ## Building the Code
 
 Building Intelligent Terminal is the same as building Windows Terminal. See the [Developer Guidance](https://github.com/microsoft/terminal#developer-guidance) section of the Windows Terminal README for prerequisites, build instructions, and debugging steps.
+
+To build with SuperInstance enhancements:
+
+```bash
+# Standard build (no enhancements)
+cargo build
+
+# With math-aware analysis
+cargo build --features math-tools
+
+# With griot command history
+cargo build --features griot-history
+
+# Everything
+cargo build --features math-tools,griot-history
+```
 
 ---
 
