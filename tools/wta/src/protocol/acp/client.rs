@@ -2142,18 +2142,14 @@ pub async fn run_acp_client_over_pipe(
             10000, 10000, 10000, 15000,
         ];
         loop {
-            // Connect to the named pipe, or fail with Unsupported on non-Windows
-            let pipe: std::io::Result<_> = {
-                #[cfg(windows)]
-                {
-                    tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name)
-                }
-                #[cfg(not(windows))]
-                {
-                    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "named pipes are Windows-only"))
-                }
-            };
-            match pipe {
+            // Connect to the named pipe
+            #[cfg(windows)]
+            let connect: std::io::Result<PipeStream> =
+                tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name);
+            #[cfg(not(windows))]
+            let connect: std::io::Result<PipeStream> =
+                Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "named pipes are Windows-only"));
+            match connect {
                 Ok(pipe) => {
                     // Always log the connect milestone at info (not just on
                     // retry) so a clean helper→master connect is visible in

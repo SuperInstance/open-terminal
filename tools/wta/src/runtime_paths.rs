@@ -130,6 +130,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(windows)]
     fn unpackaged_process_has_no_package_family_name() {
         // `cargo test` runs the test binary without package identity, so the
         // OS call must report "no package" and we must fall back gracefully

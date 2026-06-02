@@ -87,6 +87,7 @@ pub(crate) fn spawn_agent_process(agent_cmd: &str, cwd: Option<&Path>) -> Result
     // for both the `cmd /c` and direct-spawn cases without requiring a full WT
     // restart. (Recent Rust resolves the program name against the child env's
     // PATH when one is provided.)
+    #[cfg(windows)]
     if let Some(path) = crate::agent_check::spawn_path() {
         cmd.env("PATH", path);
     }

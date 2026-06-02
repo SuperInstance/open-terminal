@@ -213,6 +213,7 @@ pub fn refresh_path() {
 /// (system + user) so a just-installed CLI resolves without a full WT
 /// restart, merging in the current process PATH so no runtime-only entry
 /// is lost. Returns `None` when the registry read yields nothing usable.
+#[cfg(windows)]
 pub fn spawn_path() -> Option<String> {
     let fresh = fresh_path();
     if fresh.is_empty() {
