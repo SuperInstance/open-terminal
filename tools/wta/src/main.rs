@@ -14,6 +14,8 @@ mod event;
 mod helper;
 mod history_loader;
 mod logging;
+#[cfg(feature = "math-tools")]
+mod math_analysis;
 mod master;
 mod osc52;
 mod pane_context;
@@ -29,6 +31,9 @@ mod test_support;
 mod theme;
 mod ui;
 mod ui_trace;
+
+#[cfg(feature = "griot-history")]
+mod griot_history;
 
 use acp::Agent as _;
 use agent_client_protocol as acp;
@@ -867,7 +872,10 @@ async fn main() -> Result<()> {
         //      per-pane child that speaks ACP to master over the pipe)
         None => {
             if let Some(pipe_name) = cli.master.clone() {
-                master::run_master_mode(cli, pipe_name).await
+                #[cfg(windows)]
+                { master::run_master_mode(cli, pipe_name).await }
+                #[cfg(not(windows))]
+                { anyhow::bail!("master mode is Windows-only") }
             } else if let Some(pipe_name) = cli.connect_master.clone() {
                 helper::run_helper_mode(cli, pipe_name).await
             } else {
@@ -1226,7 +1234,10 @@ async fn fetch_sessions_from_master(
     master_override: Option<String>,
 ) -> Result<Vec<session_registry::SessionInfo>> {
     let pipe_name = resolve_master_pipe(master_override).await?;
+    #[cfg(windows)]
     let pipe = open_master_pipe_for_cli(&pipe_name).await?;
+    #[cfg(not(windows))]
+    let pipe = anyhow::bail!("named pipes are Windows-only");
     let (read_half, write_half) = tokio::io::split(pipe);
     let outgoing = write_half.compat_write();
     let incoming = read_half.compat();
@@ -1279,6 +1290,7 @@ async fn resolve_master_pipe(master_override: Option<String>) -> Result<String> 
     Err(anyhow::anyhow!(MASTER_NOT_RUNNING))
 }
 
+#[cfg(windows)]
 async fn open_master_pipe_for_cli(
     pipe_name: &str,
 ) -> Result<tokio::net::windows::named_pipe::NamedPipeClient> {

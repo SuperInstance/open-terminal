@@ -42,3 +42,9 @@ tracelogging = "1"
 which = "7"
 rust-i18n = "3"
 sys-locale = "0.3"
+nalgebra = { version = "0.33", optional = true }
+
+[features]
+default = []
+griot-history = []
+math-tools = ["dep:nalgebra"]
