@@ -55,7 +55,10 @@ impl AgentStatus {
 /// Returns the full path if found, None otherwise.
 pub fn find_exe(agent_id: &str) -> Option<String> {
     let profile = agent_registry::lookup_profile_by_id(agent_id);
+    #[cfg(windows)]
     let path_var = fresh_path();
+    #[cfg(not(windows))]
+    let path_var = std::env::var("PATH").unwrap_or_default();
     let resolved = agent_registry::resolve_bare_agent_name(agent_id);
 
     // Try resolved name first (e.g. "copilot.exe")
@@ -189,9 +192,12 @@ pub async fn install(agent_id: &str, on_line: impl FnMut(String) + Send + 'stati
 /// Refresh the current process's PATH from the Windows registry.
 /// Call after installing software so `find_exe` picks up the new binary.
 pub fn refresh_path() {
-    let path = fresh_path();
-    if !path.is_empty() {
-        std::env::set_var("PATH", &path);
+    #[cfg(windows)]
+    {
+        let path = fresh_path();
+        if !path.is_empty() {
+            std::env::set_var("PATH", &path);
+        }
     }
 }
 
@@ -359,6 +365,7 @@ async fn install_copilot(mut on_line: impl FnMut(String) + Send + 'static) -> Re
 
 /// Read PATH from the Windows registry (system + user), picking up programs
 /// installed after this process started.
+#[cfg(windows)]
 fn fresh_path() -> String {
     use std::os::windows::ffi::OsStringExt;
 
@@ -415,6 +422,7 @@ fn fresh_path() -> String {
 }
 
 /// Expand %VAR% references using Win32 ExpandEnvironmentStringsW.
+#[cfg(windows)]
 fn expand_env_vars(s: &str) -> Option<String> {
     use std::os::windows::ffi::OsStringExt;
 

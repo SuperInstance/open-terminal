@@ -50,25 +50,34 @@ pub fn intelligent_terminal_local_root() -> Option<PathBuf> {
 /// (the `package_subdir` is ignored, since there is no package store to
 /// nest under).
 fn resolve_root(package_subdir: &[&str]) -> Option<PathBuf> {
-    let local = std::env::var_os("LOCALAPPDATA")
-        .or_else(|| std::env::var_os("APPDATA"))
-        .map(PathBuf::from)?;
+    #[cfg(windows)]
+    {
+        let local = std::env::var_os("LOCALAPPDATA")
+            .or_else(|| std::env::var_os("APPDATA"))
+            .map(PathBuf::from)?;
 
-    match current_package_family_name() {
-        Some(family) => {
-            let mut path = local.join("Packages").join(family);
-            for segment in package_subdir {
-                path.push(segment);
+        match current_package_family_name() {
+            Some(family) => {
+                let mut path = local.join("Packages").join(family);
+                for segment in package_subdir {
+                    path.push(segment);
+                }
+                Some(path.join("IntelligentTerminal"))
             }
-            Some(path.join("IntelligentTerminal"))
+            None => Some(local.join("IntelligentTerminal")),
         }
-        None => Some(local.join("IntelligentTerminal")),
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = package_subdir;
+        Some(PathBuf::from("/tmp/intelligent-terminal"))
     }
 }
 
 /// Returns the current process's package family name (e.g.
 /// `IntelligentTerminal_rd9vj3e6a2mbr`), or `None` when the process has no
 /// package identity (unpackaged) or the OS call fails for any other reason.
+#[cfg(windows)]
 fn current_package_family_name() -> Option<std::ffi::OsString> {
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;

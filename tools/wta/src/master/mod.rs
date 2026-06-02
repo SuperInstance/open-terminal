@@ -50,6 +50,7 @@ use acp::Agent as _;
 use acp::Client as _;
 use agent_client_protocol as acp;
 use anyhow::{anyhow, Context, Result};
+#[cfg(windows)]
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::LocalSet;
@@ -1206,6 +1207,7 @@ impl acp::Agent for HelperHandler {
 }
 
 /// Master mode entry point.
+#[cfg(windows)]
 pub async fn run_master_mode(cli: Cli, pipe_name: String) -> Result<()> {
     // Logging is initialized once in `main()`; the WorkerGuard lives there for
     // the whole process so the non-blocking appender flushes on the graceful
@@ -1341,6 +1343,7 @@ impl Drop for MasterPipeDiscoveryGuard {
     }
 }
 
+#[cfg(windows)]
 async fn run_master_loop(cli: Cli, pipe_name: String) -> Result<()> {
     // 1. Spawn the agent CLI subprocess. cwd=None: master inherits
     //    Terminal's cwd, which is fine because per-session cwd is
@@ -1697,6 +1700,7 @@ async fn run_master_loop(cli: Cli, pipe_name: String) -> Result<()> {
 /// Per-helper-connection task. Wraps the named pipe in an
 /// `AgentSideConnection`, runs both its I/O loop and a notification
 /// forwarder until the helper disconnects.
+#[cfg(windows)]
 async fn serve_helper(
     helper_id: HelperId,
     pipe: NamedPipeServer,

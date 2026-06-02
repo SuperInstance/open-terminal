@@ -6,6 +6,7 @@ use agent_client_protocol as acp;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
+
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc, Mutex,
@@ -14,6 +15,13 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader, ReadBuf};
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+
+/// The pipe type used on Windows; a boxed I/O pair on other platforms.
+#[cfg(windows)]
+pub(crate) type PipeStream = tokio::net::windows::named_pipe::NamedPipeClient;
+/// Fallback stub type for non-Windows (never actually created).
+#[cfg(not(windows))]
+pub(crate) type PipeStream = tokio::io::DuplexStream;
 
 use crate::app::{AppEvent, PermOption, PlanEntry, PlanEntryStatus};
 use crate::coordinator::default_supported_delegate_agents;
@@ -2134,7 +2142,18 @@ pub async fn run_acp_client_over_pipe(
             10000, 10000, 10000, 15000,
         ];
         loop {
-            match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
+            // Connect to the named pipe, or fail with Unsupported on non-Windows
+            let pipe: std::io::Result<_> = {
+                #[cfg(windows)]
+                {
+                    tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name)
+                }
+                #[cfg(not(windows))]
+                {
+                    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "named pipes are Windows-only"))
+                }
+            };
+            match pipe {
                 Ok(pipe) => {
                     // Always log the connect milestone at info (not just on
                     // retry) so a clean helper→master connect is visible in
