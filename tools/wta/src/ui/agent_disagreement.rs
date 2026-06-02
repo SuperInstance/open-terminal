@@ -19,8 +19,6 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::theme;
-
 // ─── Public Types ─────────────────────────────────────────────────────
 
 /// A single agent's proposed fix/response.
