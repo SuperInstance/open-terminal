@@ -37,6 +37,9 @@ mod ui_trace;
 #[cfg(feature = "griot-history")]
 mod griot_history;
 
+#[cfg(feature = "module-system")]
+mod module_system;
+
 use acp::Agent as _;
 use agent_client_protocol as acp;
 use anyhow::{bail, Context, Result};

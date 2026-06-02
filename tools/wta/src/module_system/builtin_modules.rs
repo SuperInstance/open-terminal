@@ -2,6 +2,10 @@
 //!
 //! Each wraps a concrete analysis type behind the [`TerminalModule`] trait
 //! so the registry can manage them uniformly.
+//!
+//! Modules are feature-gated:
+//! - `math-tools`: CommandMarkov, ErrorHodge, VerificationEntropy, SpectralDashboard
+//! - `griot-history`: GriotDecay, PatternMiner, AdinkraCompression, PersistenceViz
 
 use super::{
     ModuleContext, ModuleOutput, TerminalModule,
@@ -15,12 +19,12 @@ use super::{
 /// Wraps `CommandMarkovChain` as a terminal module.
 ///
 /// Triggers on `CommandEntered` events. Produces status bar output
-/// showing the number of tracked commands and anomaly detection.
+/// showing the number of tracked commands and transitions.
 #[cfg(feature = "math-tools")]
 pub struct CommandMarkovModule {
     chain: crate::math_analysis::CommandMarkovChain,
     active: bool,
-    last_command: Option<String>,
+    prev_command: Option<String>,
 }
 
 #[cfg(feature = "math-tools")]
@@ -29,7 +33,7 @@ impl CommandMarkovModule {
         Self {
             chain: crate::math_analysis::CommandMarkovChain::new(),
             active: false,
-            last_command: None,
+            prev_command: None,
         }
     }
 }
@@ -45,17 +49,20 @@ impl TerminalModule for CommandMarkovModule {
     }
 
     fn activate(&mut self, ctx: &ModuleContext) {
-        // Seed the chain from existing history.
-        for entry in &ctx.command_history {
-            self.chain.observe(&entry.command);
+        // Seed the chain from existing history via record_sequence.
+        let cmds: Vec<&str> = ctx.command_history.iter().map(|e| e.command.as_str()).collect();
+        self.chain.record_sequence(&cmds);
+        if let Some(last) = cmds.last() {
+            self.prev_command = Some(last.to_string());
         }
         self.active = true;
     }
 
     fn handle_event(&mut self, event: &super::TerminalEvent) -> Vec<ModuleOutput> {
         if let super::TerminalEvent::CommandEntered { command, .. } = event {
-            self.last_command = Some(command.clone());
-            self.chain.observe(command);
+            let prev = self.prev_command.as_deref();
+            self.chain.record_transition(prev, command);
+            self.prev_command = Some(command.clone());
             let n = self.chain.num_commands();
             let total = self.chain.total_transitions();
             vec![ModuleOutput::status_bar(format!("markov:{}cmds/{}trans", n, total))]
@@ -73,7 +80,7 @@ impl TerminalModule for CommandMarkovModule {
     }
 
     fn memory_usage(&self) -> usize {
-        // Rough estimate: 512 commands max, 512x512 u64 matrix = ~2 MB
+        // 512x512 u64 matrix ≈ 2 MB
         2 * 1024 * 1024
     }
 }
@@ -120,15 +127,28 @@ impl TerminalModule for ErrorHodgeModule {
 
     fn handle_event(&mut self, event: &super::TerminalEvent) -> Vec<ModuleOutput> {
         match event {
-            super::TerminalEvent::Error { message, .. } => {
-                let decomp = self.hodge.decompose(message);
+            super::TerminalEvent::Error { message, exit_code } => {
+                let decomp = self.hodge.decompose(
+                    *exit_code,
+                    message.len(),
+                    message.to_lowercase().contains("signal"),
+                    "",
+                    None,
+                );
                 vec![ModuleOutput::Insight(format!(
                     "Hodge: evidence={:.2} coherence={:.2} mismatch={:.2} [{:?}]",
                     decomp.evidence, decomp.coherence, decomp.prior_mismatch, decomp.dominance
                 ))]
             }
             super::TerminalEvent::CommandCompleted { command, exit_code, .. } if *exit_code != 0 => {
-                let decomp = self.hodge.decompose(&format!("{} (exit {})", command, exit_code));
+                let msg = format!("{} (exit {})", command, exit_code);
+                let decomp = self.hodge.decompose(
+                    *exit_code,
+                    msg.len(),
+                    false,
+                    "",
+                    None,
+                );
                 vec![ModuleOutput::notification(format!(
                     "Error Hodge: {:?} — {:.0}% evidence",
                     decomp.dominance,
@@ -185,7 +205,6 @@ impl VerificationEntropyModule {
 
     fn is_edit_command(cmd: &str) -> bool {
         let lower = cmd.to_lowercase();
-        // Heuristic: commands that typically modify files
         lower.contains("vim")
             || lower.contains("nano")
             || lower.contains("edit")
@@ -216,18 +235,19 @@ impl TerminalModule for VerificationEntropyModule {
     fn handle_event(&mut self, event: &super::TerminalEvent) -> Vec<ModuleOutput> {
         if let super::TerminalEvent::CommandEntered { command, .. } = event {
             if Self::is_test_command(command) {
-                self.entropy.record_test_run();
+                self.entropy.record_test();
             } else if Self::is_edit_command(command) {
-                // Estimate 5 lines edited per edit command (rough heuristic)
-                self.entropy.record_edits(5);
+                self.entropy.record_edit(5);
             }
 
-            let evt = self.entropy.check();
-            let bar = format!("entropy:{}:{:.0}%", evt.level, evt.entropy * 100.0);
+            let level = self.entropy.current_level();
+            let bar = self.entropy.status_bar_label();
 
             let mut outputs = vec![ModuleOutput::status_bar(bar)];
-            if evt.entropy > 0.7 {
-                outputs.push(ModuleOutput::notification(evt.message.clone()));
+            if matches!(level, crate::math_analysis::EntropyLevel::High | crate::math_analysis::EntropyLevel::Critical) {
+                outputs.push(ModuleOutput::notification(format!(
+                    "Verification entropy {:?}: run tests soon", level
+                )));
             }
             outputs
         } else {
@@ -288,11 +308,7 @@ impl TerminalModule for SpectralDashboardModule {
     fn activate(&mut self, ctx: &ModuleContext) {
         // Seed from existing agent IDs.
         for id in &ctx.active_agent_ids {
-            self.dashboard.graph_mut().add_node(
-                id.clone(),
-                id.clone(),
-                true,
-            );
+            self.dashboard.graph.add_node(id.clone(), id.clone(), true);
         }
         self.active = true;
     }
@@ -300,20 +316,23 @@ impl TerminalModule for SpectralDashboardModule {
     fn handle_event(&mut self, event: &super::TerminalEvent) -> Vec<ModuleOutput> {
         match event {
             super::TerminalEvent::AgentStarted { agent_id } => {
-                self.dashboard.graph_mut().add_node(
-                    agent_id.clone(),
-                    agent_id.clone(),
-                    true,
-                );
+                self.dashboard.graph.add_node(agent_id.clone(), agent_id.clone(), true);
             }
             super::TerminalEvent::AgentEnded { agent_id } => {
-                self.dashboard.graph_mut().set_node_alive(agent_id, false);
+                // Mark as not alive rather than removing (preserves graph structure).
+                for node in &mut self.dashboard.graph.nodes {
+                    if node.id == *agent_id {
+                        node.alive = false;
+                    }
+                }
+                self.dashboard.graph.invalidate_cache();
             }
             _ => {}
         }
 
-        let fiedler = self.dashboard.fiedler_value();
-        let cheeger = self.dashboard.cheeger_constant();
+        self.dashboard.recompute();
+        let fiedler = self.dashboard.last_fiedler.unwrap_or(0.0);
+        let cheeger = self.dashboard.last_cheeger.unwrap_or(0.0);
 
         vec![ModuleOutput::status_bar(format!("λ₂={:.2} h={:.2}", fiedler, cheeger))]
     }
@@ -380,7 +399,11 @@ impl TerminalModule for GriotDecayModule {
             } else {
                 0.0
             };
-            vec![ModuleOutput::status_bar(format!("decay:{}cmds/{:.0}%persist", self.model.total_count(), ratio * 100.0))]
+            vec![ModuleOutput::status_bar(format!(
+                "decay:{}cmds/{:.0}%persist",
+                self.model.total_count(),
+                ratio * 100.0
+            ))]
         } else {
             vec![]
         }
@@ -399,10 +422,12 @@ impl TerminalModule for GriotDecayModule {
     }
 
     fn serialize_state(&self) -> Vec<u8> {
-        // Simple: just store commands and timestamps as lines.
         let mut buf = String::new();
         for rec in self.model.records() {
-            buf.push_str(&format!("{}\t{}\t{}\n", rec.command, rec.timestamp, rec.retelling_count));
+            buf.push_str(&format!(
+                "{}\t{}\t{}\n",
+                rec.command, rec.timestamp, rec.retelling_count
+            ));
         }
         buf.into_bytes()
     }
@@ -734,8 +759,13 @@ mod tests {
 
         let mut m2 = GriotDecayModule::new();
         assert!(m2.deserialize_state(&state));
-        // After deserialization, the model should have records.
-        // We verify by activating and checking it doesn't crash.
+    }
+
+    #[cfg(feature = "griot-history")]
+    #[test]
+    fn griot_decay_bad_deserialize() {
+        let mut m = GriotDecayModule::new();
+        assert!(!m.deserialize_state(&[0xFF, 0xFE, 0xFD]));
     }
 
     // --- PatternMinerModule tests ---
@@ -751,7 +781,6 @@ mod tests {
             command: "ls".into(),
             timestamp_secs: 1000,
         });
-        // Single command, no pattern yet
         assert!(outputs.is_empty());
     }
 
@@ -770,10 +799,8 @@ mod tests {
             command: "cargo build".into(),
             timestamp_secs: ts(0),
         });
-        // Should detect the build→test pattern
         assert!(!outputs.is_empty());
-        let hint = &outputs[0];
-        assert!(matches!(hint, ModuleOutput::InlineHint(_)));
+        assert!(matches!(outputs[0], ModuleOutput::InlineHint(_)));
     }
 
     // --- AdinkraCompressionModule tests ---
@@ -785,7 +812,6 @@ mod tests {
         assert_eq!(m.id(), "adinkra_compression");
         let ctx = ModuleContext::empty();
         m.activate(&ctx);
-        // No project detected, should produce nothing for commands
         let outputs = m.handle_event(&super::super::TerminalEvent::CommandEntered {
             command: "cargo build".into(),
             timestamp_secs: 1000,
@@ -853,7 +879,6 @@ mod tests {
             super::super::MemoryBudget::new(50 * 1024 * 1024, dir),
         );
         register_all(&mut registry);
-        // Should have at least some modules registered depending on features
         #[cfg(feature = "math-tools")]
         assert!(registry.module_count() >= 4);
         #[cfg(feature = "griot-history")]

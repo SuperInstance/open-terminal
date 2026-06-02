@@ -48,6 +48,7 @@ nalgebra = { version = "0.33", optional = true }
 default = []
 griot-history = []
 math-tools = ["dep:nalgebra"]
+module-system = []
 context-triggers = ["griot-history", "math-tools"]
 
 # Compile the context trigger engine with all detectors.
