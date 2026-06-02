@@ -1977,6 +1977,11 @@ pub struct App {
     /// the bootstrap RPC hasn't returned yet. Tracked as an Atomic so
     /// the bootstrap task can flip it from a non-`&mut self` context.
     pub alive_loaded: std::sync::Arc<std::sync::atomic::AtomicBool>,
+
+    /// Verification entropy tracker. Always active when `math-tools` feature
+    /// is enabled — the entropy bar is the one module that never sleeps.
+    #[cfg(feature = "math-tools")]
+    pub entropy_tracker: crate::ui::entropy_bar::EntropyTracker,
 }
 
 /// How long the "Press Ctrl+C again to close pane" arm stays live. Long
@@ -2162,6 +2167,8 @@ impl App {
             transient_hint: None,
             alive: crate::session_registry::InMemoryRegistry::shared(),
             alive_loaded: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(feature = "math-tools")]
+            entropy_tracker: crate::ui::entropy_bar::EntropyTracker::new(),
             shell_mgr,
         }
     }

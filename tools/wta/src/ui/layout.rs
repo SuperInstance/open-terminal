@@ -5,6 +5,9 @@ use super::{
     agents_view, auth, chat, command_popup, debug_panel, input, permission, recommendations, setup,
 };
 
+#[cfg(feature = "math-tools")]
+use super::entropy_bar;
+
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
@@ -116,6 +119,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         app.show_welcome_hint && app.state == crate::app::ConnectionState::Connected;
     let hint_visible = welcome_visible || transient_visible;
     let hint_h: u16 = if hint_visible { 1 } else { 0 };
+    // Entropy bar: always 1 row when math-tools feature is enabled.
+    #[cfg(feature = "math-tools")]
+    let entropy_bar_h: u16 = 1;
+    #[cfg(not(feature = "math-tools"))]
+    let entropy_bar_h: u16 = 0;
+
     let rec_hint_h: u16 = if app.current_tab().turn.recommendations().is_some() {
         1
     } else {
@@ -137,7 +146,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .saturating_add(perm_panel_h)
         .saturating_add(input_height)
         .saturating_add(hint_h)
-        .saturating_add(rec_hint_h);
+        .saturating_add(rec_hint_h)
+        .saturating_add(entropy_bar_h);
     let chat_max = main_area.height.saturating_sub(reserved_below).max(1);
     let chat_height = chat_estimate.min(chat_max);
     let chunks = Layout::default()
@@ -149,6 +159,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             Constraint::Min(0),
             Constraint::Length(hint_h),
             Constraint::Length(rec_hint_h),
+            Constraint::Length(entropy_bar_h),
             Constraint::Length(input_height),
         ])
         .split(main_area);
@@ -209,7 +220,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.current_tab().turn.recommendations().is_some() {
         recommendations::render_hint(frame, chunks[5]);
     }
-    input::render(frame, app, chunks[6]);
+
+    // Entropy bar: always visible when math-tools is enabled.
+    #[cfg(feature = "math-tools")]
+    {
+        let tracker = &app.entropy_tracker;
+        entropy_bar::render(frame, chunks[6], tracker);
+    }
+
+    input::render(frame, app, chunks[7]);
 
     if let Some(debug_area) = debug_area {
         debug_panel::render(frame, app, debug_area);
