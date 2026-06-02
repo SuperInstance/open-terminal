@@ -18,6 +18,8 @@ mod history_loader;
 mod logging;
 #[cfg(feature = "math-tools")]
 mod math_analysis;
+#[cfg(feature = "math-tools")]
+mod forecast;
 mod master;
 mod osc52;
 mod pane_context;

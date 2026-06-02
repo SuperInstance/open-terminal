@@ -133,10 +133,15 @@ impl TransitionMatrix {
 
     /// Get the raw transition count between two named commands.
     pub fn count_named(&self, from: &str, to: &str) -> u64 {
-        let i = self.command_to_idx.get(from)?;
-        let j = self.command_to_idx.get(to)?;
-        Some(self.counts[i * self.max_states + j])
-            .unwrap_or(0)
+        let i = match self.command_to_idx.get(from) {
+            Some(&idx) => idx,
+            None => return 0,
+        };
+        let j = match self.command_to_idx.get(to) {
+            Some(&idx) => idx,
+            None => return 0,
+        };
+        self.counts[i * self.max_states + j]
     }
 
     /// Compute (or return cached) the row-stochastic transition probabilities.
@@ -193,9 +198,11 @@ impl TransitionMatrix {
             Some(&idx) => idx,
             None => return vec![],
         };
-        let probs = self.probabilities();
-        let mut result: Vec<(String, f64)> = (0..self.num_states())
-            .map(|j| (self.idx_to_command[j].clone(), probs[i][j]))
+        let n = self.num_states();
+        let probs = self.probabilities().to_vec();
+        let idx_to_cmd = self.idx_to_command.clone();
+        let mut result: Vec<(String, f64)> = (0..n)
+            .map(|j| (idx_to_cmd[j].clone(), probs[i][j]))
             .collect();
         result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         result
