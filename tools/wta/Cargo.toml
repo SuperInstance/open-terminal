@@ -43,6 +43,9 @@ which = "7"
 rust-i18n = "3"
 sys-locale = "0.3"
 nalgebra = { version = "0.33", optional = true }
+chrono = { version = "0.4", features = ["serde"], optional = true }
+reqwest = { version = "0.12", features = ["json"], optional = true }
+tempfile = { version = "3", optional = true }
 
 # SuperInstance metal library fleet — the terminal is their harness
 spectral-graph-agent = { git = "https://github.com/SuperInstance/spectral-graph-agent-rs", optional = true }
@@ -54,6 +57,7 @@ evolving-sheaf = { git = "https://github.com/SuperInstance/evolving-sheaf-rs", o
 
 [features]
 default = []
+trending = ["dep:chrono", "dep:reqwest", "dep:tempfile"]
 griot-history = []
 math-tools = ["dep:nalgebra"]
 module-system = []

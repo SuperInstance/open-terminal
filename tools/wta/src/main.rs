@@ -42,6 +42,9 @@ mod griot_history;
 #[cfg(feature = "module-system")]
 mod module_system;
 
+#[cfg(feature = "trending")]
+pub mod trending_harness;
+
 use acp::Agent as _;
 use agent_client_protocol as acp;
 use anyhow::{bail, Context, Result};
