@@ -2,6 +2,20 @@
 
 > Mapping the ensign system capabilities for SuperInstance integration.
 
+## open-mind Induction Results (tree-sitter)
+
+As of 2026-06-03, the open-mind induction engine with tree-sitter multi-language parsing extracts **11,528 functions** and **1,186 classes** from this codebase. This is a **443×** improvement over the previous Python-AST-only extraction (26 functions).
+
+| Metric | Value |
+|--------|-------|
+| Functions induced | 11,528 |
+| Classes induced | 1,186 |
+| Call graph edges | 10,224 |
+| Languages parsed | C++ (690), C (448), Rust (87), Python (6), JavaScript (1) |
+| Test files detected | 3 |
+
+---
+
 ## Architecture Overview
 
 Intelligent Terminal is a Microsoft Windows Terminal fork with a deeply layered analysis and agent orchestration system built in Rust. The `wta` tool (the analysis engine) sits between the terminal event loop and the user, providing real-time mathematical analysis, command forecasting, and multi-agent coordination.
