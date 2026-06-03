@@ -1,9 +1,24 @@
-# WTA -- Windows Terminal Agent
+# WTA — Intelligent Terminal
 
-A Rust TUI client and tmux-like CLI that connects AI agents to Windows Terminal.
+## Universal Harness for AI Agents, Reflexes & Mathematical Awareness
 
-Customization:
-- See [CUSTOMIZATION.md](CUSTOMIZATION.md) for changing the agent model and runtime prompt.
+WTA is a **universal harness** — it doesn't re-implement anything. It imports and wires.
+
+Every module is an optional connection to a SuperInstance metal library or system:
+spectral graphs from `spectral-graph-agent-rs`, Hodge decompositions from `hodge-belief-rs`,
+sheaf cohomology from `sheaf-agents-rs`, reflexes from `pincherOS`. All feature-gated.
+Zero cost when disabled. Ships with a shell fallback before it's marked stable.
+
+```
+cargo build --features all                 # Everything — metal libs, reflexes, entropy, trending
+cargo build --features math-tools          # Spectral graph, Hodge, Markov, entropy
+cargo build --features pincher             # PincherOS reflex engine
+cargo build --features trending            # Clone → analyze → decompose → absorb any GitHub repo
+```
+
+> **The terminal doesn't wait for you to ask. It watches the math and speaks when the math says something is wrong. When the math can't decide, the shell waits. When the shell can't decide, you type. The fallback chain is never broken.**
+
+---
 
 ## Quick Start
 
@@ -11,7 +26,7 @@ Customization:
 
 ```bash
 cd tools/wta
-cargo build
+cargo build --features all
 ```
 
 The binary is output to `tools/wta/target/debug/wta.exe`.
@@ -25,65 +40,33 @@ wta
 # With a specific agent
 wta --agent "copilot --acp --stdio"
 
-# With an initial prompt
-wta "list all open tabs"
-
 # Claude via ACP adapter
 wta --agent "claude-agent-acp --stdio"
 ```
 
-When ACP mode is connected to Windows Terminal, the current agent-facing contract is the local `wta` CLI.
-The agent is expected to shell out to commands like `wta active-pane --json`, `wta list-panes --json`, and `wta capture-pane --json`.
-The CLI then talks to Windows Terminal over the protocol.
-
 ### tmux-like CLI
-
-WTA exposes tmux-equivalent subcommands for controlling Windows Terminal from the shell. Useful for humans and AI agents that can shell out.
 
 ```bash
 wta list-windows                          # list all WT windows
-wta list-tabs                             # list tabs in first window
-wta list-panes                            # list panes in first tab
-wta active-pane                           # show focused pane
+wta list-tabs                             # list tabs
+wta list-panes                            # list panes
 wta new-tab -c "pwsh.exe" -n "Build"      # create tab running pwsh
 wta split-pane -H -c "pwsh.exe"           # split horizontal
-wta capture-pane -t 3 -l 50              # read last 50 lines from pane 3
-wta kill-pane -t 3                        # close pane 3
-wta pane-status -t 3                      # check if running
-wta wait-for -t 3 --timeout 30           # wait for pane 3 to exit
-wta list-windows --json                   # raw JSON output
+wta capture-pane -t 3 -l 50              # read last 50 lines
 ```
 
-Short aliases are supported: `lsw`, `lst`, `lsp`, `neww`, `splitw`, `send`, `capturep`, `killp`, `setenv`.
+Short aliases: `lsw`, `lst`, `lsp`, `neww`, `splitw`, `capturep`.
 
-When `-t` (target pane) is omitted, the active pane is used automatically.
-
-### Protocol Discovery & Environment Setup
-
-WTA finds Windows Terminal via the `WT_COM_CLSID` environment variable, which
-WT propagates into every conpty child it spawns. You usually don't need to do
-anything — just run `wta` inside a WT pane.
+### Protocol Discovery
 
 ```bash
-# Inspect the inherited value
 wta pipe-id                               # print CLSID
-wta pipe-id --json                        # JSON with metadata
-
-# Re-export it into another shell session (rarely needed)
-eval "$(wta set-env)"                     # bash/zsh
-wta set-env -s powershell | Invoke-Expression   # PowerShell
-wta set-env -s fish | source              # fish
-wta set-env -s cmd                        # cmd (copy-paste output)
+wta test-pipe                             # test WT protocol connection
+eval "$(wta set-env)"                     # re-export CLSID (bash/zsh)
 ```
 
-### Test connectivity
-
-```bash
-wta test-pipe
-wta --test-pipe     # legacy flag, still works
-```
-
-Connects to the WT protocol, prints `list_windows` + `get_capabilities`.
+WTA finds Windows Terminal via `WT_COM_CLSID` — inherited from every conpty child.
+Usually zero-config.
 
 ## Protocol Connection
 
@@ -213,67 +196,108 @@ target/debug/wta.exe
 4. Add a `CliChannel::request` arm in `tools/wta/src/shell/wt_channel/cli_channel.rs` mapping a method name to the new `wtcli` subcommand
 5. Rebuild WT, wtcli, and wta
 
-## Architecture Notes
-
-- **ShellManager** owns local terminals and the active `WtChannel`
-- **CliChannel** shells out to `wtcli.exe` per call; `wtcli` does `CoCreateInstance` to reach WT's COM server. All methods, including `send_input` (via `wtcli send-keys`), go through this path.
-- **Protocol discovery**: `WT_COM_CLSID` env var, inherited from the WT-spawned conpty
-- **CLI subcommands** call `CliChannel::connect()` directly; no ShellManager needed
-- **Pane identity** is discovered at startup via PID matching (list all panes, find ours)
-- **Graceful degradation**: if the WT protocol is unavailable, WTA falls back to local-only mode (no WT tools, just local shell operations)
-
 ## Harness Architecture
 
-The Intelligent Terminal is a **universal harness** — it doesn't re-implement anything. It imports and wires.
+The terminal is organized as three concentric layers, each with a dual-aspect functor at its boundary:
+
+```
+NATURAL (outermost) ── Shell interface, interpreted by humans & LLMs
+  ↑ Intent compilation (you say "find the bottleneck") 
+  ↓ Explanation extraction (terminal tells you what it found)
+───
+FLUID (hot path) ── A proper language in the transformation graph
+  ↑ Expression compilation (fluid picks the algorithm)
+  ↓ Result extraction (eigenvalue → fluid decides what it means)
+───
+MACHINE (cold path) ── Compiled Rust. Bit-identical. Slow-to-change.
+```
+
+The shell is not a fallback — it is the **outermost ring interface**. Every module has a shell expression.
 
 ### Connected Systems
 
-| System | Role | Terminal Feature |
-|--------|------|-----------------|
-| **spectral-graph-agent-rs** | Graph eigenvalue computation | SpectralDashboard delegates to QR-based eigendecomposition |
-| **hodge-belief-rs** | Opinion decomposition | ErrorHodge uses the Hodge decomposition for error classification |
-| **sheaf-agents-rs** | Multi-agent agreement | AgentDisagreementViz computes H⁰/H¹ on agent communication graphs |
-| **ergodic-transport-rs** | Markov chain ergodicity | CommandForecast uses stationary distribution prediction |
-| **evolving-sheaf-rs** | Temporal sheaf dynamics | Renormalization skill detector tracks gap evolution |
-| **conservation-sheaf-flow-rs** | Spectral gap conservation | Theorem verification in integration tests |
-| **pincherOS** | Reflex engine | Command history → reflex compilation (opt-in) |
-| **conservation-spectral-topology-rs** | Cheeger inequality | Spectral gap bounds for all agent networks |
-| **renormalization-learning-rs** | RG flow | Skill plateaus detected by universal class |
-| **free-probability-rs** | Random matrix theory | Marcenko-Pastur initialization bounds |
-| **west-african-math-rs** | Oral tradition computing | GriotHistory: decay, pattern, persistence |
-| **persistent-sheaf-rs** | TDA on terminal data | Session persistence via barcodes |
-| **terminal-spectral-harness** | Terminal→Metal bridge | Wraps spectral-graph-agent-rs for UI |
-| **terminal-entropy-harness** | Standalone entropy | VerificationEntropy as independent crate |
+Every row is an **optional feature gate**. Zero cost when disabled.
 
-### Feature Gates
-
-All connections are optional:
-```
-cargo build --features math-tools           # Core math modules
-cargo build --features griot-history        # Historical pattern mining
-cargo build --features pincher              # PincherOS reflex engine
-cargo build --features trending             # Trending repo absorption
-cargo build --features context-triggers     # Auto-activation rules
-cargo build --features module-system        # Module lifecycle
-cargo build --features metal-libs           # All 6 metal library dependencies
-cargo build --features all                  # Everything
-```
+| Feature | Crate | What It Does |
+|---------|-------|-------------|
+| `math-tools` | `spectral-graph-agent-rs` | QR eigenvalue decomposition → Fiedler, Cheeger, mixing time |
+| `math-tools` | `hodge-belief-rs` | Error classification: evidence / coherence / prior |
+| `math-tools` | `sheaf-agents-rs` | H⁰/H¹ disagreement on agent communication graphs |
+| `math-tools` | `ergodic-transport-rs` | Markov chain prediction → command forecast |
+| `math-tools` | `conservation-spectral-topology-rs` | Cheeger inequality for spectral gap bounds |
+| `math-tools` | `evolving-sheaf-rs` | RG flow on skill plateaus |
+| `math-tools` | `conservation-sheaf-flow-rs` | Static sheaf theorem verification |
+| `griot-history` | `west-african-math-rs` | Decay, pattern mining, adinkra compression, persistence |
+| `pincher` | `pincherOS` | Every command teaches a reflex. 5-command workflows auto-compile. Errors auto-learn handlers. |
+| `trending` | (standalone) | Clone any GitHub repo → analyze → decompose → absorb as a terminal module |
+| `griot-history` | `renormalization-learning-rs` | Universality class detection + skill plateau prediction |
+| `math-tools` | `free-probability-rs` | Marcenko-Pastur bounds for initialization theory |
+| — | `terminal-spectral-harness` | Standalone crate: wraps spectral-graph-agent-rs for UI |
+| — | `terminal-entropy-harness` | Standalone crate: VerificationEntropy as independent library |
 
 ### The Loop
 
-Every command compiles a better reflex (PincherOS).
-Every error improves the decomposition (Hodge).
-Every skill plateau accelerates the next RG step (renormalization).
-The pipeline's bottleneck is you, and you scale arbitrarily.
-
-### Three-Layer Model
+Every command compiles a better reflex (PincherOS). Every error improves the decomposition (Hodge). Every skill plateau accelerates the next RG step (renormalization). The bottleneck scales arbitrarily because the bottleneck is you.
 
 ```
-NATURAL (outermost) — Shell interface, interpreted by humans & LLMs
-  ↑ Intent compilation | ↓ Explanation extraction
-FLUID (hot path) — Proper language in the transformation graph
-  ↑ Expression compilation | ↓ Result extraction  
-MACHINE (cold path) — Compiled Rust, bit-identical, slow-to-change
+You type → Markov predicts → PincherOS compiles → Reflex runs at 50ms
+You break → Hodge decomposes → you learn → next time the reflex handles it
+You plateau → Renormalization detects → PincherOS teaches → gap closes
 ```
 
-Every module has a fallback. The fallback ships before the module is marked stable.
+### Project Structure
+
+```
+tools/wta/src/
+├── main.rs                    Entry, CLI subcommands, protocol discovery
+├── app.rs                     TUI state machine, event loop
+├── event.rs                   Crossterm event reader
+├── theme.rs                   Color constants
+├── reflex_bridge.rs           PincherOS: teach reflexes, detect workflows, learn errors
+├── trending_harness.rs        Clone → analyze → decompose → absorb any repo
+├── math_analysis/             Feature-gated: Markov, Hodge, entropy, spectral
+├── griot_history/             Feature-gated: decay, pattern, persistence, skill detection
+├── context_trigger/           Feature-gated: 7 auto-activation rules
+├── module_system/             Feature-gated: TerminalModule trait, LRU memory budget
+├── forecast/                  Feature-gated: command prediction via ergodic theory
+├── protocol/
+│   └── acp/client.rs          ACP client — spawns agent, routes requests
+├── shell/
+│   ├── shell_manager.rs       Terminal abstraction: local subprocess or WT pane
+│   └── wt_channel/            wtcli subprocess — all WT methods via COM
+└── ui/
+    ├── entropy_bar.rs         Always-visible verification entropy gauge
+    ├── agent_disagreement.rs  H⁰/H¹ disagreement visualization
+    ├── layout.rs              Main layout + debug panel split
+    ├── chat.rs                Message rendering
+    ├── input.rs               Input box with cursor
+    ├── status_bar.rs          Connection status, pane identity
+    ├── permission.rs          Permission modal
+    └── debug_panel.rs         Protocol traffic viewer (F12)
+```
+
+### Architecture Invariants
+
+1. **Every module is feature-gated.** Zero cost when disabled.
+2. **Every module has a shell fallback.** The fallback ships before the module is marked stable.
+3. **The terminal re-implements nothing.** It imports and wires.
+4. **The three layers are concentric.** Shell is the outermost ring, not a fallback.
+5. **Every boundary is a dual-aspect functor.** Compilation runs down, extraction runs up.
+
+### Graceful Degradation
+
+If the WT protocol is unavailable, WTA falls back to local-only mode.
+If the math runtime fails, the shell fallback executes.
+If the reflex engine can't compile, the Markov chain predicts.
+If the chain can't predict, the shell prompt waits.
+If the shell can't decide, you type.
+
+The fallback chain is never broken. This is what makes the terminal a tool rather than a dependency.
+
+### Architecture Notes
+
+- **ShellManager** owns local terminals and the active `WtChannel`
+- **CliChannel** shells out to `wtcli.exe` per call; `wtcli` does `CoCreateInstance` to reach WT's COM server
+- **Protocol discovery**: `WT_COM_CLSID` env var, inherited from WT-spawned conpty
+- **Pane identity**: discovered at startup via PID matching
+- **Graceful degradation**: local-only mode when WT protocol unavailable
