@@ -44,12 +44,22 @@ rust-i18n = "3"
 sys-locale = "0.3"
 nalgebra = { version = "0.33", optional = true }
 
+# SuperInstance metal library fleet — the terminal is their harness
+spectral-graph-agent = { git = "https://github.com/SuperInstance/spectral-graph-agent-rs", optional = true }
+conservation-spectral-topology = { git = "https://github.com/SuperInstance/conservation-spectral-topology-rs", optional = true }
+sheaf-agents = { git = "https://github.com/SuperInstance/sheaf-agents-rs", optional = true }
+hodge-belief = { git = "https://github.com/SuperInstance/hodge-belief-rs", optional = true }
+ergodic-transport = { git = "https://github.com/SuperInstance/ergodic-transport-rs", optional = true }
+evolving-sheaf = { git = "https://github.com/SuperInstance/evolving-sheaf-rs", optional = true }
+
 [features]
 default = []
 griot-history = []
 math-tools = ["dep:nalgebra"]
 module-system = []
 context-triggers = ["griot-history", "math-tools"]
+
+metal-libs = ["spectral-graph-agent", "conservation-spectral-topology", "sheaf-agents", "hodge-belief", "ergodic-transport", "evolving-sheaf"]
 
 # Compile the context trigger engine with all detectors.
 # Enables all feature-dependent modules: griot-history, math-tools.
