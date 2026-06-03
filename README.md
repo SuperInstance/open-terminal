@@ -203,6 +203,36 @@ all = ["math-tools", "griot-history"]
 └─────────────────────────────────────────────────────────┘
 ```
 
+
+### Three-Layer Architecture
+
+The module system sits inside a **concentric three-layer architecture** that replaces the old "shell-as-fallback" model with a corrected view:
+
+```
+NATURAL (outermost ring)
+  │  Shell interface — interpreted by humans & LLMs
+  │  Intent boundary: natural → fluid translation
+FLUID (middle ring — the hot path)
+  │  Proper language in the transformation graph
+  │  Adaptive, compiled-but-parameterized, context-sensitive
+  │  Semantic boundary: fluid → natural extraction
+  │  Compilation boundary: fluid → machine  
+MACHINE (innermost — the cold path / fixed point)
+  │  Compiled Rust. Feature-gated. Zero-cost when disabled.
+  │  Bit-identical. Slow-to-change.
+```
+
+**The shell is NOT the fallback — it's the outermost ring interface.** In the old model, shell was treated as a lower tier. In reality, the shell is where everything begins and ends. The Machine layer is the pure-computation core, not the top of a hierarchy.
+
+Each boundary between layers is a **dual aspect functor** — it translates both structure and meaning in both directions:
+- **Natural → Fluid:** Intent compilation (user says "find bottleneck" → fluid picks Laplacian)
+- **Fluid → Machine:** Expression compilation (fluid picks algorithm → machine computes eigenvalue)
+- **Machine → Fluid:** Result extraction (eigenvalue → fluid decides what it means)
+- **Fluid → Natural:** Explanation extraction (fluid builds sentence → shell presents to human)
+
+See [`THREE_LAYER_ARCHITECTURE.md`](THREE_LAYER_ARCHITECTURE.md) and [`docs/CORRECTED_MODEL.md`](docs/CORRECTED_MODEL.md) for the full architectural model.
+
+
 ### Enabling Features
 
 ```bash
