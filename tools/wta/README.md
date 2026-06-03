@@ -221,3 +221,59 @@ target/debug/wta.exe
 - **CLI subcommands** call `CliChannel::connect()` directly; no ShellManager needed
 - **Pane identity** is discovered at startup via PID matching (list all panes, find ours)
 - **Graceful degradation**: if the WT protocol is unavailable, WTA falls back to local-only mode (no WT tools, just local shell operations)
+
+## Harness Architecture
+
+The Intelligent Terminal is a **universal harness** — it doesn't re-implement anything. It imports and wires.
+
+### Connected Systems
+
+| System | Role | Terminal Feature |
+|--------|------|-----------------|
+| **spectral-graph-agent-rs** | Graph eigenvalue computation | SpectralDashboard delegates to QR-based eigendecomposition |
+| **hodge-belief-rs** | Opinion decomposition | ErrorHodge uses the Hodge decomposition for error classification |
+| **sheaf-agents-rs** | Multi-agent agreement | AgentDisagreementViz computes H⁰/H¹ on agent communication graphs |
+| **ergodic-transport-rs** | Markov chain ergodicity | CommandForecast uses stationary distribution prediction |
+| **evolving-sheaf-rs** | Temporal sheaf dynamics | Renormalization skill detector tracks gap evolution |
+| **conservation-sheaf-flow-rs** | Spectral gap conservation | Theorem verification in integration tests |
+| **pincherOS** | Reflex engine | Command history → reflex compilation (opt-in) |
+| **conservation-spectral-topology-rs** | Cheeger inequality | Spectral gap bounds for all agent networks |
+| **renormalization-learning-rs** | RG flow | Skill plateaus detected by universal class |
+| **free-probability-rs** | Random matrix theory | Marcenko-Pastur initialization bounds |
+| **west-african-math-rs** | Oral tradition computing | GriotHistory: decay, pattern, persistence |
+| **persistent-sheaf-rs** | TDA on terminal data | Session persistence via barcodes |
+| **terminal-spectral-harness** | Terminal→Metal bridge | Wraps spectral-graph-agent-rs for UI |
+| **terminal-entropy-harness** | Standalone entropy | VerificationEntropy as independent crate |
+
+### Feature Gates
+
+All connections are optional:
+```
+cargo build --features math-tools           # Core math modules
+cargo build --features griot-history        # Historical pattern mining
+cargo build --features pincher              # PincherOS reflex engine
+cargo build --features trending             # Trending repo absorption
+cargo build --features context-triggers     # Auto-activation rules
+cargo build --features module-system        # Module lifecycle
+cargo build --features metal-libs           # All 6 metal library dependencies
+cargo build --features all                  # Everything
+```
+
+### The Loop
+
+Every command compiles a better reflex (PincherOS).
+Every error improves the decomposition (Hodge).
+Every skill plateau accelerates the next RG step (renormalization).
+The pipeline's bottleneck is you, and you scale arbitrarily.
+
+### Three-Layer Model
+
+```
+NATURAL (outermost) — Shell interface, interpreted by humans & LLMs
+  ↑ Intent compilation | ↓ Explanation extraction
+FLUID (hot path) — Proper language in the transformation graph
+  ↑ Expression compilation | ↓ Result extraction  
+MACHINE (cold path) — Compiled Rust, bit-identical, slow-to-change
+```
+
+Every module has a fallback. The fallback ships before the module is marked stable.
