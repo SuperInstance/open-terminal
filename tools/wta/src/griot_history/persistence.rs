@@ -252,14 +252,16 @@ fn strength_char(strength: f64, persists: bool) -> char {
     }
 }
 
-/// Truncate a string to max_len, appending "…" if truncated.
+/// Truncate a string to max_len characters, appending "…" if truncated.
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if max_len == 0 {
+        return String::new();
+    }
+    if s.chars().count() <= max_len {
         s.to_string()
-    } else if max_len > 1 {
-        format!("{}…", &s[..max_len - 1])
     } else {
-        "…".to_string()
+        let truncated: String = s.chars().take(max_len.saturating_sub(1)).collect();
+        format!("{}…", truncated)
     }
 }
 
@@ -367,6 +369,12 @@ mod tests {
     fn truncate_string() {
         assert_eq!(truncate("hello", 10), "hello");
         assert_eq!(truncate("hello world", 8), "hello w…");
+    }
+
+    #[test]
+    fn test_truncate_multibyte_utf8() {
+        assert_eq!(truncate("日本語テスト", 3), "日本語");
+        assert_eq!(truncate("hello 世界", 7), "hello 世界");
     }
 
     #[test]
