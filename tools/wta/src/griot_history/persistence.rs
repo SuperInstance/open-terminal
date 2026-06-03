@@ -252,16 +252,23 @@ fn strength_char(strength: f64, persists: bool) -> char {
     }
 }
 
-/// Truncate a string to max_len characters, appending "…" if truncated.
+/// Truncate a string to max_len bytes, appending "…" if truncated.
+///
+/// Uses char-based slicing to avoid panicking on multi-byte UTF-8
+/// boundaries (the original byte-index slicing was a crash vector).
 fn truncate(s: &str, max_len: usize) -> String {
-    if max_len == 0 {
-        return String::new();
-    }
-    if s.chars().count() <= max_len {
+    if s.len() <= max_len {
         s.to_string()
+    } else if max_len > 1 {
+        let byte_end = s
+            .char_indices()
+            .take_while(|(i, c)| *i + c.len_utf8() <= max_len - 1)
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        format!("{}…", &s[..byte_end])
     } else {
-        let truncated: String = s.chars().take(max_len.saturating_sub(1)).collect();
-        format!("{}…", truncated)
+        "…".to_string()
     }
 }
 
@@ -373,8 +380,14 @@ mod tests {
 
     #[test]
     fn test_truncate_multibyte_utf8() {
-        assert_eq!(truncate("日本語テスト", 3), "日本語");
-        assert_eq!(truncate("hello 世界", 7), "hello 世界");
+        // These would have panicked with the old byte-index slicing.
+        // "日本語テスト" = 18 bytes; max_len=9 → "日本…" (3+3+3 = 9 bytes)
+        assert_eq!(truncate("日本語テスト", 9), "日本…");
+        // "hello 世界" = 12 bytes; max_len=7 → take 6 bytes = "hello "
+        assert_eq!(truncate("hello 世界", 7), "hello …");
+        // Full string fits.
+        assert_eq!(truncate("日本語テスト", 18), "日本語テスト");
+        assert_eq!(truncate("日本語テスト", 20), "日本語テスト");
     }
 
     #[test]

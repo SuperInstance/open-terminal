@@ -24,7 +24,7 @@
 
 use nalgebra::DMatrix;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+
 
 /// A node (agent) in the collaboration graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,20 +253,11 @@ impl AgentGraph {
         }
 
         let lap = self.laplacian.as_ref().unwrap();
-        let eigenvalues = Self::compute_two_smallest_eigenvalues(lap, 2000, 1e-10);
-        if eigenvalues.len() < 2 {
-            return None;
-        }
 
-        // Get the eigenvector for λ₂.
-        let eigenvector = Self::rayleigh_quotient_eigenvector(lap, &eigenvalues, 2000, 1e-10);
-        let fiedler_vec = match eigenvector.get(&(1usize)) {
-            Some(v) => v.clone(),
-            None => {
-                // Placeholder: uniform vector if we couldn't converge.
-                nalgebra::DVector::from_element(n, 1.0)
-            }
-        };
+        // Compute the Fiedler eigenvector via deflated power iteration
+        // on the shifted Laplacian S = σI - L, orthogonalized against
+        // the all-ones eigenvector.
+        let fiedler_vec = Self::fiedler_eigenvector(lap, 2000, 1e-10);
 
         // Sweep cut: sort vertex indices by Fiedler vector entry, consider
         // each prefix as a candidate cut set S.
@@ -324,6 +315,7 @@ impl AgentGraph {
     /// on the graph to approach the stationary distribution.
     ///
     /// Uses the approximation τ ≈ 1 / λ₂ (for well-connected graphs).
+    /// Returns `None` if the graph is disconnected or too small.
     pub fn mixing_time(&mut self) -> Option<usize> {
         if let Some(cached) = self.cached_mixing_time {
             if !self.dirty {
@@ -337,9 +329,9 @@ impl AgentGraph {
         }
 
         let fiedler = self.fiedler_value()?;
-        if fiedler <= 0.0 || fiedler >= 2.0 {
-            // Degenerate or disconnected.
-            return Some(usize::MAX);
+        if fiedler <= 1e-10 {
+            // Graph is disconnected (near-zero algebraic connectivity).
+            return None;
         }
 
         // Mixing time ~ log(1/ε) / (λ₂) for a lazy random walk.
@@ -350,8 +342,15 @@ impl AgentGraph {
         Some(mt)
     }
 
-    /// Compute the two smallest eigenvalues of a symmetric matrix using
-    /// the power method with deflation.
+    /// Compute the two smallest eigenvalues of a symmetric matrix.
+    ///
+    /// Uses power iteration for the largest eigenvalue, then deflated
+    /// power iteration (orthogonalized against the known eigenvector
+    /// for λ₁) on the shifted matrix `S = σI - L` so that λ₂(L) becomes
+    /// the second-largest eigenvalue of S and is found via deflation.
+    ///
+    /// This avoids the shift-invert solver entirely, eliminating the
+    /// near-singular `A - μI` problem that occurs when μ ≈ 0.
     fn compute_two_smallest_eigenvalues(matrix: &DMatrix<f64>, max_iter: usize, tol: f64) -> Vec<f64> {
         let n = matrix.nrows();
         if n == 0 {
@@ -361,14 +360,17 @@ impl AgentGraph {
             return vec![matrix[(0, 0)]];
         }
 
-        // First, shift the Laplacian so the smallest eigenvalues become the
-        // largest shifted ones: B = shift * I - A.
-        let spectral_radius = matrix
-            .iter()
-            .map(|v| v.abs())
+        // Spectral radius bound for the shift: we use Gershgorin's
+        // circle theorem — max row sum of absolute values.
+        let spectral_radius = (0..n)
+            .map(|i| matrix.row(i).iter().map(|v| v.abs()).sum::<f64>())
             .fold(0.0_f64, f64::max)
             + 1.0;
-        let shifted = DMatrix::from_fn(n, n, |i, j| {
+
+        // Build shifted matrix S = σI - L.
+        // The largest eigenvalue of S corresponds to the smallest
+        // eigenvalue of L: λ₁(L) = σ - λ_max(S).
+        let s = DMatrix::from_fn(n, n, |i, j| {
             if i == j {
                 spectral_radius - matrix[(i, j)]
             } else {
@@ -376,78 +378,62 @@ impl AgentGraph {
             }
         });
 
-        // λ_min: largest eigenvalue of shifted matrix.
-        let lambda_max_shifted =
-            Self::power_iteration_max_eigenvalue(&shifted, max_iter, tol);
-        let lambda_min = spectral_radius - lambda_max_shifted;
+        // ====== Step 1: find λ₁ (smallest eigenvalue of L) ======
+        // Largest eigenvalue of S (power iteration).
+        let v1 = Self::power_iteration_eigenvector(&s, max_iter, tol);
+        let lambda1_s = v1.dot(&(s * &v1));
+        let lambda_min = spectral_radius - lambda1_s;
 
-        // Compute the eigenvector for λ₁ (the constant vector for
-        // Laplacians), which we need to orthogonalize against.
-        let v1 = Self::power_iteration_eigenvector(&shifted, max_iter, tol);
-
-        // Now find λ₂ using shift-invert power iteration on
-        // (matrix - μI)⁻¹ with μ = λ_min + offset, orthogonalizing
-        // against v1 at each step.
-        let shift_mu = lambda_min + 0.01;
-
-        // Build the shifted matrix: A - μI.  Then compute its LU
-        // decomposition once and reuse for each power-iteration solve.
-        let shifted_matrix =
-            DMatrix::from_fn(n, n, |i, j| {
-                if i == j {
-                    matrix[(i, j)] - shift_mu
-                } else {
-                    matrix[(i, j)]
-                }
-            });
-        let lu = shifted_matrix.lu();
-
+        // ====== Step 2: find λ₂ (second-smallest eigenvalue of L) ======
+        // Use deflated power iteration on S, orthogonalizing against v1
+        // at every step. The result converges to the second-largest
+        // eigenvalue of S, which maps to λ₂(L) = σ - λ₂(S).
         let mut x = nalgebra::DVector::from_element(n, 1.0);
-        // Orthogonalize initial vector against v1.
-        x = &x - x.dot(&v1) * &v1;
-        {
-            let nx = x.norm();
-            if nx > 1e-14 {
-                x /= nx;
-            } else {
-                for i in 0..n {
-                    x[i] = if i == 0 { 1.0 } else { -1.0 };
-                }
-                x = &x - x.dot(&v1) * &v1;
-                x /= x.norm();
+        // Orthogonalize against v1.
+        let xv1 = x.dot(&v1);
+        x = &x - xv1 * &v1;
+        let nx = x.norm();
+        if nx > 1e-14 {
+            x /= nx;
+        } else {
+            // Fallback: pick a random-ish vector orthogonal to v1.
+            for i in 0..n {
+                x[i] = if i % 2 == 0 { 1.0 } else { -1.0 };
             }
+            x = &x - x.dot(&v1) * &v1;
+            x /= x.norm();
         }
 
-        let mut lambda2_old = 0.0;
-        let mut lambda2 = 0.0;
+        let mut lambda2_s: f64 = 0.0;
         for _ in 0..max_iter {
-            let y = lu.solve(&x).unwrap_or_else(|| nalgebra::DVector::zeros(n));
-            let ny = y.norm();
-            if ny < 1e-15 {
+            let w = &s * &x;
+            // Deflate: remove the v1 component.
+            let w = &w - w.dot(&v1) * &v1;
+            let nw = w.norm();
+            if nw <= 1e-15 {
                 break;
             }
-            let mut y = y / ny;
-            // Orthogonalize against v1.
-            y = &y - y.dot(&v1) * &v1;
-            let ny2 = y.norm();
-            if ny2 < 1e-15 {
-                break;
-            }
-            y /= ny2;
+            let x_new = w / nw;
 
-            let ay = matrix * &y;
-            let rq = y.dot(&ay);
+            // Rayleigh quotient for current iterate.
+            let rq = x_new.dot(&(matrix * &x_new));
 
-            if (rq - lambda2_old).abs() < tol {
-                lambda2 = rq;
+            if (rq - lambda2_s).abs() < tol {
+                lambda2_s = rq;
                 break;
             }
-            lambda2_old = rq;
-            lambda2 = rq;
-            x = y;
+
+            // Orthogonalize and check convergence.
+            if (&x_new - &x).norm() < tol {
+                lambda2_s = rq;
+                break;
+            }
+
+            lambda2_s = rq;
+            x = x_new;
         }
 
-        let mut result = vec![lambda_min, lambda2];
+        let mut result = vec![lambda_min, lambda2_s];
         result.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         result
     }
@@ -509,48 +495,75 @@ impl AgentGraph {
         v
     }
 
-    /// Rayleigh quotient iteration: compute the eigenvector for a specific
-    /// eigenvalue, for all computed eigenvalues.
-    fn rayleigh_quotient_eigenvector(
+    /// Compute the Fiedler eigenvector (eigenvector for λ₂ of the
+    /// Laplacian) using deflated power iteration on the shifted
+    /// matrix S = σI - L, orthogonalizing against the all-ones vector
+    /// (the eigenvector for λ₁ = 0).
+    ///
+    /// Returns a vector that approximates the Fiedler eigenvector, or
+    /// a uniform vector if convergence fails.
+    fn fiedler_eigenvector(
         matrix: &DMatrix<f64>,
-        eigenvalues: &[f64],
         max_iter: usize,
         tol: f64,
-    ) -> HashMap<usize, nalgebra::DVector<f64>> {
+    ) -> nalgebra::DVector<f64> {
         let n = matrix.nrows();
-        let mut map = std::collections::HashMap::new();
-
-        for (idx, &target_lambda) in eigenvalues.iter().enumerate() {
-            let mut v = nalgebra::DVector::from_element(n, 1.0 / (n as f64).sqrt());
-            // Inverse iteration: (A - μI)^{-1} v.
-            let shifted = matrix.clone() - DMatrix::identity(n, n).scale(target_lambda);
-
-            for _ in 0..max_iter {
-                // Solve (A - μI) w = v via LU decomposition.
-                let lu = shifted.clone().lu();
-                let solved = lu.solve(&v);
-                let w = match solved {
-                    Some(s) => s,
-                    None => break, // singular, give up
-                };
-
-                let norm = w.norm();
-                if norm <= 1e-15 {
-                    break;
-                }
-                let w_next = w / norm;
-
-                if (&w_next - &v).norm() < tol {
-                    v = w_next;
-                    break;
-                }
-                v = w_next;
-            }
-
-            map.insert(idx, v);
+        if n == 0 {
+            return nalgebra::DVector::zeros(0);
+        }
+        if n == 1 {
+            return nalgebra::DVector::from_element(1, 1.0);
         }
 
-        map
+        // Spectral radius bound.
+        let spectral_radius = (0..n)
+            .map(|i| matrix.row(i).iter().map(|v| v.abs()).sum::<f64>())
+            .fold(0.0_f64, f64::max)
+            + 1.0;
+
+        let s =
+            DMatrix::from_fn(n, n, |i, j| {
+                if i == j {
+                    spectral_radius - matrix[(i, j)]
+                } else {
+                    -matrix[(i, j)]
+                }
+            });
+
+        // The all-ones vector is the eigenvector for λ₁(L) = 0.
+        let v1 = nalgebra::DVector::from_element(n, 1.0 / (n as f64).sqrt());
+
+        // Deflated power iteration: find the second dominant eigenvector of S.
+        let mut x = nalgebra::DVector::from_element(n, 1.0);
+        x = &x - x.dot(&v1) * &v1;
+        let nx = x.norm();
+        if nx > 1e-14 {
+            x /= nx;
+        } else {
+            for i in 0..n {
+                x[i] = if i % 2 == 0 { 1.0 } else { -1.0 };
+            }
+            x = &x - x.dot(&v1) * &v1;
+            x /= x.norm();
+        }
+
+        for _ in 0..max_iter {
+            let mut w = &s * &x;
+            // Deflate: remove the v1 component.
+            w = &w - w.dot(&v1) * &v1;
+            let nw = w.norm();
+            if nw <= 1e-15 {
+                break;
+            }
+            let x_new = w / nw;
+
+            if (&x_new - &x).norm() < tol {
+                return x_new;
+            }
+            x = x_new;
+        }
+
+        x
     }
 
     /// Compute a compact status bar display string.
