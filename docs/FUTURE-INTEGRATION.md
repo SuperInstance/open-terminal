@@ -1,31 +1,31 @@
-# Future Integration: open-terminal
+# Future Integration: intelligent-terminal
 
 ## Current State
-A fork of Microsoft's Intelligent Terminal with SuperInstance enhancements: math-aware command analysis, Griot command history, and zero-cost mathematical awareness. Same fork as intelligent-terminal — the terminal that doesn't wait for you to ask.
+A fork of Microsoft's Intelligent Terminal with SuperInstance enhancements: math-aware command analysis (detecting mathematical patterns in terminal output), Griot command history (context-aware history search), and a zero-cost promise (no overhead when features aren't used). Built on Windows Terminal with native ACP agent integration.
 
 ## Integration Opportunities
 
-### With ternary math awareness in terminal
-The math-aware analysis detects distributions, correlations, and anomalies in terminal output. For ternary awareness: classify every number as positive/zero/negative relative to expected. A command that outputs "conservation: 0.947" gets ternary context: "conservation is positive (above 0.9 threshold)." The terminal becomes ternary-aware.
+### With open-terminal
+intelligent-terminal and open-terminal are the same fork. The math-aware command analysis (detecting distributions, correlations, anomalies in terminal output) connects to the ternary ecosystem by classifying terminal output into ternary signals: positive (above expected), zero (as expected), negative (below expected). Every command becomes a ternary observation.
 
 ### With room-as-codespace
-When you SSH into a Codespace room, open-terminal provides the interface. It automatically detects room state in command output, highlights ternary signals (cell energy, surprise values, conservation metrics), and provides math-aware context. The terminal IS the room's debug console.
+When an agent works in a Codespace, it uses intelligent-terminal as its interface. The math-aware analysis provides real-time feedback on the room's computation: "Your simulation is running at 47% conservation — one cell population is dominating." The terminal IS the room's debug console.
 
 ### With construct-core
-The zero-cost promise (no overhead when features aren't used) matches construct-core's tiered approach. At Layer 0, math awareness is a simple range check. At Layer 1, it's a statistical test. At Layer 2, it's a full LLM-powered analysis. Same feature, three tiers.
+The zero-cost promise aligns with construct-core's layered traits: math awareness at Layer 0 is a simple lookup (is this output numeric?), at Layer 1 it's a statistical test (is this distribution normal?), at Layer 2 it's a full analysis (what's the anomaly's root cause?). Same feature, three tiers of depth.
 
 ## Dormant Ideas Now Unlockable
-The math-aware features were generic statistical detection. Now they have a specific domain: ternary physics. Every ternary metric (conservation, surprise, energy, fitness) has known ranges and thresholds. The terminal can provide rich, domain-specific context for every ternary number it encounters.
+The math-aware analysis was interesting but had no application context. Now ternary-cell's tick cycle provides that context: terminal output IS cell state, and math-aware analysis IS the cell's self-monitoring. The Griot command history becomes the room's tick history.
 
 ## Potential in Mature Systems
-open-terminal becomes the fleet's standard terminal. Every agent, every developer, every room uses it. Ternary numbers are automatically annotated. Room state is automatically visualized. The terminal is the room's window.
+Every room has an intelligent-terminal view. When you SSH into a Codespace room, the terminal automatically renders cell states, highlights anomalies, and provides math-aware context for everything the room computes. The terminal becomes the room's natural language interface.
 
 ## Cross-Pollination Ideas
-- **intelligent-terminal**: Same fork, same integration path
-- **lever-runner**: Command matching enhances terminal's understanding of room commands
-- **open-application (Tauri)**: Desktop app wrapping open-terminal for room access
+- **open-terminal**: Same fork, same direction
+- **lever-runner**: Trust compiler's command matching enhances terminal's command understanding
+- **intelligent-terminal**: Microsoft upstream features (ACP agent) complement SuperInstance math awareness
 
 ## Dependencies for Next Steps
-- Ternary metric detection rules (conservation, surprise, energy thresholds)
-- Room state parsing from command output
-- Integration with room's tick cycle for real-time updates
+- Ternary state visualization in terminal output
+- Math-aware ternary classification (positive/zero/negative)
+- Integration with room's tick cycle for real-time monitoring
