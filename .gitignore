@@ -311,3 +311,5 @@ tmpclaude-*
 
 # Local-only superpowers plan/spec notes (kept out of source control)
 docs/superpowers/
+target/
+Cargo.lock
