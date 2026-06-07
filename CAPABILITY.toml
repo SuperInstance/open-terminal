@@ -1,0 +1,25 @@
+# CAPABILITY.toml — open-terminal
+# Windows Terminal fork with agent integration, conservation monitoring, and command suggestions.
+
+[capability]
+name = "open-terminal"
+version = "0.1.0"
+description = "Agent-integrated terminal with conservation monitoring, spectral command ranking, and lattice-crypto auth"
+
+[capability.capabilities]
+conservation_monitor = "struct ConservationMonitor — tracks γ+H=C resource budget"
+sample = "fn sample(cpu: f64, mem: f64) -> ConservationReport"
+is_healthy = "fn is_healthy() -> bool"
+suggest_commands = "fn suggest(state: &ConservationReport) -> Vec<SuggestedCommand>"
+compose_suggestions = "fn compose_suggestions(states: &[ConservationReport]) -> Vec<SuggestedCommand>"
+
+[capability.exports]
+ConservationReport = "struct { gamma, eta, capacity, memory_fraction, sample_count, tick, overcommitted, violation_magnitude }"
+SuggestedCommand = "struct { command, rationale, priority, category }"
+CommandCategory = "enum { Cleanup, Productive, Diagnostic, Maintenance }"
+
+[capability.integrations]
+open-iterator = "Conservation budget enforcement in editor annotations"
+open-parallel = "Resource monitoring feeds into spectral scheduling"
+open-tui = "Dashboard widgets for conservation state and command suggestions"
+open-mind = "Conservation patterns enable code analysis induction"

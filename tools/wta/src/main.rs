@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate rust_i18n;
 
+mod agent;
 mod agent_check;
 mod agent_hooks_installer;
 mod agent_pane_origin;
