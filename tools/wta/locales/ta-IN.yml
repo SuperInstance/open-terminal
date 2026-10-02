@@ -1,9 +1,7 @@
 # அமைவு திரை தலைப்புகள்
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.title.first_run: "அறிவாண் முனையம்-க்கு வரவேற்கிறோம்!"
 setup.title.agent_missing: "ஏஜெண்ட் கிடைக்கவில்லை"
 setup.title.agent_error: "ஏஜெண்ட் இணைப்பு தோல்வியடைந்தது"
-setup.title.switch_agent: "முகவரை மாற்று"
 setup.title.not_available: "ஏஜெண்ட் கிடைக்கவில்லை"
 setup.title.sign_in: "உள்நுழைவு தேவை"
 
@@ -12,10 +10,9 @@ setup.subtitle.copilot_missing: "உங்கள் ஏஜெண்ட் \"%{ag
 setup.subtitle.agent_missing: "உங்கள் ஏஜெண்ட் \"%{agent}\" நிறுவப்படவில்லை. தயவுசெய்து கைமுறையாக மீண்டும் நிறுவி, மீண்டும் முயற்சிக்கவும். முகவரை மாற்ற அறிவாண் முனையம் Settings > Agent-க்குச் செல்லுங்கள்."
 setup.subtitle.copilot_auth: "உங்கள் ஏஜெண்ட் \"%{agent}\"-க்கு அங்கீகாரம் தேவை. உள்நுழைய கீழே உள்ள படிகளைப் பின்பற்றுங்கள். முகவரை மாற்ற அறிவாண் முனையம் Settings > Agent-க்குச் செல்லுங்கள்."
 setup.subtitle.agent_auth: "உங்கள் எஜென்ட் \"%{agent}\" அங்கீகாரம் தேவைப்படுகிறது. எஜென்ட்டின் மூலம் உள்நுழைந்து, பின்னர் கீழே \"நான் உள்நுழைந்துவிட்டேன்\" என்பதைத் தேர்ந்தெடுக்கவும். எஜென்ட்களை மாற்ற, Settings-க்கு செல்லவும்."
+setup.subtitle.connection_failed: "%{agent}-ஐத் தொடங்க முடியவில்லை."
 
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.description.fre_line1: "அறிவாண் முனையம்-இல் பயன்படுத்த விரும்பும் இயல்புநிலை எஜென்டைத் தேர்ந்தெடுக்கவும். நீங்கள்"
-setup.description.fre_line2: "உங்கள் பணியிடத்தை உள்ளமைக்க Settings-க்குச் செல்லலாம்."
 
 setup.option.install: "%{agent} மீண்டும் நிறுவு"
 setup.option.install_hint: "(தானாக நிறுவப்படும்)"
@@ -23,10 +20,14 @@ setup.option.signin: "%{agent}-ல் உள்நுழையவும்"
 setup.option.retry_detection: "மீண்டும் முயற்சிக்கவும்"
 setup.option.retry_auth: "நான் உள்நுழைந்துவிட்டேன் — மீண்டும் இணைக்க முயற்சிக்கவும்"
 setup.option.retry_connection: "மீண்டும் இணைக்க முயற்சிக்கவும்"
-setup.option.switch_to: "%{agent}-க்கு மாறு"
 setup.status.installing: "நிறுவப்படுகிறது..."
+setup.status.installing_copilot_cli: "GitHub Copilot CLI நிறுவப்படுகிறது"
+setup.status.connecting_agent: "%{agent} உடன் இணைக்கப்படுகிறது"
 setup.status.install_failed: "நிறுவல் தோல்வி: "
 setup.status.installing_winget: " winget வழியாக நிறுவப்படுகிறது..."
+setup.error.install_start_failed: "நிறுவியைத் தொடங்க முடியவில்லை. மீண்டும் முயற்சிக்க \"மீண்டும் முயற்சிக்கவும்\" என்பதைத் தேர்ந்தெடுக்கவும்."
+setup.error.install_timed_out: "நிறுவலுக்கான நேரம் முடிந்தது. மற்றொரு நிறுவலைத் தொடங்குவதற்கு முன் \"மீண்டும் முயற்சிக்கவும்\" என்பதைத் தேர்ந்தெடுக்கவும்."
+setup.error.install_detection_timed_out: "நிறுவல் முடிந்தது, ஆனால் Copilot இன்னும் தெரியவில்லை. மீண்டும் சரிபார்க்க \"மீண்டும் முயற்சிக்கவும்\" என்பதைத் தேர்ந்தெடுக்கவும்."
 
 # ── அங்கீகாரப் போக்கு (src/ui/auth.rs) ──────────────────────────────────────────────
 # {Locked="CLI"} - சுருக்கம், Microsoft உள்ளூர்மயமாக்கல்களில் பொதுவான பயன்பாடு
@@ -35,17 +36,19 @@ auth.agent_selected_with_status: "ஏஜெண்ட் %{name} — "
 auth.checking_authentication: "  %{spinner} அங்கீகாரம் சரிபார்க்கப்படுகிறது..."
 auth.waiting_for_authorization: "  %{spinner} அங்கீகாரத்திற்காகக் காத்திருக்கிறது..."
 auth.code_copied_hint: "  குறியீடு கிளிப்போர்டுக்கு நகலெடுக்கப்பட்டது — உங்கள் உலாவியில் ஒட்டவும்."
-auth.sign_in_prompt: "உங்கள் முகவரைப் பயன்படுத்த உள்நுழையவும்:"
+auth.device_code_prompt: "%{url} ஐப் பார்வையிட்டு குறியீட்டை உள்ளிடவும்: %{code}"  # Copilot device-flow sign-in progress; %{url} is the verification URL, %{code} is the device code
 auth.card_connect: "  ஏஜெண்ட் அம்சங்களை இயக்க %{name}-ஐ இணைக்கவும்"
-auth.button_sign_in_github: "[ GitHub மூலம் உள்நுழையவும் ]"  # {Locked="GitHub"}
-auth.button_sign_in_with: "[ %{name} மூலம் உள்நுழையவும் ]"
-auth.hint_footer: "  உள்நுழைய Enter அழுத்தவும், திரும்பிச் செல்ல Esc அழுத்தவும்"  # {Locked="Enter","Esc"}
+auth.enterprise_prompt: "  உள்நுழைய Enter · GitHub Enterprise க்கு E · பின்செல்ல Esc"  # {Locked="Enter","E","Esc"}
+auth.enterprise_domain_label: "  Enterprise டொமைன்: "
+auth.enterprise_hint_footer: "  உள்நுழைய Enter · github.com க்கு Esc"  # {Locked="Enter","Esc","github.com"}
+auth.login_failed_help_enterprise: "  மீண்டும் முயற்சிக்க Enter ஐ அழுத்தவும், அல்லது github.com க்கு Esc. பொதுவான காரணங்கள்: தவறாக தட்டச்சு செய்யப்பட்ட அல்லது அணுக முடியாத டொமைன், காலாவதியான குறியீடு, அல்லது அந்த ஹோஸ்டில் Copilot அணுகல் இல்லாமை."  # {Locked="Enter","Esc","github.com","Copilot"}
+auth.login_failed_help_default: "  மீண்டும் முயற்சிக்க Enter ஐ அழுத்தவும், அல்லது பின்செல்ல Esc."  # {Locked="Enter","Esc"}
 
 # ── அரட்டைக் காட்சி (src/ui/chat.rs) ──────────────────────────────────────────────
 chat.activity_thinking: "யோசிக்கிறது…"
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
 chat.welcome_title: "அறிவாண் முனையம்-க்கு வரவேற்கிறோம்!"
-chat.welcome_disclaimer: "அறிவாண் முனையம் AI-ஐப் பயன்படுத்துகிறது. பிழைகளைச் சரிபார்க்கவும்."
+chat.welcome_disclaimer: "அறிவாண் முனையம் AI-ஐப் பயன்படுத்துகிறது."
 chat.plan_header: "திட்டம்:"
 chat.plan_marker_completed: "[x]"  # {Locked}
 chat.plan_marker_in_progress: "[>]"  # {Locked}
@@ -53,11 +56,24 @@ chat.plan_marker_pending: "[ ]"  # {Locked}
 chat.autofix_prompt_label: "சமீபத்திய கட்டளை தோல்வி தானாகவே கண்டறியப்பட்டது"
 chat.turn_canceled: "(ரத்து செய்யப்பட்டது)"
 chat.turn_executed: "→ செயல்படுத்தப்பட்டது: %{title}"
+# நிலைக் குறிக்குப் பிறகும் பொருளுக்கு முன்பும் காட்டப்படும் நிலையான கருவி-வகை லேபிள்கள்.
+chat.tool_kind.run: "இயக்கு"
+chat.tool_kind.insert: "செருகு"
+chat.tool_kind.read: "படி"
+chat.tool_kind.search: "தேடு"
+chat.tool_kind.edit: "திருத்து"
+chat.tool_kind.delete: "நீக்கு"
+chat.tool_kind.move: "நகர்த்து"
+chat.tool_kind.fetch: "பெறு"
+chat.tool_kind.think: "சிந்தி"
+chat.tool_kind.mode: "பயன்முறை"
+chat.tool_kind.other: "கருவி"
 
 # ── உள்ளீடு இடப்பிடி (src/ui/input.rs) ────────────────────────────────────
 input.placeholder.connected: "எதையும் கேளுங்கள், / கட்டளைகளுக்கு.."  # {Locked="/"}
 input.placeholder.connecting: "இணைக்கப்படுகிறது..."
 input.placeholder.disconnected: "துண்டிக்கப்பட்டது"
+input.image_attachments: "📎 படங்கள்: %{items}"  # {Locked="📎","%{items}"}
 
 # ── கட்டளை பாப்அப் (src/ui/command_popup.rs) ─────────────────────────────────
 # {Locked="/"} - ஸ்லாஷ்-கட்டளை முன்னொட்டு, ASCII ஆக இருக்க வேண்டும்
@@ -74,9 +90,11 @@ commands.help_close_hint: "  Esc        இந்த உதவியை மூ�
 commands.help.summary: "இந்த கட்டளைப் பட்டியலைக் காட்டு"
 commands.clear.summary: "அரட்டை ஸ்க்ரோல்பேக்கை அழி (அமர்வை வைத்திருக்கும்)"
 commands.new.summary: "புதிய ACP அமர்வைத் தொடங்கு (வரலாற்றை கைவிடும்)"  # {Locked="ACP"}
+commands.fix.summary: "Diagnose the active terminal and suggest a fix (/fix <hint>)"  # {Locked="/fix","<hint>"}
 commands.restart.summary: "முகவரை மறுதொடக்கம் செய்"
 commands.stop.summary: "செயலில் உள்ள prompt-ஐ ரத்துசெய்"
 commands.sessions.summary: "வரலாற்று அமர்வுகள் தேர்வியைத் திற (Ctrl+Shift+/)"  # {Locked="Ctrl+Shift+/"}
+commands.agent.summary: "இந்தப் பலகத்திற்கான ஏஜென்ட்யைத் தேர்ந்தெடுக்கவும் (நேரடியாக மாற்ற /agent <id>)"  # {Locked="/agent","<id>"}
 
 # ── பரிந்துரைகள் பலகம் (src/ui/recommendations.rs) ───────────────────────────────
 # {Locked="Enter","Esc","↵","↑","↓","←","→"} - விசைப் பெயர்கள் மற்றும் Return-விசை குறியீடு, மொழிபெயர்க்க வேண்டாம்
@@ -104,9 +122,7 @@ permission.compact.prefix: "[!] "  # {Locked}
 permission.compact.hint: "[Y/N பதிலளிக்கவும் · முழு அட்டையைக் காண அளவை மாற்றவும்]"  # {Locked="Y/N"}
 
 # ── ஏஜெண்ட் நிலை (src/agent_check.rs) ───────────────────────────────────────
-agent.status.not_installed_auto: "நிறுவப்படவில்லை — தானாக நிறுவ தேர்ந்தெடுக்கவும்"
 agent.status.not_found: "கிடைக்கவில்லை"
-agent.status.detected: "கண்டறியப்பட்டது"
 # {Locked="winget","GitHub.Copilot","GitHub","Copilot"} - கருவிப் பெயர்கள் மற்றும் கட்டளை, அப்படியே இயக்க வேண்டும்
 agent.install.running_winget: "இயக்கப்படுகிறது: winget install GitHub.Copilot"
 agent.install.launch_failed: "winget தொடங்குவதில் தோல்வி: %{error}"
@@ -117,8 +133,8 @@ agent.custom.auth_hint: "%{name} நிறுவப்பட்டுள்ள�
 
 # ── ஏஜெண்ட்கள் காட்சி (src/ui/agents_view.rs) ─────────────────────────────────────
 agents.loading: "ஏற்றப்படுகிறது..."
-# {Locked="Enter","Esc","↑","↓"} - விசைச் சேர்க்கைகள், மொழிபெயர்க்க வேண்டாம்
-agents.footer_hint: "(↑ ↓ வழிசெலுத்து • Enter அமர்வைத் தொடங்கு • Esc வெளியேறு)"
+# {Locked="Enter","Esc","F5","↑","↓","/"} - விசைச் சேர்க்கைகள், மொழிபெயர்க்க வேண்டாம்
+agents.footer_hint: "(↑ ↓ வழிசெலுத்து • Enter அமர்வைத் தொடங்கு • Esc வெளியேறு • F5 புதுப்பி • / தேடு)"
 agents.status.active: "செயலில்"
 agents.status.waiting_for_input: "உள்ளீட்டுக்காகக் காத்திருக்கிறது"
 agents.status.error: "பிழை"
@@ -128,26 +144,47 @@ agents.status.idle: "செயலற்றது"
 layout.welcome_hint: "  (Ctrl+Shift+. ஏஜெண்ட் பலகத்தைக் காட்டு/மறை • Ctrl+Shift+/ ஏஜெண்ட் அமர்வைக் காட்டு/மறை)"  # {Locked="Ctrl+Shift+.","Ctrl+Shift+/"}
 
 # ── இணைப்பு நிலை ────────────────────────────────────────────────────────
-connection.starting: "ஏஜெண்ட் தொடங்கப்படுகிறது..."
+# Preparing the AI agent connection, including preflight and reuse of a cached agent.
+connection.starting: "ஏஜெண்ட் இணைப்பு தயாராகிறது..."
+# Retiring old AI agent sessions for /restart, before the next connection phases.
+connection.restarting: "ஏஜெண்ட் மறுதொடக்கம் செய்யப்படுகிறது..."
 connection.reconnecting: "மீண்டும் இணைக்கப்படுகிறது..."
+# Connecting the pane to WTA's local coordinator process, not to an AI model.
+connection.coordinator: "உள்ளூர் ஒருங்கிணைப்பியுடன் இணைக்கப்படுகிறது..."
+# Initializing the helper/coordinator connection, including local preparation and AI agent initialization.
+connection.initializing: "ஏஜெண்ட் இணைப்பின் தொடக்க அமைவு செய்யப்படுகிறது..."
+# Refreshing the user's authentication with the AI agent after login; not verifying the agent's identity.
+connection.authenticating: "ஏஜெண்டில் பயனரின் உள்நுழைவு அங்கீகரிக்கப்படுகிறது..."
+# Reading the coordinator's registry snapshot, including existing history; not fetching history from the AI agent.
+connection.syncing_sessions: "அமர்வுப் பட்டியல் படிக்கப்படுகிறது..."
+# Creating the AI agent session, including local registration; internal agent progress is unknown.
+connection.creating_session: "ஏஜெண்ட் அமர்வு உருவாக்கப்படுகிறது..."
+# Applying the requested AI model before the connection is ready. Preserve %{model}.
+connection.selecting_model: "அமர்வு மாதிரி அமைக்கப்படுகிறது: %{model}..."  # {Locked="%{model}"}
+# Activity row while connecting to restore a conversation. Keep the actual stage first so narrow panes show it; session_id is shortened to eight characters.
+connection.resuming_stage: "%{stage} (%{session_id} தொடரப்படுகிறது)"  # {Locked="%{stage}","%{session_id}"}
 connection.connecting_activity: "ஏஜெண்டுடன் இணைக்கப்படுகிறது…"
 connection.lost: "ஏஜெண்டுடனான இணைப்பு துண்டிக்கப்பட்டது. மீண்டும் இணைக்க /restart என தட்டச்சு செய்யவும்."  # {Locked="/restart"}
 
 # ── கணினி செய்திகள் (src/app.rs) ────────────────────────────────────────────────
+system.close_pane_hint: "பலகத்தை மூட Ctrl+C ஐ மீண்டும் அழுத்தவும்."  # {Locked="Ctrl+C"}
+system.selection_copied: "நகலெடுக்கப்பட்டது"  # Brief hint shown after selected terminal text is copied
 system.cancelled: "ரத்துசெய்யப்பட்டது."
 system.no_prompt_in_flight: "நிலுவையில் எந்தப் பிராம்ப்ட்டும் இல்லை."
 system.authentication_failed: "அங்கீகாரம் தோல்வியடைந்தது"
-system.command_copied_retry: "கட்டளை நகலெடுக்கப்பட்டது — அதை மற்றொரு டெர்மினலில் இயக்கவும், பின்னர் மீண்டும் முயற்சிக்க Enter அழுத்தவும்"  # {Locked="Enter"}
 system.stopped_max_tokens: "மாதிரியின் வெளியீட்டு வரம்பை எட்டிய பிறகு பதில் துண்டிக்கப்பட்டது."
 system.stopped_max_turn_requests: "இந்த முறைக்கான கோரிக்கை வரம்பை எட்டிய பிறகு முகவர் நிறுத்தப்பட்டார்."
 system.stopped_refusal: "இந்தக் கோரிக்கையைத் தொடர முகவர் மறுத்துவிட்டார்."
 system.agent_busy: "இந்தத் தாவலில் Agent பிஸியாக உள்ளது — தற்போதைய prompt முடியும் வரை காத்திருக்கவும்."
+system.image_clipboard_empty: "ஒட்டுவதற்கு கிளிப்போர்டில் படம் இல்லை."
+system.image_not_supported: "இந்த ஏஜெண்ட் பட உள்ளீட்டை ஆதரிக்காது."
+system.image_pasted: "படம் இணைக்கப்பட்டது (%{label}). அனுப்ப Enter அழுத்தவும்."  # {Locked="%{label}","Enter"}
 system.resuming_session: "அமர்வு %{session_id} மீண்டும் தொடங்கப்படுகிறது..."
 system.unknown_command: "அறியப்படாத கட்டளை \"%{command}\" — prompt ஆக அனுப்பப்பட்டது. பட்டியலுக்கு /help எனத் தட்டச்சு செய்யவும்."  # {Locked="/help"} — slash-command name.
 system.busy_use_stop: "தற்போதைய prompt முடியும் வரை காத்திருக்கவும், அல்லது முதலில் /stop செய்யவும்."  # {Locked="/stop"} — slash-command name.
 system.cannot_focus_session: "அமர்வு %{session_id} மீது கவனம் செலுத்த முடியவில்லை: அது live போலத் தெரிகிறது ஆனால் இன்னும் pane GUID எதுவும் பிணைக்கப்படவில்லை. சிறிது நேரம் கழித்து மீண்டும் முயற்சிக்கவும்."
-system.cannot_resume_no_load_session: "agent pane-இல் மீண்டும் தொடங்க முடியவில்லை: %{agent} ACP `loadSession` திறனை அறிவிக்கவில்லை. அதற்கு பதிலாக புதிய terminal pane-இல் மீண்டும் தொடங்க Enter (Shift இல்லாமல்) அழுத்தவும்."  # {Locked="ACP","loadSession","Enter","Shift"} — protocol/UI terms.
-system.cannot_resume_no_resume_flag: "%{agent} அமர்வை மீண்டும் தொடங்க முடியவில்லை: இந்த agent-க்கு `--resume` பாணி flag இல்லை. அதற்கு பதிலாக ACP மூலம் agent pane-க்குள் மீண்டும் தொடங்க முயற்சிக்க Shift+Enter அழுத்தவும்."  # {Locked="--resume","Shift","Enter","ACP"} — flag and UI terms.
+system.cannot_resume_no_load_session: "agent pane-இல் மீண்டும் தொடங்க முடியவில்லை: %{agent} ACP `loadSession` திறனை அறிவிக்கவில்லை."  # {Locked="ACP","loadSession"} — protocol/UI terms.
+system.cannot_resume_no_resume_flag: "%{agent} அமர்வை மீண்டும் தொடங்க முடியவில்லை: இந்த agent-க்கு `--resume` பாணி flag இல்லை."  # {Locked="--resume"} — flag and UI terms.
 system.cannot_resume_unknown_agent: "அமர்வு %{session_id} மீண்டும் தொடங்க முடியவில்லை: அதன் மூல agent இந்த WTA build-க்கு தெரியாது."
 system.cannot_resume_phantom_via_flag: "%{agent} அமர்வு %{session_id} மீண்டும் தொடங்க முடியவில்லை: அது தொடங்கப்பட்டது, ஆனால் எந்த உரையாடலும் சேர்க்கப்படவில்லை; எனவே %{agent} தானே resume-ஐ நிராகரிக்கும். வரிசை அகற்றப்படுகிறது."
 system.cannot_resume_phantom_via_load: "%{agent} அமர்வு %{session_id} மீண்டும் தொடங்க முடியவில்லை: அது தொடங்கப்பட்டது, ஆனால் எந்த உரையாடலும் சேர்க்கப்படவில்லை; எனவே %{agent} load-ஐ நிராகரிக்கும். வரிசை அகற்றப்படுகிறது."
@@ -189,7 +226,7 @@ hooks.marketplace_path_stale: "⚠ சந்தைப் பாதை கால�
 hooks.installed_but_disabled: "⚠ நிறுவப்பட்டுள்ளது ஆனால் முடக்கப்பட்டுள்ளது"
 hooks.not_installed: "✗ நிறுவப்படவில்லை"
 hooks.uninstall_skipped: "தவிர்க்கப்பட்டது (CLI PATH-ல் இல்லை)"
-hooks.install_attempted: "wt-agent-hooks நிறுவல் முயற்சிக்கப்பட்டது (இடம்போடென்ட்). முடிவை ஆய்வு செய்ய `wta hooks status` இயக்கவும். தடயப் பதிவு: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
+hooks.install_succeeded: "✓ %{clis} க்காக wt-agent-hooks நிறுவப்பட்டுள்ளது"
 
 # ── Relative time and date formatting ─────────────────────────────────────
 time.just_now: "இப்போதுதான்"
@@ -202,3 +239,32 @@ time.days_other: "%{count} நாட்கள் முன்பு"
 
 # ── பரிந்துரை செயலாக்கம் (src/coordinator.rs) ───────────────────────────
 system.choice_execution_failed: "தேர்வு %{choice} தோல்வியடைந்தது: %{error}"
+
+# ── Agent picker (src/ui/agent_popup.rs) ────────────────────────────────────
+# {Locked="↑","↓","Enter","Esc"} - key names, do not translate
+agent_picker.title: "ஏஜென்ட்யைத் தேர்ந்தெடுக்கவும் (↑ ↓ • Enter • Esc)"  # Agent means an AI coding agent
+# Shown when no policy-allowed AI agent CLI is installed on the machine.
+system.no_agents: "இந்தக் கணினியில் ஏஜென்ட் CLI எதுவும் கிடைக்கவில்லை."  # {Locked="CLI"}
+# {agent} is the unrecognized text the user typed after /agent.
+system.agent_unknown: "அறியப்படாத அல்லது கிடைக்காத ஏஜென்ட் %{agent} — கிடைக்கும் பட்டியலைக் காண /agent எனத் தட்டச்சு செய்யவும்."  # {Locked="/agent"}
+# Shown only when /agent is used outside a Windows Terminal-owned agent pane.
+system.agent_switch_unavailable: "விண்டோஸ் டெர்மினல் தாவலுக்கு வெளியே ஏஜென்ட் மாறுதல் கிடைக்காது."
+
+# ── Model picker (/model) ───────────────────────────────────────────────────
+commands.model.summary: "இந்தப் பலகத்திற்கான மாதிரியைத் தேர்ந்தெடுக்கவும் (நேரடியாக மாற்ற /model <id>)"  # {Locked="/model","<id>"}
+commands.config.summary: "இந்த ஏஜென்ட் அமர்வை காண்ஃபிகர் செய்யவும்"  # Agent means an AI coding agent; shown for the /config command. {Locked="/config"}
+commands.move.summary: "இந்தத் தாவலின் ஏஜெண்ட் பலகத்தை நகர்த்தவும் (/move <position>)"  # {Locked="/move","<position>"}
+model_picker.title: "மாதிரியைத் தேர்ந்தெடுக்கவும் (↑ ↓ • Enter • Esc)"  # {Locked="↑","↓","Enter","Esc"}
+system.no_models: "இணைக்கப்பட்ட ஏஜெண்ட் தேர்ந்தெடுக்கக்கூடிய எந்த மாதிரியையும் அறிவிக்கவில்லை."
+system.model_set: "இந்தப் பலகத்திற்கான மாதிரி %{model} ஆக அமைக்கப்பட்டது."  # {Locked="%{model}"}
+
+# ── Session configuration picker (src/ui/config_popup.rs) ───────────────────
+# {Locked="↑","↓","Enter","Esc","ACP"} - key names and protocol name
+config_picker.title: "அமர்வு காண்ஃபிகரேஷன் (↑ ↓ • Enter • Esc)"
+# Shown when /config is used but the AI agent exposed no ACP select options.
+system.no_config_options: "இணைக்கப்பட்ட ஏஜென்ட் எந்த உள்ளமைக்கக்கூடிய அமர்வு விருப்பங்களையும் விளம்பரம் செய்யவில்லை."
+# {option} is an Agent-provided option name; {error} is the ACP error.
+system.config_update_failed: "%{option} ஐப் புதுப்பிப்பது தோல்வியடைந்தது: %{error}"
+system.yolo_disable_pending: "சிறப்புரிமை முறை முடக்கப்பட்டிருக்க வேண்டிய அமர்வு நிலையை ஏஜெண்ட் வழங்குநர் இன்னும் உறுதிப்படுத்தவில்லை"  # Shown after the localized failure prefix while prompts remain blocked until the AI agent provider confirms that its privileged session mode is off. Provider means an AI agent provider, not a network provider.
+system.provider_command_blocked_by_policy: "%{command}: உங்கள் நிறுவனத்தின் கொள்கையால் தானியங்கி ஒப்புதல் முடக்கப்பட்டுள்ளது."  # {Locked="%{command}"} Shown when AllowAutomaticApproval blocks a provider-advertised privileged command.
+system.model_unknown: "அறியப்படாத மாதிரி %{model} — கிடைக்கும் பட்டியலைக் காண /model எனத் தட்டச்சு செய்யவும்."  # {Locked="%{model}","/model"}

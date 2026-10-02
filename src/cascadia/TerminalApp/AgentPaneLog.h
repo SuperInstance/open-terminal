@@ -22,10 +22,9 @@
 #include <windows.h>
 
 #include <chrono>
+#include <cstdio>
 #include <ctime>
 #include <filesystem>
-#include <fstream>
-#include <iomanip>
 #include <string>
 #include <system_error>
 
@@ -34,17 +33,31 @@
 namespace winrt::TerminalApp::implementation
 {
     // The per-version WTA log directory (`logs\<pkgver>\`), resolved by the
-    // shared `IntelligentTerminal::LogDirVersioned()` so this logger, the Rust
-    // processes, and the PowerShell hooks all write into the same per-version
-    // folder. (The bug-report-zip action uses `LogDir()` — the root — so it can
-    // archive every version at once.)
+    // shared `IntelligentTerminal::LogDirVersioned()` so this logger and the
+    // Rust processes write into the same per-version folder. (The
+    // bug-report-zip action uses `LogDir()` — the root — so it can archive
+    // every version at once.)
     inline std::filesystem::path _intelligentTerminalLogDir()
     {
         return ::IntelligentTerminal::LogDirVersioned();
     }
 
-    inline void _agentPaneLog(const std::string& msg)
+    enum class AgentPaneLogLevel
     {
+        Info,
+        Debug,
+    };
+
+    inline void _agentPaneLog(const std::string& msg, AgentPaneLogLevel level = AgentPaneLogLevel::Info)
+    {
+#if !defined(_DEBUG)
+        if (level == AgentPaneLogLevel::Debug)
+        {
+            return;
+        }
+#else
+        (void)level;
+#endif
         std::filesystem::path logDir = _intelligentTerminalLogDir();
         if (logDir.empty())
         {
@@ -62,13 +75,6 @@ namespace winrt::TerminalApp::implementation
             return;
         }
 
-        const auto logPath = logDir / L"terminal-agent-pane.log";
-        std::ofstream f{ logPath, std::ios::app };
-        if (!f)
-        {
-            return;
-        }
-
         const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                std::chrono::system_clock::now().time_since_epoch())
                                .count();
@@ -76,9 +82,37 @@ namespace winrt::TerminalApp::implementation
         const int ms = static_cast<int>(nowMs % 1000);
         std::tm tmUtc{};
         ::gmtime_s(&tmUtc, &secs);
-        char ts[32];
+        char ts[24]{};
         std::strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%S", &tmUtc);
-        f << '[' << ts << '.' << std::setw(3) << std::setfill('0') << ms
-          << "Z] " << msg << '\n';
+
+        // Format the whole line up front, then emit it with a SINGLE
+        // FILE_APPEND_DATA WriteFile. Appends < 4 KB are atomic, so concurrent
+        // writers (multiple WT threads, and the per-version log is shared) never
+        // interleave a half-written line — which matters precisely for the
+        // concurrent FRE activity this log is used to debug. (A buffered
+        // std::ofstream `<<` chain can emit several writes per line and tear.)
+        std::string line(72 + msg.size(), '\0');
+        const int n = _snprintf_s(line.data(), line.size(), _TRUNCATE,
+                                  "[%s.%03dZ] %s\n", ts, ms, msg.c_str());
+        if (n <= 0)
+        {
+            return;
+        }
+
+        const auto logPath = (logDir / L"terminal-agent-pane.log").wstring();
+        const HANDLE h = CreateFileW(logPath.c_str(),
+                                     FILE_APPEND_DATA,
+                                     FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                     nullptr,
+                                     OPEN_ALWAYS,
+                                     FILE_ATTRIBUTE_NORMAL,
+                                     nullptr);
+        if (h == INVALID_HANDLE_VALUE)
+        {
+            return;
+        }
+        DWORD written = 0;
+        WriteFile(h, line.data(), static_cast<DWORD>(n), &written, nullptr);
+        CloseHandle(h);
     }
 }

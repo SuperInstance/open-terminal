@@ -518,6 +518,13 @@
   <data name="ResetWindowNameCommandKey" xml:space="preserve">
     <value>Réinitialiser le nom de la fenêtre</value>
   </data>
+  <data name="OpenWorkspaceCommandKey" xml:space="preserve">
+    <value>Ouvrir un espace de travail « {0} »</value>
+    <comment>{0} will be replaced with the workspace name</comment>
+  </data>
+  <data name="OpenWorkspaceDefaultCommandKey" xml:space="preserve">
+    <value>Ouvrir un espace de travail</value>
+  </data>
   <data name="OpenWindowRenamerCommandKey" xml:space="preserve">
     <value>Renommer la fenêtre...</value>
   </data>
@@ -702,7 +709,7 @@
     <comment>When enabled, input will go to all panes in this tab simultaneously</comment>
   </data>
   <data name="RestartConnectionKey" xml:space="preserve">
-    <value>Redémarrer la connexion</value>
+    <value>Redémarrer la session</value>
   </data>
   <data name="OpenScratchpadKey" xml:space="preserve">
     <value>Ouvrir le bloc-notes</value>
@@ -739,6 +746,9 @@
   </data>
   <data name="OpenCWDCommandKey" xml:space="preserve">
     <value>Ouvrir le répertoire de travail actif</value>
+  </data>
+  <data name="WorkspacesCommandKey" xml:space="preserve">
+    <value>Espaces de travail...</value>
   </data>
   <data name="CloseTab" xml:space="preserve">
     <value>Fermer l’onglet</value>
@@ -979,6 +989,7 @@
 
   <data name="ShowProtocolInfoCommandKey" xml:space="preserve"><value>Afficher les informations sur Terminal Protocol</value><comment>{Locked="Terminal Protocol"}</comment></data>
   <data name="TogglePaneVisibilityCommandKey" xml:space="preserve"><value>Afficher ou masquer le volet</value></data>
+  <data name="ToggleSidebarCommandKey" xml:space="preserve"><value>Afficher ou masquer la barre latérale</value><comment>A command that shows or collapses the vertical tabs sidebar.</comment></data>
   <data name="OpenAgentPaneCommandKey" xml:space="preserve"><value>Afficher ou masquer l'agent IA</value></data>
   <data name="FocusAgentPaneCommandKey" xml:space="preserve"><value>Mettre le focus sur le volet de l'agent IA</value></data>
   <data name="OpenAgentSessionsCommandKey" xml:space="preserve"><value>Ouvrir la liste des sessions de l'agent IA</value></data>

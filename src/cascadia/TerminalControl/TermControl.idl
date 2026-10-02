@@ -25,6 +25,15 @@ namespace Microsoft.Terminal.Control
         Shown
     };
 
+    enum ContentTransferState
+    {
+        Owned,
+        Prepared,
+        Suspended,
+        Detached,
+        Closed
+    };
+
     [default_interface] runtimeclass TermControl : Windows.UI.Xaml.Controls.UserControl,
                                                    IDirectKeyListener,
                                                    IMouseWheelListener,
@@ -38,6 +47,12 @@ namespace Microsoft.Terminal.Control
                     Microsoft.Terminal.TerminalConnection.ITerminalConnection connection);
 
         static TermControl NewControlByAttachingContent(ControlInteractivity content);
+        static TermControl PrepareControlByAttachingContent(ControlInteractivity content);
+        void SuspendContentTransfer();
+        Boolean ResumeContentTransfer();
+        void CommitContentTransfer();
+        void CommitContentDetach();
+        ContentTransferState TransferState { get; };
 
         static Windows.Foundation.Size GetProposedDimensions(IControlSettings settings,
                                                              UInt32 dpi,
@@ -83,6 +98,7 @@ namespace Microsoft.Terminal.Control
         event Windows.Foundation.TypedEventHandler<Object, StringSentEventArgs> StringSent;
         event Windows.Foundation.TypedEventHandler<Object, SearchMissingCommandEventArgs> SearchMissingCommand;
         event Windows.Foundation.TypedEventHandler<Object, String> VtSequenceReceived;
+        event Windows.Foundation.TypedEventHandler<Object, ShowNotificationEventArgs> ShowNotification;
 
         Microsoft.UI.Xaml.Controls.CommandBarFlyout ContextMenu { get; };
         Microsoft.UI.Xaml.Controls.CommandBarFlyout SelectionContextMenu { get; };
@@ -100,6 +116,7 @@ namespace Microsoft.Terminal.Control
 
         Boolean CopySelectionToClipboard(Boolean dismissSelection, Boolean singleLine, Boolean withControlSequences, CopyFormat formats);
         void PasteTextFromClipboard();
+        void EnableAgentPasteShortcutFallback(Boolean enabled);
         void SelectAll();
         Boolean ToggleBlockSelection();
         void ToggleMarkMode();
@@ -139,7 +156,9 @@ namespace Microsoft.Terminal.Control
         void SetReadOnly(Boolean readOnlyState);
 
         String ReadEntireBuffer();
+        String ReadBufferTail(Int32 maxLogicalLines, Int32 maxCharacters);
         String ReadLastPrompt();
+        String ReadLastPromptBounded(Int32 maxLogicalLines, Int32 maxCharacters);
         CommandHistoryContext CommandHistory();
         void UpdateWinGetSuggestions(Windows.Foundation.Collections.IVector<String> suggestions);
 
@@ -168,5 +187,6 @@ namespace Microsoft.Terminal.Control
         void ClearQuickFix();
 
         void Detach();
+        void EnableAgentMouseWheelZoom(Boolean enabled);
     }
 }

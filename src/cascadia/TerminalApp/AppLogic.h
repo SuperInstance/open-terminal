@@ -10,6 +10,8 @@
 #include "AppCommandlineArgs.h"
 #include "TerminalWindow.h"
 #include "ContentManager.h"
+#include "AgentProviderTelemetry.h"
+#include "../inc/AgentPolicy.h"
 
 #include <inc/cppwinrt_utils.h>
 #include <ThrottledFunc.h>
@@ -61,6 +63,8 @@ namespace winrt::TerminalApp::implementation
         winrt::hstring _settingsLoadExceptionText;
         HRESULT _settingsLoadedResult = S_OK;
         bool _loadedInitialSettings = false;
+        bool _usingDefaultSettings = false;
+        ::TerminalApp::AgentProviderTelemetryBaseline _agentProviderTelemetryBaseline;
 
         bool _hasSettingsStartupActions{ false };
         ::TerminalApp::AppCommandlineArgs _settingsAppArgs;
@@ -73,14 +77,18 @@ namespace winrt::TerminalApp::implementation
         // (C++ destroys members in reverse-declaration-order.)
         winrt::com_ptr<LanguageProfileNotifier> _languageProfileNotifier;
         wil::unique_folder_change_reader_nothrow _reader;
+        wil::unique_registry_watcher_nothrow _machineAgentPolicyWatcher;
+        wil::unique_registry_watcher_nothrow _userAgentPolicyWatcher;
 
         TerminalApp::ContentManager _contentManager{ winrt::make<implementation::ContentManager>() };
 
         void _ApplyLanguageSettingChange() noexcept;
+        void _LogAppCreatedTelemetry() const noexcept;
 
         [[nodiscard]] HRESULT _TryLoadSettings() noexcept;
         void _ProcessLazySettingsChanges();
         void _RegisterSettingsChange();
+        void _RegisterAgentPolicyChange();
 
         void _setupFolderPathEnvVar();
 

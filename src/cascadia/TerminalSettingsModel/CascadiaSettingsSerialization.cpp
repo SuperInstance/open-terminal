@@ -21,6 +21,7 @@
 #include "../inc/AgentPolicy.h"
 #include "DefaultTerminal.h"
 #include "FileUtils.h"
+#include "SettingsTelemetry.h"
 
 #include "ProfileEntry.h"
 #include "FolderEntry.h"
@@ -401,7 +402,14 @@ void SettingsLoader::FindFragmentsAndMergeIntoUserSettings(bool generateExtensio
     try
     {
         const auto catalog = AppExtensionCatalog::Open(AppExtensionHostName);
-        extensions = extractValueFromTaskWithoutMainThreadAwait(catalog.FindAllAsync());
+        if (auto catalog2{ catalog.try_as<IAppExtensionCatalog2>() })
+        {
+            extensions = catalog2.FindAll();
+        }
+        else
+        {
+            extensions = extractValueFromTaskWithoutMainThreadAwait(catalog.FindAllAsync());
+        }
     }
     CATCH_LOG();
 
@@ -423,20 +431,37 @@ void SettingsLoader::FindFragmentsAndMergeIntoUserSettings(bool generateExtensio
             continue;
         }
 
-        // Likewise, getting the public folder from an extension is an async operation.
-        auto foundFolder = extractValueFromTaskWithoutMainThreadAwait(ext.GetPublicFolderAsync());
-        if (!foundFolder)
+        winrt::hstring publicFolderPath;
+        if (auto ext3{ ext.try_as<IAppExtension3>() })
         {
-            continue;
+            // Windows 11 24H2 and above support a much faster, much less
+            // Windows.Storage-y API.
+            publicFolderPath = ext3.GetPublicPath();
+            if (publicFolderPath.empty())
+            {
+                // No point in falling through to GetPublicFolderAsync;
+                // it won't work.
+                continue;
+            }
+        }
+        else
+        {
+            // Likewise, getting the public folder from an extension is an async operation.
+            auto foundFolder = extractValueFromTaskWithoutMainThreadAwait(ext.GetPublicFolderAsync());
+            if (!foundFolder)
+            {
+                continue;
+            }
+
+            // the StorageFolder class has its own methods for obtaining the files within the folder
+            // however, all those methods are Async methods
+            // you may have noticed that we need to resort to clunky implementations for async operations
+            // (they are in extractValueFromTaskWithoutMainThreadAwait)
+            // so for now we will just take the folder path and access the files that way
+            publicFolderPath = foundFolder.Path();
         }
 
-        // the StorageFolder class has its own methods for obtaining the files within the folder
-        // however, all those methods are Async methods
-        // you may have noticed that we need to resort to clunky implementations for async operations
-        // (they are in extractValueFromTaskWithoutMainThreadAwait)
-        // so for now we will just take the folder path and access the files that way
-        const auto path = buildPath(foundFolder.Path(), FragmentsSubDirectory);
-
+        const auto path = buildPath(publicFolderPath, FragmentsSubDirectory);
         if (std::filesystem::is_directory(path))
         {
             // MSIX does not support machine-wide scope
@@ -1877,6 +1902,28 @@ void CascadiaSettings::_resolveNewTabMenuProfilesSet(const IVector<Model::NewTab
     }
 }
 
+void CascadiaSettings::LogAgentProviderChanges(const winrt::hstring& previousAcpAgent, const winrt::hstring& previousDelegateAgent) const noexcept
+try
+{
+    const auto logRole = [](const char* role, const std::wstring_view previous, const std::wstring_view current) {
+        if (const auto change = AgentSettingsTelemetry::GetProviderChange(previous, current))
+        {
+            TraceLoggingWrite(
+                g_hSettingsModelProvider,
+                "AgentProviderChanged",
+                TraceLoggingDescription("Provider setting changed between accepted application settings loads"),
+                TraceLoggingString(role, "role"),
+                TraceLoggingString(change->from, "from"),
+                TraceLoggingString(change->to, "to"),
+                TraceLoggingKeyword(MICROSOFT_KEYWORD_MEASURES),
+                TelemetryPrivacyDataTag(PDT_ProductAndServiceUsage));
+        }
+    };
+    logRole("primary", previousAcpAgent, _globals->AcpAgent());
+    logRole("delegate", previousDelegateAgent, _globals->DelegateAgent());
+}
+CATCH_LOG()
+
 void CascadiaSettings::LogSettingChanges(bool isJsonLoad) const
 {
 #ifndef _DEBUG
@@ -1929,6 +1976,11 @@ void CascadiaSettings::LogSettingChanges(bool isJsonLoad) const
     // report changes
     for (const auto& change : changes)
     {
+        if (IsAISettingChange(change))
+        {
+            continue;
+        }
+
         // A `isJsonLoad ? "JsonSettingsChanged" : "UISettingsChanged"`
         //   would be nice, but that apparently isn't allowed in the macro below.
         // Also, there's guidance to not send too much data all in one event,
@@ -1954,72 +2006,6 @@ void CascadiaSettings::LogSettingChanges(bool isJsonLoad) const
                               TraceLoggingValue(distribution, "Distribution"),
                               TraceLoggingKeyword(MICROSOFT_KEYWORD_MEASURES),
                               TelemetryPrivacyDataTag(PDT_ProductAndServiceUsage));
-        }
-    }
-
-    // ── Dedicated Intelligent Terminal telemetry ──
-    // Census-style events that report the *value* of AI-related settings.
-    // The generic JsonSettingsChanged / UISettingsChanged events above only
-    // record setting keys; these additional events let the pipeline know
-    // which agent provider / feature value each device has configured.
-    {
-        // Sanitize agent IDs: known product names are logged as-is;
-        // custom agent IDs may contain user file paths or commands,
-        // so we bucket those as "custom".
-        static const auto sanitizeProviderId = [](const winrt::hstring& id) -> std::string {
-            if (id == L"copilot" || id == L"claude" || id == L"codex" || id == L"gemini")
-            {
-                return winrt::to_string(id);
-            }
-            return "custom";
-        };
-
-        const auto emitAgentProviderConfigured = [&](const char* providerType, const winrt::hstring& id) {
-            const auto sanitized = sanitizeProviderId(id);
-            TraceLoggingWrite(g_hSettingsModelProvider,
-                              "AgentProviderConfigured",
-                              TraceLoggingDescription("Event emitted when the user has an agent provider configured"),
-                              TraceLoggingValue(providerType, "ProviderType", "Which provider setting (AcpAgent or DelegateAgent)"),
-                              TraceLoggingValue(sanitized.c_str(), "ProviderId", "The agent provider ID"),
-                              TraceLoggingValue(branding, "Branding"),
-                              TraceLoggingValue(distribution, "Distribution"),
-                              TraceLoggingKeyword(MICROSOFT_KEYWORD_MEASURES),
-                              TelemetryPrivacyDataTag(PDT_ProductAndServiceUsage));
-        };
-        // Emit these census-style events based on the *effective* value at JSON
-        // load time, not on whether the setting was explicitly present in JSON.
-        // Since these settings have non-empty defaults, gating on `changes`
-        // would under-report the majority of devices that run with defaults.
-        if (isJsonLoad)
-        {
-            if (const auto acpAgent = _globals->AcpAgent(); !acpAgent.empty())
-            {
-                emitAgentProviderConfigured("AcpAgent", acpAgent);
-            }
-            if (const auto delegateAgent = _globals->DelegateAgent(); !delegateAgent.empty())
-            {
-                emitAgentProviderConfigured("DelegateAgent", delegateAgent);
-            }
-        }
-        const auto emitIntelligentFeatureConfigured = [&](const char* featureName, const wchar_t* featureValue) {
-            TraceLoggingWrite(g_hSettingsModelProvider,
-                              "IntelligentFeatureConfigured",
-                              TraceLoggingDescription("Event emitted when the user has an intelligent terminal feature configured"),
-                              TraceLoggingValue(featureName, "FeatureName", "The name of the feature"),
-                              TraceLoggingWideString(featureValue, "FeatureValue", "The configured value"),
-                              TraceLoggingValue(branding, "Branding"),
-                              TraceLoggingValue(distribution, "Distribution"),
-                              TraceLoggingKeyword(MICROSOFT_KEYWORD_MEASURES),
-                              TelemetryPrivacyDataTag(PDT_ProductAndServiceUsage));
-        };
-        if (isJsonLoad)
-        {
-            emitIntelligentFeatureConfigured("AutoErrorDetection", _globals->AutoErrorDetectionEnabled() ? L"true" : L"false");
-            emitIntelligentFeatureConfigured("AutoFix", _globals->AutoFixEnabled() ? L"true" : L"false");
-            if (const auto agentPanePosition = _globals->AgentPanePosition(); !agentPanePosition.empty())
-            {
-                emitIntelligentFeatureConfigured("AgentPanePosition", agentPanePosition.c_str());
-            }
         }
     }
 }

@@ -1,9 +1,7 @@
 # Setup screen titles
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.title.first_run: "Aqlli terminal-ga xush kelibsiz!"
 setup.title.agent_missing: "Agent topilmadi"
 setup.title.agent_error: "Agentga ulanish amalga oshmadi"
-setup.title.switch_agent: "Agentni almashtirish"
 setup.title.not_available: "Agent mavjud emas"
 setup.title.sign_in: "Tizimga kirish talab qilinadi"
 
@@ -12,10 +10,9 @@ setup.subtitle.copilot_missing: "Agentingiz \"%{agent}\" oʻrnatilmagan. Oʻrnat
 setup.subtitle.agent_missing: "Agentingiz \"%{agent}\" oʻrnatilmagan. Iltimos, qoʻlda qayta oʻrnating, keyin qayta urinib koʻring. Agentni almashtirish uchun Aqlli terminal Settings > Agent boʻlimiga oʻting."
 setup.subtitle.copilot_auth: "Agentingiz \"%{agent}\" autentifikatsiyani talab qiladi. Tizimga kirish uchun quyidagi qadamlarni bajaring. Agentni almashtirish uchun Aqlli terminal Settings > Agent boʻlimiga oʻting."
 setup.subtitle.agent_auth: "Agentingiz \"%{agent}\" autentifikatsiyani talab qiladi. Iltimos, agent orqali tizimga kiring, keyin pastda \"Men tizimga kirdim\" ni tanlang. Agentni almashtirish uchun Aqlli terminal Settings > Agent boʻlimiga oʻting."
+setup.subtitle.connection_failed: "%{agent} ishga tushirilmadi."
 
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.description.fre_line1: "Aqlli terminal-da foydalanmoqchi boʻlgan standart agentni tanlang. Ish"
-setup.description.fre_line2: "muhitingizni sozlash va oʻrnatish uchun Settings boʻlimiga oʻtishingiz mumkin."
 
 setup.option.install: "%{agent} qayta oʻrnatish"
 setup.option.install_hint: "(Avtomatik oʻrnatiladi)"
@@ -23,10 +20,14 @@ setup.option.signin: "%{agent} tizimga kirish"
 setup.option.retry_detection: "Qayta urinib koʻring"
 setup.option.retry_auth: "Men tizimga kirdim — qayta ulanib koʻring"
 setup.option.retry_connection: "Qayta ulanib koʻring"
-setup.option.switch_to: "%{agent} ga almashtirish"
 setup.status.installing: "Oʻrnatilmoqda..."
+setup.status.installing_copilot_cli: "GitHub Copilot CLI oʻrnatilmoqda"
+setup.status.connecting_agent: "%{agent} bilan ulanish oʻrnatilmoqda"
 setup.status.install_failed: "Oʻrnatish amalga oshmadi: "
 setup.status.installing_winget: " winget orqali oʻrnatilmoqda..."
+setup.error.install_start_failed: "Oʻrnatuvchini ishga tushirib boʻlmadi. Qayta urinish uchun \"Qayta urinib koʻring\" bandini tanlang."
+setup.error.install_timed_out: "Oʻrnatish vaqti tugadi. Boshqa oʻrnatishni boshlashdan oldin \"Qayta urinib koʻring\" bandini tanlang."
+setup.error.install_detection_timed_out: "Oʻrnatish tugadi, ammo Copilot hali koʻrinmayapti. Qayta tekshirish uchun \"Qayta urinib koʻring\" bandini tanlang."
 
 # ── Auth flow (src/ui/auth.rs) ──────────────────────────────────────────────
 # {Locked="CLI"} - acronym, common usage across Microsoft localizations
@@ -35,17 +36,19 @@ auth.agent_selected_with_status: "Agent %{name} — "
 auth.checking_authentication: "  %{spinner} Autentifikatsiya tekshirilmoqda..."
 auth.waiting_for_authorization: "  %{spinner} Avtorizatsiya kutilmoqda..."
 auth.code_copied_hint: "  Kod buferga nusxalandi — brauzeringizga joylang."
-auth.sign_in_prompt: "Agentingizdan foydalanish uchun tizimga kiring:"
+auth.device_code_prompt: "%{url} manziliga kiring va kodni kiriting: %{code}"  # Copilot device-flow sign-in progress; %{url} is the verification URL, %{code} is the device code
 auth.card_connect: "  Agent xususiyatlarini yoqish uchun %{name} ulang"
-auth.button_sign_in_github: "[ GitHub orqali kirish ]"  # {Locked="GitHub"}
-auth.button_sign_in_with: "[ %{name} orqali kirish ]"
-auth.hint_footer: "  Tizimga kirish uchun Enter, orqaga qaytish uchun Esc bosing"  # {Locked="Enter","Esc"}
+auth.enterprise_prompt: "  Kirish uchun Enter · GitHub Enterprise uchun E · orqaga qaytish uchun Esc"  # {Locked="Enter","E","Esc"}
+auth.enterprise_domain_label: "  Enterprise domeni: "
+auth.enterprise_hint_footer: "  Kirish uchun Enter · github.com uchun Esc"  # {Locked="Enter","Esc","github.com"}
+auth.login_failed_help_enterprise: "  Qayta urinish uchun Enter tugmasini bosing yoki github.com uchun Esc. Keng tarqalgan sabablar: noto‘g‘ri yozilgan yoki ulanib bo‘lmaydigan domen, muddati tugagan kod yoki o‘sha hostda Copilot ruxsati yo‘q."  # {Locked="Enter","Esc","github.com","Copilot"}
+auth.login_failed_help_default: "  Qayta urinish uchun Enter tugmasini bosing yoki orqaga qaytish uchun Esc."  # {Locked="Enter","Esc"}
 
 # ── Chat view (src/ui/chat.rs) ──────────────────────────────────────────────
 chat.activity_thinking: "Oʻylayapman…"
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
 chat.welcome_title: "Aqlli terminal-ga xush kelibsiz!"
-chat.welcome_disclaimer: "Aqlli terminal AI-dan foydalanadi. Xatolarni tekshiring."
+chat.welcome_disclaimer: "Aqlli terminal AI-dan foydalanadi."
 chat.plan_header: "Reja:"
 chat.plan_marker_completed: "[x]"  # {Locked}
 chat.plan_marker_in_progress: "[>]"  # {Locked}
@@ -53,11 +56,24 @@ chat.plan_marker_pending: "[ ]"  # {Locked}
 chat.autofix_prompt_label: "Yaqindagi buyruq xatosi avtomatik tarzda tashxis qilindi"
 chat.turn_canceled: "(bekor qilindi)"
 chat.turn_executed: "→ bajarildi: %{title}"
+# Holat belgisidan keyin va mavzudan oldin ko‘rsatiladigan doimiy vosita turkumi yorliqlari.
+chat.tool_kind.run: "Ishga tushirish"
+chat.tool_kind.insert: "Kiritish"
+chat.tool_kind.read: "O‘qish"
+chat.tool_kind.search: "Qidirish"
+chat.tool_kind.edit: "Tahrirlash"
+chat.tool_kind.delete: "O‘chirish"
+chat.tool_kind.move: "Ko‘chirish"
+chat.tool_kind.fetch: "Olish"
+chat.tool_kind.think: "Fikrlash"
+chat.tool_kind.mode: "Rejim"
+chat.tool_kind.other: "Vosita"
 
 # ── Input placeholders (src/ui/input.rs) ────────────────────────────────────
 input.placeholder.connected: "Istalgan narsa soʻrang, / buyruqlar uchun.."  # {Locked="/"}
 input.placeholder.connecting: "ulanilmoqda..."
 input.placeholder.disconnected: "uzilgan"
+input.image_attachments: "📎 Rasmlar: %{items}"  # {Locked="📎","%{items}"}
 
 # ── Command popup (src/ui/command_popup.rs) ─────────────────────────────────
 # {Locked="/"} - slash-command prefix, must remain ASCII
@@ -74,9 +90,11 @@ commands.help_close_hint: "  Esc        Bu yordamni yopish"  # {Locked="Esc"}
 commands.help.summary: "Bu buyruqlar roʻyxatini koʻrsat"
 commands.clear.summary: "Chat aylantirish tarixini tozalash (seansni saqlaydi)"
 commands.new.summary: "Yangi ACP seansini boshlash (tarixni oʻchiradi)"  # {Locked="ACP"}
+commands.fix.summary: "Diagnose the active terminal and suggest a fix (/fix <hint>)"  # {Locked="/fix","<hint>"}
 commands.restart.summary: "Agentni qayta ishga tushiring"
 commands.stop.summary: "Bajarilayotgan soʻrovni bekor qilish"
 commands.sessions.summary: "Tarixiy seanslar tanlagichini ochish (Ctrl+Shift+/)"  # {Locked="Ctrl+Shift+/"}
+commands.agent.summary: "Bu panel uchun agentni tanlang (toʻgʻridan-toʻgʻri almashtirish uchun /agent <id>)"  # {Locked="/agent","<id>"}
 
 # ── Recommendations panel (src/ui/recommendations.rs) ───────────────────────
 # {Locked="Enter","Esc","↵","↑","↓","←","→"} - key names and Return-key glyph, do not translate
@@ -104,9 +122,7 @@ permission.compact.prefix: "[!] "  # {Locked}
 permission.compact.hint: "[Y/N javob uchun · toʻliq karta uchun oʻlchamni oʻzgartiring]"  # {Locked="Y/N"}
 
 # ── Agent status (src/agent_check.rs) ───────────────────────────────────────
-agent.status.not_installed_auto: "Oʻrnatilmagan — avtomatik oʻrnatish uchun tanlang"
 agent.status.not_found: "Topilmadi"
-agent.status.detected: "Aniqlandi"
 # {Locked="winget","GitHub.Copilot","GitHub","Copilot"} - tool names and command, must run verbatim
 agent.install.running_winget: "Bajarilmoqda: winget install GitHub.Copilot"
 agent.install.launch_failed: "winget ishga tushmadi: %{error}"
@@ -117,8 +133,8 @@ agent.custom.auth_hint: "%{name} oʻrnatilganligiga va PATH-da ekanligiga ishonc
 
 # ── Agents view (src/ui/agents_view.rs) ─────────────────────────────────────
 agents.loading: "Yuklanmoqda..."
-# {Locked="Enter","Esc","↑","↓"} - key combinations, do not translate
-agents.footer_hint: "(↑ ↓ navigatsiya uchun • Enter seansni ochish uchun • Esc chiqish uchun)"
+# {Locked="Enter","Esc","F5","↑","↓","/"} - key combinations, do not translate
+agents.footer_hint: "(↑ ↓ navigatsiya uchun • Enter seansni ochish uchun • Esc chiqish uchun • F5 yangilash uchun • / qidirish uchun)"
 agents.status.active: "Faol"
 agents.status.waiting_for_input: "Kiritish kutilmoqda"
 agents.status.error: "Xatolik"
@@ -128,26 +144,47 @@ agents.status.idle: "Boʻsh"
 layout.welcome_hint: "  (Ctrl+Shift+. agent panelini koʻrsatish/yashirish • Ctrl+Shift+/ agent seansini koʻrsatish/yashirish)"  # {Locked="Ctrl+Shift+.","Ctrl+Shift+/"}
 
 # ── Connection state ────────────────────────────────────────────────────────
-connection.starting: "Agent ishga tushirilmoqda..."
+# Preparing the AI agent connection, including preflight and reuse of a cached agent.
+connection.starting: "Agentga ulanish tayyorlanmoqda..."
+# Retiring old AI agent sessions for /restart, before the next connection phases.
+connection.restarting: "Agent qayta ishga tushirilmoqda..."
 connection.reconnecting: "Qayta ulanilmoqda..."
+# Connecting the pane to WTA's local coordinator process, not to an AI model.
+connection.coordinator: "Mahalliy muvofiqlashtiruvchiga ulanilmoqda..."
+# Initializing the helper/coordinator connection, including local preparation and AI agent initialization.
+connection.initializing: "Agentga ulanishning boshlangʻich sozlamalari oʻrnatilmoqda..."
+# Refreshing the user's authentication with the AI agent after login; not verifying the agent's identity.
+connection.authenticating: "Agentga kirgan foydalanuvchi autentifikatsiya qilinmoqda..."
+# Reading the coordinator's registry snapshot, including existing history; not fetching history from the AI agent.
+connection.syncing_sessions: "Seanslar roʻyxati oʻqilmoqda..."
+# Creating the AI agent session, including local registration; internal agent progress is unknown.
+connection.creating_session: "Agent seansi yaratilmoqda..."
+# Applying the requested AI model before the connection is ready. Preserve %{model}.
+connection.selecting_model: "Seans modeli oʻrnatilmoqda: %{model}..."  # {Locked="%{model}"}
+# Activity row while connecting to restore a conversation. Keep the actual stage first so narrow panes show it; session_id is shortened to eight characters.
+connection.resuming_stage: "%{stage} (%{session_id} davom ettirilmoqda)"  # {Locked="%{stage}","%{session_id}"}
 connection.connecting_activity: "Agentga ulanilmoqda…"
 connection.lost: "Agent bilan ulanish uzildi. Qayta ulanish uchun /restart deb yozing."  # {Locked="/restart"}
 
 # ── System messages (src/app.rs) ────────────────────────────────────────────
+system.close_pane_hint: "Panelni yopish uchun Ctrl+C ni yana bosing."  # {Locked="Ctrl+C"}
+system.selection_copied: "Nusxalandi"  # Brief hint shown after selected terminal text is copied
 system.cancelled: "Bekor qilindi."
 system.no_prompt_in_flight: "Bajarilayotgan soʻrov yoʻq."
 system.authentication_failed: "Autentifikatsiya amalga oshmadi"
-system.command_copied_retry: "Buyruq nusxalandi — boshqa terminalda bajaring, keyin qayta sinash uchun Enter bosing"  # {Locked="Enter"}
 system.stopped_max_tokens: "Javob model chiqish chegarasiga yetgach uzib qo'yildi."
 system.stopped_max_turn_requests: "Agent ushbu navbat uchun so'rov chegarasiga yetgach to'xtadi."
 system.stopped_refusal: "Agent ushbu so'rovni davom ettirishdan bosh tortdi."
 system.agent_busy: "Agent bu varaqda band — joriy soʻrov tugashini kuting."
+system.image_clipboard_empty: "Joylashtirish uchun buferda rasm yoʻq."
+system.image_not_supported: "Bu agent rasm kiritishni qoʻllab-quvvatlamaydi."
+system.image_pasted: "Rasm biriktirildi (%{label}). Yuborish uchun Enter bosing."  # {Locked="%{label}","Enter"}
 system.resuming_session: "%{session_id} seansi davom ettirilmoqda..."
 system.unknown_command: "Nomaʼlum buyruq \"%{command}\" — soʻrov sifatida yuborildi. Roʻyxat uchun /help yozing."  # {Locked="/help"}
 system.busy_use_stop: "Joriy soʻrov tugashini kuting yoki avval /stop ishlating."  # {Locked="/stop"}
 system.cannot_focus_session: "%{session_id} seansiga fokuslab boʻlmadi: u jonli ko‘rinadi, lekin hali hech qanday panel GUID’i bogʻlanmagan. Birozdan keyin qayta urinib koʻring."
-system.cannot_resume_no_load_session: "Agent panelida davom ettirib boʻlmadi: %{agent} ACP `loadSession` imkoniyatini eʼlon qilmagan. Buning oʻrniga yangi terminal panelida davom ettirish uchun Enter (Shift bosmasdan) bosing."  # {Locked="ACP","loadSession","Enter","Shift"}
-system.cannot_resume_no_resume_flag: "%{agent} seansini davom ettirib boʻlmadi: bu agentda `--resume` uslubidagi bayroq yoʻq. ACP orqali agent panelida davom ettirib koʻrish uchun Shift+Enter bosing."  # {Locked="--resume","Shift","Enter","ACP"}
+system.cannot_resume_no_load_session: "Agent panelida davom ettirib boʻlmadi: %{agent} ACP `loadSession` imkoniyatini eʼlon qilmagan."  # {Locked="ACP","loadSession"}
+system.cannot_resume_no_resume_flag: "%{agent} seansini davom ettirib boʻlmadi: bu agentda `--resume` uslubidagi bayroq yoʻq."  # {Locked="--resume"}
 system.cannot_resume_unknown_agent: "%{session_id} seansini davom ettirib boʻlmadi: uning manba agenti ushbu WTA tuzilmasiga nomaʼlum."
 system.cannot_resume_phantom_via_flag: "%{agent} %{session_id} seansini davom ettirib boʻlmadi: u boshlangan, lekin hech qanday suhbat yigʻilmagan, shuning uchun %{agent} oʻzi davom ettirishni rad etadi. Qator olib tashlanmoqda."
 system.cannot_resume_phantom_via_load: "%{agent} %{session_id} seansini davom ettirib boʻlmadi: u boshlangan, lekin hech qanday suhbat yigʻilmagan, shuning uchun %{agent} yuklashni rad etadi. Qator olib tashlanmoqda."
@@ -189,7 +226,7 @@ hooks.marketplace_path_stale: "⚠ marketplace yoʻli eskirgan"
 hooks.installed_but_disabled: "⚠ oʻrnatilgan lekin oʻchirilgan"
 hooks.not_installed: "✗ oʻrnatilmagan"
 hooks.uninstall_skipped: "oʻtkazib yuborildi (CLI PATH-da emas)"
-hooks.install_attempted: "wt-agent-hooks oʻrnatish urinildi (idempotent). Natijani tekshirish uchun `wta hooks status` bajaring. Iz jurnali: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
+hooks.install_succeeded: "✓ wt-agent-hooks %{clis} uchun oʻrnatilgan"
 # ── Relative time and date formatting ───────────────────────────────────────
 time.just_now: "hozirgina"
 time.minute_singular: "%{count} daqiqa oldin"
@@ -201,3 +238,32 @@ time.days_other: "%{count} kun oldin"
 
 # ── Tavsiyani bajarish (src/coordinator.rs) ─────────────────────────────────
 system.choice_execution_failed: "%{choice} tanlovi bajarilmadi: %{error}"
+
+# ── Agent picker (src/ui/agent_popup.rs) ────────────────────────────────────
+# {Locked="↑","↓","Enter","Esc"} - key names, do not translate
+agent_picker.title: "Agentni tanlang (↑ ↓ • Enter • Esc)"  # Agent means an AI coding agent
+# Shown when no policy-allowed AI agent CLI is installed on the machine.
+system.no_agents: "Ushbu kompyuterda biron-bir mavjud agent CLI topilmadi."  # {Locked="CLI"}
+# {agent} is the unrecognized text the user typed after /agent.
+system.agent_unknown: "Nomaʼlum yoki mavjud boʻlmagan agent %{agent} — mavjud roʻyxatni koʻrish uchun /agent yozing."  # {Locked="/agent"}
+# Shown only when /agent is used outside a Windows Terminal-owned agent pane.
+system.agent_switch_unavailable: "Agentni almashtirish Windows Terminal ilovasidan tashqarida mavjud emas."
+
+# ── Model picker (/model) ───────────────────────────────────────────────────
+commands.model.summary: "Bu panel uchun modelni tanlang (toʻgʻridan-toʻgʻri almashtirish uchun /model <id>)"  # {Locked="/model","<id>"}
+commands.config.summary: "Ushbu agent seansini sozlash"  # Agent means an AI coding agent; shown for the /config command. {Locked="/config"}
+commands.move.summary: "Bu tabning agent panelini koʻchirish (/move <position>)"  # {Locked="/move","<position>"}
+model_picker.title: "Modelni tanlang (↑ ↓ • Enter • Esc)"  # {Locked="↑","↓","Enter","Esc"}
+system.no_models: "Ulangan agent hech qanday tanlanadigan modelni eʼlon qilmadi."
+system.model_set: "Bu panel uchun model %{model} ga oʻrnatildi."  # {Locked="%{model}"}
+
+# ── Session configuration picker (src/ui/config_popup.rs) ───────────────────
+# {Locked="↑","↓","Enter","Esc","ACP"} - key names and protocol name
+config_picker.title: "Seans konfiguratsiyasi (↑ ↓ • Enter • Esc)"
+# Shown when /config is used but the AI agent exposed no ACP select options.
+system.no_config_options: "Ulanmagan agent hech qanday sozlanishi mumkin boʻlgan seans parametrlarini eʼlon qilmadi."
+# {option} is an Agent-provided option name; {error} is the ACP error.
+system.config_update_failed: "%{option} yangilanmadi: %{error}"
+system.yolo_disable_pending: "agent provayderi seansning talab etilgan imtiyozsiz holatini tasdiqlamadi"  # Shown after the localized failure prefix while prompts remain blocked until the AI agent provider confirms that its privileged session mode is off. Provider means an AI agent provider, not a network provider.
+system.provider_command_blocked_by_policy: "%{command}: Avtomatik tasdiqlash tashkilotingiz siyosati tomonidan o‘chirib qo‘yilgan."  # {Locked="%{command}"} Shown when AllowAutomaticApproval blocks a provider-advertised privileged command.
+system.model_unknown: "Nomaʼlum model %{model} — mavjud roʻyxatni koʻrish uchun /model yozing."  # {Locked="%{model}","/model"}

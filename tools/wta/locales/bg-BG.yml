@@ -1,9 +1,7 @@
 # Setup screen titles
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.title.first_run: "Добре дошли в Интелигентен Терминал!"
 setup.title.agent_missing: "Агентът не е намерен"
 setup.title.agent_error: "Връзката с агента е неуспешна"
-setup.title.switch_agent: "Смяна на агента"
 setup.title.not_available: "Агентът не е наличен"
 setup.title.sign_in: "Изисква се влизане"
 
@@ -12,10 +10,9 @@ setup.subtitle.copilot_missing: "Вашият агент \"%{agent}\" не е и
 setup.subtitle.agent_missing: "Вашият агент \"%{agent}\" не е инсталиран. Преинсталирайте го ръчно и опитайте отново. За да смените агента, отидете в Интелигентен Терминал Settings > Agent."
 setup.subtitle.copilot_auth: "Вашият агент \"%{agent}\" изисква удостоверяване. Следвайте стъпките по-долу, за да влезете. За да смените агента, отидете в Интелигентен Терминал Settings > Agent."
 setup.subtitle.agent_auth: "Вашият агент \"%{agent}\" изисква удостоверяване. Влезте чрез агента и изберете \"Влязох\" по-долу. За да смените агента, отидете в Интелигентен Терминал Settings > Agent."
+setup.subtitle.connection_failed: "Не успяхме да стартираме %{agent}."
 
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.description.fre_line1: "Изберете агента по подразбиране, който искате да използвате в Интелигентен Терминал. Можете"
-setup.description.fre_line2: "да отидете в Settings, за да конфигурирате работното си пространство."
 
 setup.option.install: "Инсталиране на %{agent}"
 setup.option.install_hint: "(Ще бъде инсталиран автоматично)"
@@ -23,10 +20,14 @@ setup.option.signin: "Влизане в %{agent}"
 setup.option.retry_detection: "Опитай отново"
 setup.option.retry_auth: "Влязох — опитай да се свържеш отново"
 setup.option.retry_connection: "Опитай да се свържеш отново"
-setup.option.switch_to: "Превключване към %{agent}"
 setup.status.installing: "Инсталиране..."
+setup.status.installing_copilot_cli: "Инсталиране на GitHub Copilot CLI"
+setup.status.connecting_agent: "Свързване с %{agent}"
 setup.status.install_failed: "Инсталирането е неуспешно: "
 setup.status.installing_winget: " Инсталиране чрез winget..."
+setup.error.install_start_failed: "Инсталаторът не можа да бъде стартиран. Изберете \"Опитай отново\", за да опитате пак."
+setup.error.install_timed_out: "Времето за инсталиране изтече. Изберете \"Опитай отново\", преди да започнете друга инсталация."
+setup.error.install_detection_timed_out: "Инсталирането завърши, но Copilot все още не се вижда. Изберете \"Опитай отново\", за да проверите отново."
 
 # ── Auth flow (src/ui/auth.rs) ──────────────────────────────────────────────
 # {Locked="CLI"} - acronym, common usage across Microsoft localizations
@@ -35,17 +36,19 @@ auth.agent_selected_with_status: "CLI на агента %{name} — "
 auth.checking_authentication: "  %{spinner} Проверка на удостоверяването..."
 auth.waiting_for_authorization: "  %{spinner} Изчакване на оторизация..."
 auth.code_copied_hint: "  Кодът е копиран в клипборда — поставете го в браузъра си."
-auth.sign_in_prompt: "Влезте, за да използвате агента си:"
+auth.device_code_prompt: "Посетете %{url} и въведете код: %{code}"  # Copilot device-flow sign-in progress; %{url} is the verification URL, %{code} is the device code
 auth.card_connect: "  Свържете %{name}, за да активирате функциите на агента"
-auth.button_sign_in_github: "[ Влизане с GitHub ]"  # {Locked="GitHub"}
-auth.button_sign_in_with: "[ Влизане с %{name} ]"
-auth.hint_footer: "  Натиснете Enter за влизане, Esc за връщане назад"  # {Locked="Enter","Esc"}
+auth.enterprise_prompt: "  Enter за влизане · E за GitHub Enterprise · Esc за връщане назад"  # {Locked="Enter","E","Esc"}
+auth.enterprise_domain_label: "  Домейн на GitHub Enterprise: "
+auth.enterprise_hint_footer: "  Enter за влизане · Esc за github.com"  # {Locked="Enter","Esc","github.com"}
+auth.login_failed_help_enterprise: "  Натиснете Enter, за да опитате отново, или Esc за github.com. Чести причини: грешно въведен или недостъпен домейн, изтекъл код или липса на достъп до Copilot на този хост."  # {Locked="Enter","Esc","github.com","Copilot"}
+auth.login_failed_help_default: "  Натиснете Enter, за да опитате отново, или Esc за връщане назад."  # {Locked="Enter","Esc"}
 
 # ── Chat view (src/ui/chat.rs) ──────────────────────────────────────────────
 chat.activity_thinking: "Мисля..."
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
 chat.welcome_title: "Добре дошли в Интелигентен Терминал!"
-chat.welcome_disclaimer: "Интелигентен Терминал използва AI. Проверявайте за грешки."
+chat.welcome_disclaimer: "Интелигентен Терминал използва AI."
 chat.plan_header: "План:"
 chat.plan_marker_completed: "[x]"  # {Locked}
 chat.plan_marker_in_progress: "[>]"  # {Locked}
@@ -53,11 +56,25 @@ chat.plan_marker_pending: "[ ]"  # {Locked}
 chat.autofix_prompt_label: "Автоматично диагностициран скорошен неуспех на команда"
 chat.turn_canceled: "(отменено)"
 chat.turn_executed: "→ изпълнено: %{title}"
+# Persistent tool-category labels shown after a status marker and before a subject.
+chat.tool_kind.run: "Изпълнение"
+chat.tool_kind.insert: "Вмъкване"
+chat.tool_kind.read: "Четене"
+chat.tool_kind.search: "Търсене"
+chat.tool_kind.edit: "Редактиране"
+chat.tool_kind.delete: "Изтриване"
+chat.tool_kind.move: "Преместване"
+chat.tool_kind.fetch: "Извличане"
+chat.tool_kind.think: "Мислене"
+chat.tool_kind.mode: "Режим"
+chat.tool_kind.other: "Инструмент"
 
 # ── Input placeholders (src/ui/input.rs) ────────────────────────────────────
 input.placeholder.connected: "Попитайте каквото и да е, / за команди.."  # {Locked="/"}
 input.placeholder.connecting: "свързване..."
 input.placeholder.disconnected: "прекъснато"
+# Summary of attached images; keep 📎 and %{items} verbatim.
+input.image_attachments: "📎 Изображения: %{items}"  # {Locked="📎","%{items}"}
 
 # ── Command popup (src/ui/command_popup.rs) ─────────────────────────────────
 # {Locked="/"} - slash-command prefix, must remain ASCII
@@ -71,9 +88,11 @@ commands.help_close_hint: "  Esc        Затваряне на тази пом�
 commands.help.summary: "Показване на този списък с команди"
 commands.clear.summary: "Изчистване на хронологията на чата (сесията се запазва)"
 commands.new.summary: "Стартиране на нова сесия ACP (изтрива хронологията)"  # {Locked="ACP"}
+commands.fix.summary: "Diagnose the active terminal and suggest a fix (/fix <hint>)"  # {Locked="/fix","<hint>"}
 commands.restart.summary: "Рестартирай агента"
 commands.stop.summary: "Отмяна на текущата подкана"
 commands.sessions.summary: "Отваряне на избора на предишни сесии (Ctrl+Shift+/)"  # {Locked="Ctrl+Shift+/"}
+commands.agent.summary: "Изберете агента за този раздел (/agent <id> за директно превключване)"  # {Locked="/agent","<id>"}
 # ── Recommendations panel (src/ui/recommendations.rs) ───────────────────────
 # {Locked="Enter","Esc","↵","↑","↓","←","→"} - key names and Return-key glyph, do not translate
 recommendations.nav_hint: "(↑ ↓ за навигация • ← → за превключване на бутони • Enter за избор • Esc за отказ)"
@@ -100,9 +119,7 @@ permission.compact.prefix: "[!] "  # {Locked}
 permission.compact.hint: "[Y/N за отговор · преоразмерете за пълна карта]"  # {Locked="Y/N"}
 
 # ── Agent status (src/agent_check.rs) ───────────────────────────────────────
-agent.status.not_installed_auto: "Не е инсталиран — изберете за автоматично инсталиране"
 agent.status.not_found: "Не е намерен"
-agent.status.detected: "Открит"
 # {Locked="winget","GitHub.Copilot","GitHub","Copilot"} - tool names and command, must run verbatim
 agent.install.running_winget: "Running: winget install GitHub.Copilot"
 agent.install.launch_failed: "Failed to launch winget: %{error}"
@@ -113,8 +130,8 @@ agent.custom.auth_hint: "Уверете се, че %{name} е инсталира
 
 # ── Agents view (src/ui/agents_view.rs) ─────────────────────────────────────
 agents.loading: "Зареждане..."
-# {Locked="Enter","Esc","↑","↓"} - key combinations, do not translate
-agents.footer_hint: "(↑ ↓ за навигация • Enter за стартиране на сесия • Esc за изход)"
+# {Locked="Enter","Esc","F5","↑","↓","/"} - key combinations, do not translate
+agents.footer_hint: "(↑ ↓ за навигация • Enter за стартиране на сесия • Esc за изход • F5 за обновяване • / за търсене)"
 agents.status.active: "Активен"
 agents.status.waiting_for_input: "Очаква въвеждане"
 agents.status.error: "Грешка"
@@ -124,26 +141,48 @@ agents.status.idle: "Неактивен"
 layout.welcome_hint: "  (Ctrl+Shift+. показване/скриване на панела на агента • Ctrl+Shift+/ показване/скриване на сесията на агента)"  # {Locked="Ctrl+Shift+.","Ctrl+Shift+/"}
 
 # ── Connection state ────────────────────────────────────────────────────────
-connection.starting: "Стартиране на агента..."
+# Preparing the AI agent connection, including preflight and reuse of a cached agent.
+connection.starting: "Подготовка на връзката с агента..."
 connection.reconnecting: "Повторно свързване..."
+# Retiring old AI agent sessions for /restart, before the next connection phases.
+connection.restarting: "Рестартиране на агента..."
+# Connecting the pane to WTA's local coordinator process, not to an AI model.
+connection.coordinator: "Свързване с локалния координатор..."
+# Initializing the helper/coordinator connection, including local preparation and AI agent initialization.
+connection.initializing: "Инициализиране на връзката с агента..."
+# Refreshing the user's authentication with the AI agent after login; not verifying the agent's identity.
+connection.authenticating: "Удостоверяване на потребителя пред агента..."
+# Reading the coordinator's registry snapshot, including existing history; not fetching history from the AI agent.
+connection.syncing_sessions: "Четене на списъка със сесии..."
+# Creating the AI agent session, including local registration; internal agent progress is unknown.
+connection.creating_session: "Създаване на сесия на агента..."
+# Applying the requested AI model before the connection is ready. Preserve %{model}.
+connection.selecting_model: "Задаване на модел за сесията: %{model}..."  # {Locked="%{model}"}
+# Activity row while connecting to restore a conversation. Keep the actual stage first so narrow panes show it; session_id is shortened to eight characters.
+connection.resuming_stage: "%{stage} (възобновяване на %{session_id})"  # {Locked="%{stage}","%{session_id}"}
 connection.connecting_activity: "Свързване с агента…"
 connection.lost: "Връзката с агента беше загубена. Въведете /restart, за да се свържете отново."  # {Locked="/restart"}
 
 # ── System messages (src/app.rs) ────────────────────────────────────────────
+system.close_pane_hint: "Натиснете Ctrl+C отново, за да затворите панела"  # {Locked="Ctrl+C"}
+system.selection_copied: "Копирано"  # Brief hint shown after selected terminal text is copied
 system.cancelled: "Отменено."
 system.no_prompt_in_flight: "Няма активна заявка."
 system.authentication_failed: "Удостоверяването е неуспешно"
-system.command_copied_retry: "Командата е копирана — изпълнете я в друг терминал, след което натиснете Enter за повторен опит"  # {Locked="Enter"}
 system.stopped_max_tokens: "Отговорът беше отрязан след достигане на изходния лимит на модела."
 system.stopped_max_turn_requests: "Агентът спря след достигане на лимита си от заявки за този ход."
 system.stopped_refusal: "Агентът отказа да продължи с тази заявка."
 system.agent_busy: "Агентът е зает в този раздел — изчакайте текущата подкана да завърши."
+# Image paste messages; "agent" refers to an AI agent. Keep Enter and %{label} verbatim.
+system.image_clipboard_empty: "Няма изображение в клипборда за поставяне."
+system.image_not_supported: "Този агент не поддържа въвеждане на изображения."
+system.image_pasted: "Изображението е прикачено (%{label}). Натиснете Enter за изпращане."  # {Locked="%{label}","Enter"}
 system.resuming_session: "Възобновяване на сесия %{session_id}..."
 system.unknown_command: "Неизвестна команда \"%{command}\" — изпратена като подкана. Въведете /help за списъка."  # {Locked="/help"}
 system.busy_use_stop: "Изчакайте текущата подкана да завърши или първо използвайте /stop."  # {Locked="/stop"}
 system.cannot_focus_session: "Не може да се фокусира сесия %{session_id}: изглежда активна, но още няма свързан GUID на панел. Опитайте отново след малко."
-system.cannot_resume_no_load_session: "Не може да се възобнови в панела на агента: %{agent} не обяви възможността ACP `loadSession`. Натиснете Enter (без Shift), за да възобновите в нов терминален панел вместо това."  # {Locked="ACP","loadSession","Enter","Shift"}
-system.cannot_resume_no_resume_flag: "Не може да се възобнови сесията на %{agent}: този агент няма флаг в стил `--resume`. Натиснете Shift+Enter, за да опитате възобновяване в панела на агента чрез ACP вместо това."  # {Locked="--resume","Shift","Enter","ACP"}
+system.cannot_resume_no_load_session: "Не може да се възобнови в панела на агента: %{agent} не обяви възможността ACP `loadSession`."  # {Locked="ACP","loadSession"}
+system.cannot_resume_no_resume_flag: "Не може да се възобнови сесията на %{agent}: този агент няма флаг в стил `--resume`."  # {Locked="--resume"}
 system.cannot_resume_unknown_agent: "Не може да се възобнови сесия %{session_id}: изходният ѝ агент е неизвестен за тази компилация на WTA."
 system.cannot_resume_phantom_via_flag: "Не може да се възобнови сесията на %{agent} %{session_id}: тя е стартирана, но никога не е натрупала разговор, така че самият %{agent} би отхвърлил възобновяването. Редът се премахва."
 system.cannot_resume_phantom_via_load: "Не може да се възобнови сесията на %{agent} %{session_id}: тя е стартирана, но никога не е натрупала разговор, така че %{agent} би отхвърлил зареждането. Редът се премахва."
@@ -185,7 +224,7 @@ hooks.marketplace_path_stale: "⚠ marketplace path stale"
 hooks.installed_but_disabled: "⚠ installed but disabled"
 hooks.not_installed: "✗ not installed"
 hooks.uninstall_skipped: "skipped (CLI not on PATH)"
-hooks.install_attempted: "wt-agent-hooks install attempted (idempotent). Run `wta hooks status` to inspect the result. Trace log: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
+hooks.install_succeeded: "✓ wt-agent-hooks installed for %{clis}"
 
 # ── Relative time + date formatting (src/ui/agents_view.rs) ─────────────────
 # rust-i18n has no CLDR plural support; Rust selects singular vs. other.
@@ -201,3 +240,32 @@ time.days_other: "преди %{count} дни"
 
 # ── Изпълнение на препоръка (src/coordinator.rs) ────────────────────────────
 system.choice_execution_failed: "Избор %{choice} е неуспешен: %{error}"
+
+# ── Agent picker (src/ui/agent_popup.rs) ────────────────────────────────────
+# {Locked="↑","↓","Enter","Esc"} - key names, do not translate
+agent_picker.title: "Изберете агент (↑ ↓ • Enter • Esc)"  # Agent means an AI coding agent
+# Shown when no policy-allowed AI agent CLI is installed on the machine.
+system.no_agents: "На тази машина не е открит наличен CLI за агент."  # {Locked="CLI"}
+# {agent} is the unrecognized text the user typed after /agent.
+system.agent_unknown: "Неизвестен или недостъпен агент %{agent} — въведете /agent, за да видите наличния списък."  # {Locked="/agent"}
+# Shown only when /agent is used outside a Windows Terminal-owned agent pane.
+system.agent_switch_unavailable: "Превключването на агенти не е налично извън раздел на Windows Terminal."
+
+# ── Model picker (/model) ───────────────────────────────────────────────────
+commands.model.summary: "Изберете модела за този панел (/model <id> за директно превключване)"  # {Locked="/model","<id>"}
+commands.config.summary: "Конфигуриране на тази сесия на агента"  # Agent means an AI coding agent; shown for the /config command. {Locked="/config"}
+commands.move.summary: "Преместване на панела на агента за този раздел (/move <position>)"  # {Locked="/move","<position>"}
+model_picker.title: "Изберете модел (↑ ↓ • Enter • Esc)"  # {Locked="↑","↓","Enter","Esc"}
+system.no_models: "Свързаният агент не обяви никакви избираеми модели."
+system.model_set: "Моделът за този панел е зададен на %{model}."  # {Locked="%{model}"}
+
+# ── Session configuration picker (src/ui/config_popup.rs) ───────────────────
+# {Locked="↑","↓","Enter","Esc","ACP"} - key names and protocol name
+config_picker.title: "Конфигурация на сесията (↑ ↓ • Enter • Esc)"
+# Shown when /config is used but the AI agent exposed no ACP select options.
+system.no_config_options: "Свързаният агент не е обявил опции за сесия, които могат да се конфигурират."
+# {option} is an Agent-provided option name; {error} is the ACP error.
+system.config_update_failed: "Актуализирането на %{option} беше неуспешно: %{error}"
+system.yolo_disable_pending: "доставчикът не е потвърдил необходимото непривилегировано състояние на сесията"  # Shown after the localized failure prefix while prompts remain blocked until the AI agent provider confirms that its privileged session mode is off. Provider means an AI agent provider, not a network provider.
+system.provider_command_blocked_by_policy: "%{command}: Автоматичното одобрение е забранено от политиката на вашата организация."  # {Locked="%{command}"} Shown when AllowAutomaticApproval blocks a provider-advertised privileged command.
+system.model_unknown: "Неизвестен модел %{model} — въведете /model, за да видите наличния списък."  # {Locked="%{model}","/model"}

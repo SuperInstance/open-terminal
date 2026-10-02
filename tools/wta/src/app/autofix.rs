@@ -17,12 +17,14 @@ use super::*;
 /// active, and re-emits the active tab's snapshot on tab_changed.
 #[derive(Debug, Clone, Default)]
 pub struct TabAutofixState {
+    /// One concrete recommendation, not the Detected/Pending/Review projection.
+    pub(super) offer: Option<ErrorFixOffer>,
     /// Failing pane for Pending/Armed. Cleared when the user dismisses
     /// (Esc), the error resolves (exit 0 on the same pane), or the fix
     /// is executed.
     pub pane_id: Option<String>,
-    /// Monotonic timestamp captured when `pane_id` is armed, used for
-    /// ErrorFixResolved telemetry elapsed time.
+    /// Monotonic analysis-start timestamp captured when `pane_id` is armed.
+    /// This does not indicate that a fix has been applied.
     pub armed_at: Option<std::time::Instant>,
     /// Failing pane for the Suggested terminal state (a non-actionable
     /// explanation in chat — distinct from `pane_id` so the two
@@ -47,6 +49,14 @@ pub struct TabAutofixState {
     pub trigger_echo_pane: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct ErrorFixOffer {
+    pub(super) id: uuid::Uuid,
+    pub(super) prompt_id: u64,
+    pub(super) offered: bool,
+    pub(super) accepted: bool,
+}
+
 /// Snapshot of the bottom-bar autofix state for one tab. Mirrors the
 /// `state` field of the `autofix_state` protocol event so we can rebuild
 /// the payload from the cached snapshot when the tab becomes active.
@@ -64,10 +74,7 @@ pub enum AutofixBarSnapshot {
         hotkey_hint: String,
     },
     /// Analysis in progress ("Analyzing…"). Non-interactive.
-    Pending {
-        pane_id: String,
-        summary: String,
-    },
+    Pending { pane_id: String, summary: String },
     /// Analysis finished; a result (a fix or an explanation) is waiting in
     /// the agent pane chat. Surfaced ONLY when the pane is not open — the
     /// bar invites the user to open the pane and review. Once the pane
@@ -81,7 +88,68 @@ pub enum AutofixBarSnapshot {
     },
 }
 
+fn autofix_pane_matches(tab: &TabSession, pane_id: &str) -> (bool, bool) {
+    let turn_matches = tab.turn.prompt().is_some_and(|prompt| {
+        prompt.autofix.is_some() && prompt.context.target_pane_id() == Some(pane_id)
+    });
+    let snapshot_matches = match &tab.autofix.bar_snapshot {
+        AutofixBarSnapshot::Detected {
+            pane_id: source, ..
+        }
+        | AutofixBarSnapshot::Pending {
+            pane_id: source, ..
+        }
+        | AutofixBarSnapshot::Review {
+            pane_id: source, ..
+        } => source == pane_id,
+        AutofixBarSnapshot::Idle => false,
+    };
+    let state_matches = tab.autofix.pane_id.as_deref() == Some(pane_id)
+        || tab.autofix.suggested_pane_id.as_deref() == Some(pane_id)
+        || snapshot_matches;
+    (turn_matches, state_matches)
+}
+
 impl App {
+    /// Called only after a successfully flushed frame. Hidden/stashed cards
+    /// remain eligible until they are actually displayed.
+    pub(super) fn log_error_fix_offered_if_visible(&mut self) {
+        if !self.recommendation_rendered || !self.current_tab().pane_open {
+            return;
+        }
+        let tab = self.current_tab_mut();
+        if !tab.turn.is_autofix()
+            || tab.turn.recommendations().is_none()
+            || tab.turn.autofix_generation() != Some(tab.autofix.generation)
+        {
+            return;
+        }
+        let Some(offer) = tab.autofix.offer.as_mut() else {
+            return;
+        };
+        if tab.turn.prompt_id() == Some(offer.prompt_id) && !offer.offered {
+            offer.offered = true;
+            crate::telemetry::log_error_fix_offered(offer.id);
+        }
+    }
+
+    pub(super) fn log_error_fix_accepted(&mut self, session_id: &str) {
+        let tab = self.session_tab_mut(session_id);
+        if !tab.turn.is_autofix()
+            || tab.turn.recommendations().is_none()
+            || tab.turn.autofix_generation() != Some(tab.autofix.generation)
+        {
+            return;
+        }
+        let Some(offer) = tab.autofix.offer.as_mut() else {
+            return;
+        };
+        if tab.turn.prompt_id() == Some(offer.prompt_id) && offer.offered && !offer.accepted {
+            offer.accepted = true;
+            crate::telemetry::log_error_fix_accepted(offer.id);
+        }
+    }
+
     /// Auto-fix: when a command fails in another pane, ask the coordinator
     /// agent to suggest a fix. The user confirms before execution.
     pub(super) fn maybe_trigger_autofix(&mut self, notification: &WtNotification) {
@@ -156,6 +224,15 @@ impl App {
             return;
         }
 
+        if self.prompt_reconfiguration_pending_for_tab(&target_tab_id) {
+            tracing::info!(
+                target: "autofix",
+                tab_id = %target_tab_id,
+                "skipping autofix while provider-native Yolo reconciliation is pending",
+            );
+            return;
+        }
+
         // Latest event always wins — but only if we can actually act on it.
         // The ACP transport single-flights at the tab level, so if the
         // target tab already has a prompt in flight, submitting another
@@ -222,14 +299,6 @@ impl App {
             tab.autofix.generation
         };
 
-        // The auto-fix kind is carried by PromptSubmission::is_autofix,
-        // so the text doesn't need a marker prefix — just the raw error
-        // summary + instruction.
-        let prompt_text = format!(
-            "{}\nDiagnose the error and suggest a fix.",
-            notification.summary
-        );
-
         // Route through the target tab's ACP session. `tab_id` carries the
         // failing tab's StableId so the ACP layer's `tab_to_session` map
         // routes (or lazy-creates) to the right session even when the
@@ -245,20 +314,28 @@ impl App {
 
         // Store the failing pane ID on the target tab so the Esc dismiss
         // path can find it (legacy; the new state machine carries it via
-        // AutofixContext), and arm telemetry timing for resolution.
+        // AutofixContext), together with the analysis-start timestamp.
         {
             let tab = self.tab_mut(&target_tab_id);
             tab.autofix.pane_id = Some(notification.pane_id.clone());
             tab.autofix.armed_at = Some(std::time::Instant::now());
         }
 
-        let prompt = PromptSubmission::new_autofix(prompt_text, Some(pane_context));
+        let reattached_session_id = self
+            .tab_sessions
+            .get(&target_tab_id)
+            .and_then(|tab| tab.reattached_session_id().map(str::to_string));
+        let prompt =
+            PromptSubmission::new_autofix_failure(notification.summary.clone(), Some(pane_context))
+                .with_byok(self.current_model_is_byok())
+                .with_agent_id(self.current_agent_id.clone())
+                .with_reattached_session(reattached_session_id);
         let submitted = SubmittedPrompt {
             id: prompt.id,
             text: prompt.text.clone(),
             submitted_at_unix_s: prompt.submitted_at_unix_s,
+            context: TurnContext::with_target_pane(notification.pane_id.clone()),
             autofix: Some(AutofixContext {
-                target_pane_id: notification.pane_id.clone(),
                 generation: new_gen,
             }),
         };
@@ -266,7 +343,11 @@ impl App {
         // lookup so a tab with no ACP session yet still gets the prompt
         // queued correctly (the ACP layer creates the session lazily when
         // it processes the prompt).
-        self.turn_submit_prompt_for_tab(&target_tab_id, submitted);
+        self.turn_submit_prompt_for_tab_with_cancellation(
+            &target_tab_id,
+            submitted,
+            prompt.cancellation_token(),
+        );
         tracing::info!(target: "autofix", pane_id = %notification.pane_id, tab_id = %target_tab_id, generation = new_gen, "sending auto-fix prompt");
         let _ = self.prompt_tx.send(prompt);
 
@@ -301,7 +382,12 @@ impl App {
     // tab_changed, `project_active_tab_state` re-emits the new active
     // tab's snapshot so the bar matches.
 
-    pub(super) fn emit_autofix_state_pending(&mut self, target_tab_id: &str, pane_id: &str, summary: &str) {
+    pub(super) fn emit_autofix_state_pending(
+        &mut self,
+        target_tab_id: &str,
+        pane_id: &str,
+        summary: &str,
+    ) {
         let snapshot = AutofixBarSnapshot::Pending {
             pane_id: pane_id.to_string(),
             summary: summary.to_string(),
@@ -318,7 +404,12 @@ impl App {
     /// bar shows a clickable hint; the user activates the fix via the
     /// pill or the hotkey, which fires `autofix_execute_from_detected`
     /// and replays through `trigger_autofix_inner` with `force=true`.
-    pub(super) fn emit_autofix_state_detected(&mut self, target_tab_id: &str, pane_id: &str, summary: &str) {
+    pub(super) fn emit_autofix_state_detected(
+        &mut self,
+        target_tab_id: &str,
+        pane_id: &str,
+        summary: &str,
+    ) {
         let snapshot = AutofixBarSnapshot::Detected {
             pane_id: pane_id.to_string(),
             summary: summary.to_string(),
@@ -360,18 +451,39 @@ impl App {
     /// active tab's cached snapshot, synthesize a `WtNotification` from
     /// it, and replay through `trigger_autofix_inner` with `forced=true`
     /// so the auto-suggest off gate is bypassed and the LLM call fires.
-    pub(super) fn handle_autofix_execute_from_detected(&mut self) {
+    pub(super) fn handle_autofix_execute_from_detected(
+        &mut self,
+        requested_pane_id: &str,
+        requested_tab_id: Option<&str>,
+    ) {
         let active_tab = self.active_tab_key().to_string();
+        if requested_pane_id.is_empty()
+            || requested_tab_id.is_some_and(|tab| tab != active_tab)
+            || self
+                .owner_tab_id
+                .as_deref()
+                .is_some_and(|owner| owner != active_tab)
+        {
+            tracing::debug!(
+                target: "autofix",
+                requested_pane_id,
+                requested_tab_id,
+                active_tab,
+                "ignoring detected Autofix action: target is missing or tab does not match"
+            );
+            return;
+        }
         let snapshot = self.current_tab().autofix.bar_snapshot.clone();
         let (pane_id, summary) = match snapshot {
             AutofixBarSnapshot::Detected {
                 pane_id, summary, ..
-            } => (pane_id, summary),
+            } if pane_id == requested_pane_id => (pane_id, summary),
             other => {
                 tracing::info!(
                     target: "autofix",
+                    requested_pane_id,
                     state = ?other,
-                    "autofix_execute_from_detected: bar not in Detected state — ignoring",
+                    "autofix_execute_from_detected: no matching Detected pane — ignoring",
                 );
                 return;
             }
@@ -466,6 +578,7 @@ impl App {
                 .send(crate::coordinator::ChoiceExecution {
                     choice,
                     insert_only: false,
+                    context: TurnContext::with_target_pane(armed_pane),
                 });
         }
         self.push_execution_info(format!("Auto-executing choice {}.", choice_label));
@@ -474,6 +587,37 @@ impl App {
         // choice directly without going through `turn_execute_card`. The
         // matched-path case already recomputes via that callee.
         self.recompute_chip_override(&active_tab);
+    }
+
+    /// Clear autofix state whose source pane has closed. Cancelling a matching
+    /// turn also advances its generation so late agent output cannot restore
+    /// a result for a pane that no longer exists.
+    pub(super) fn handle_autofix_pane_closed(&mut self, event_tab_id: Option<&str>, pane_id: &str) {
+        let target_tab_id = event_tab_id.map(str::to_string).or_else(|| {
+            self.tab_sessions.iter().find_map(|(tab_id, tab)| {
+                let (turn_matches, state_matches) = autofix_pane_matches(tab, pane_id);
+                (turn_matches || state_matches).then(|| tab_id.clone())
+            })
+        });
+        let Some(target_tab_id) = target_tab_id else {
+            return;
+        };
+        let Some(tab) = self.tab_sessions.get(&target_tab_id) else {
+            return;
+        };
+        let (turn_matches, state_matches) = autofix_pane_matches(tab, pane_id);
+
+        if turn_matches {
+            self.request_turn_cancel_for_tab(&target_tab_id);
+        } else if state_matches {
+            let tab = self.tab_mut(&target_tab_id);
+            tab.autofix.generation = tab.autofix.generation.wrapping_add(1);
+            if tab.autofix.pane_id.as_deref() == Some(pane_id) {
+                tab.autofix.pane_id = None;
+                tab.autofix.armed_at = None;
+            }
+            self.emit_autofix_state_cleared(&target_tab_id);
+        }
     }
 
     pub(super) fn emit_autofix_state_cleared(&mut self, target_tab_id: &str) {

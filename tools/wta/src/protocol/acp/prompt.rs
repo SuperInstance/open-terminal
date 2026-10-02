@@ -12,10 +12,8 @@ const EMBEDDED_DEFAULT_PROMPT: &str = include_str!(concat!(
 
 const AUTOFIX_USER_PROMPT_FILE_NAME: &str = "auto-fix.md";
 const AUTOFIX_DEFAULT_PROMPT_FILE_NAME: &str = "auto-fix.default.md";
-const EMBEDDED_AUTOFIX_PROMPT: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/prompts/auto-fix.md"
-));
+const EMBEDDED_AUTOFIX_PROMPT: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/prompts/auto-fix.md"));
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PlannerPromptTemplate {
@@ -47,7 +45,10 @@ pub(crate) fn merge_runtime_sections(template: &str, runtime_sections: &[String]
         .join("\n\n");
 
     if runtime_block.is_empty() {
-        return template.trim_end().to_string();
+        return template
+            .replace(RUNTIME_CONTEXT_MARKER, "")
+            .trim_end()
+            .to_string();
     }
 
     if template.contains(RUNTIME_CONTEXT_MARKER) {
@@ -71,7 +72,7 @@ fn load_autofix_prompt_template_from_root(
         let user_path = prompt_root.join(AUTOFIX_USER_PROMPT_FILE_NAME);
         if let Ok(content) = fs::read_to_string(&user_path) {
             return PlannerPromptTemplate {
-                display_name: "Auto-Fix Agent".to_string(),
+                display_name: "Auto-Fix Instructions".to_string(),
                 content,
                 source_label: format!("user:{}", user_path.display()),
             };
@@ -80,7 +81,7 @@ fn load_autofix_prompt_template_from_root(
         let default_path = prompt_root.join(AUTOFIX_DEFAULT_PROMPT_FILE_NAME);
         if let Ok(content) = fs::read_to_string(&default_path) {
             return PlannerPromptTemplate {
-                display_name: "Auto-Fix Agent".to_string(),
+                display_name: "Auto-Fix Instructions".to_string(),
                 content,
                 source_label: format!("default:{}", default_path.display()),
             };
@@ -88,7 +89,7 @@ fn load_autofix_prompt_template_from_root(
     }
 
     PlannerPromptTemplate {
-        display_name: "Auto-Fix Agent".to_string(),
+        display_name: "Auto-Fix Instructions".to_string(),
         content: embedded_default_prompt.to_string(),
         source_label: "embedded:auto-fix.md".to_string(),
     }
@@ -158,10 +159,13 @@ fn seed_autofix_prompt_files(
 
     write_if_changed(&default_path, embedded_default_prompt)?;
 
-    if !user_path.exists() {
-        fs::write(&user_path, embedded_default_prompt)?;
-    } else if previous_default.as_deref() == existing_user.as_deref() {
-        fs::write(&user_path, embedded_default_prompt)?;
+    // (Re)seed the user file only when it is absent or still matches the
+    // previous embedded default (i.e. the user hasn't customized it). Use
+    // `write_if_changed` so an unchanged file is never rewritten — this avoids
+    // needless disk churn on every prompt load and, because the write is
+    // atomic, keeps concurrent readers from observing a truncated file.
+    if existing_user.is_none() || previous_default.as_deref() == existing_user.as_deref() {
+        write_if_changed(&user_path, embedded_default_prompt)?;
     }
 
     Ok(())
@@ -177,19 +181,53 @@ fn seed_prompt_files(prompt_root: &Path, embedded_default_prompt: &str) -> std::
 
     write_if_changed(&default_path, embedded_default_prompt)?;
 
-    if !user_path.exists() {
-        fs::write(&user_path, embedded_default_prompt)?;
-    } else if previous_default.as_deref() == existing_user.as_deref() {
-        fs::write(&user_path, embedded_default_prompt)?;
+    // See the note in `seed_autofix_prompt_files`: only (re)seed an absent or
+    // still-default user file, and route through `write_if_changed` so an
+    // unchanged file is never rewritten and concurrent readers never see a
+    // truncated file.
+    if existing_user.is_none() || previous_default.as_deref() == existing_user.as_deref() {
+        write_if_changed(&user_path, embedded_default_prompt)?;
     }
 
     Ok(())
 }
 
+/// Counter for unique temp-file names in [`write_atomic`]. Process-wide so
+/// concurrent writers (e.g. many tests loading prompts at once) never collide
+/// on the same staging path.
+static NEXT_TMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn write_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
-    match fs::read_to_string(path) {
-        Ok(existing) if existing == content => Ok(()),
-        _ => fs::write(path, content),
+    if let Ok(existing) = fs::read_to_string(path) {
+        if existing == content {
+            return Ok(());
+        }
+    }
+    write_atomic(path, content)
+}
+
+/// Write `content` to `path` atomically: stage into a uniquely-named temp file
+/// in the same directory, then `rename` it over the destination. On both
+/// Windows and Unix `rename` replaces the destination in a single operation, so
+/// a concurrent reader always observes either the old or the new complete file
+/// — never a half-truncated one. The shared runtime prompt root is read and
+/// seeded from many threads (notably the test suite), where a plain in-place
+/// `fs::write` truncates first and races readers down to an empty string.
+fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("prompt");
+    let unique = NEXT_TMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(".{}.{}.{}.tmp", stem, std::process::id(), unique));
+    fs::write(&tmp, content)?;
+    match fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            Err(e)
+        }
     }
 }
 
@@ -197,7 +235,8 @@ fn write_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
 mod tests {
     use super::{
         load_planner_prompt_template_from_root, merge_runtime_sections, DEFAULT_PROMPT_FILE_NAME,
-        RUNTIME_CONTEXT_MARKER, USER_PROMPT_FILE_NAME,
+        EMBEDDED_AUTOFIX_PROMPT, EMBEDDED_DEFAULT_PROMPT, RUNTIME_CONTEXT_MARKER,
+        USER_PROMPT_FILE_NAME,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -228,6 +267,102 @@ mod tests {
             merge_runtime_sections("before", &[String::from("first"), String::from("second")]);
 
         assert_eq!(merged, "before\n\nfirst\n\nsecond");
+    }
+
+    #[test]
+    fn merge_runtime_sections_removes_marker_when_context_is_empty() {
+        let merged =
+            merge_runtime_sections(&format!("before\n{}\nafter", RUNTIME_CONTEXT_MARKER), &[]);
+
+        assert_eq!(merged, "before\n\nafter");
+    }
+
+    #[test]
+    fn embedded_prompts_use_the_mcp_tool_schema_as_authority() {
+        for prompt in [EMBEDDED_DEFAULT_PROMPT, EMBEDDED_AUTOFIX_PROMPT] {
+            assert!(prompt.contains("provides an MCP server for this session"));
+            assert!(prompt.contains("run_command_in_current_shell"));
+            assert!(!prompt.contains("request_terminal_actions"));
+            for removed in ["terminal_send", "terminal_open", "terminal_open_and_send"] {
+                assert!(!prompt.contains(removed), "prompt still names {removed}");
+            }
+            for removed in [
+                "`run_command`",
+                "`open_workspace`",
+                "`run_command_in_workspace`",
+                "`delegate_task`",
+            ] {
+                assert!(!prompt.contains(removed), "prompt still names {removed}");
+            }
+            assert!(prompt.contains("advertised input schema as the sole authority"));
+            assert!(!prompt.contains(r#"{"type""#));
+            assert!(!prompt.contains("recommended_choice"));
+            assert!(!prompt.contains("```json"));
+        }
+        // The default prompt drives every action, so it must name each tool.
+        for tool in [
+            "run_command_in_current_shell",
+            "create_workspace",
+            "delegate_task_in_new_workspace",
+        ] {
+            assert!(
+                EMBEDDED_DEFAULT_PROMPT.contains(tool),
+                "default prompt must name {tool}"
+            );
+        }
+        assert!(EMBEDDED_DEFAULT_PROMPT
+            .contains("A requested destination alone never implies delegation"));
+        assert!(EMBEDDED_DEFAULT_PROMPT.contains("running a command in a new tab or split"));
+        assert!(EMBEDDED_DEFAULT_PROMPT.contains("only when another agent should own the work"));
+        // Autofix is deliberately restricted to `run_command_in_current_shell` — the Helper
+        // rejects any other action for an autofix turn — so naming workspace
+        // or delegation tools there would invite a call that cannot be accepted.
+        for tool in ["create_workspace", "delegate_task_in_new_workspace"] {
+            assert!(
+                !EMBEDDED_AUTOFIX_PROMPT.contains(tool),
+                "autofix prompt must not name {tool}"
+            );
+        }
+        assert!(EMBEDDED_DEFAULT_PROMPT.contains("Submit exactly one action"));
+        assert!(EMBEDDED_DEFAULT_PROMPT.contains("`request_user_input`"));
+        assert!(EMBEDDED_DEFAULT_PROMPT.contains("instead of guessing"));
+        assert!(EMBEDDED_AUTOFIX_PROMPT
+            .contains("Submit exactly one `run_command_in_current_shell` call"));
+    }
+
+    #[test]
+    fn autofix_advertises_on_demand_resolution_without_assuming_near_matches() {
+        assert!(
+            EMBEDDED_AUTOFIX_PROMPT.contains("available on demand through `wta resolve-command`")
+        );
+        assert!(EMBEDDED_AUTOFIX_PROMPT.contains("do not call it routinely for every Autofix"));
+        assert!(
+            EMBEDDED_AUTOFIX_PROMPT.contains("preserve the failing pane's `--shell` and `--cwd`")
+        );
+        assert!(EMBEDDED_AUTOFIX_PROMPT.contains(
+            "An `indeterminate` or `unsupported` result, or a failed query, \
+             does not prove that a command is missing."
+        ));
+        assert!(!EMBEDDED_AUTOFIX_PROMPT.contains("Near Matches"));
+    }
+
+    #[test]
+    fn autofix_distinguishes_obvious_typos_from_unknown_local_commands() {
+        assert!(EMBEDDED_AUTOFIX_PROMPT.contains(
+            "`gti status` -> `git status`, go directly to `run_command_in_current_shell`"
+        ));
+        assert!(EMBEDDED_AUTOFIX_PROMPT
+            .contains("Do not call the resolver or substitute other discovery tools"));
+        assert!(EMBEDDED_AUTOFIX_PROMPT
+            .contains("without claiming that installation or execution was verified"));
+        assert!(EMBEDDED_AUTOFIX_PROMPT
+            .contains("an unfamiliar local command or genuine ambiguity requires local evidence"));
+        assert!(EMBEDDED_AUTOFIX_PROMPT.contains("do not invent local command names"));
+        assert!(EMBEDDED_AUTOFIX_PROMPT
+            .contains("A command-not-found error alone does not require a query"));
+        assert!(
+            !EMBEDDED_AUTOFIX_PROMPT.contains("For an obvious typo supported by the query results")
+        );
     }
 
     #[test]

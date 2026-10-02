@@ -1,9 +1,7 @@
 # Setup screen titles
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.title.first_run: "Зияткер терминал-ға қош келдіңіз!"
 setup.title.agent_missing: "Агент табылмады"
 setup.title.agent_error: "Агентке қосылу сәтсіз аяқталды"
-setup.title.switch_agent: "Агентті ауыстыру"
 setup.title.not_available: "Агент қолжетімсіз"
 setup.title.sign_in: "Жүйеге кіру қажет"
 
@@ -12,10 +10,9 @@ setup.subtitle.copilot_missing: "Сіздің \"%{agent}\" агентіңіз о
 setup.subtitle.agent_missing: "Сіздің \"%{agent}\" агентіңіз орнатылмаған. Қолмен қайта орнатып, қайталап көріңіз. Агентті ауыстыру үшін Зияткер терминал Settings > Agent бөліміне өтіңіз."
 setup.subtitle.copilot_auth: "Сіздің \"%{agent}\" агентіңіз аутентификацияны талап етеді. Жүйеге кіру үшін төмендегі қадамдарды орындаңыз. Агентті ауыстыру үшін Зияткер терминал Settings > Agent бөліміне өтіңіз."
 setup.subtitle.agent_auth: "Сіздің \"%{agent}\" агентіңіз аутентификацияны талап етеді. Агент арқылы жүйеге кіріп, төменде \"Мен кірдім\" таңдаңыз. Агентті ауыстыру үшін Зияткер терминал Settings > Agent бөліміне өтіңіз."
+setup.subtitle.connection_failed: "%{agent} іске қосылмады."
 
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.description.fre_line1: "Зияткер терминал-да қолданғыңыз келетін әдепкі агентті таңдаңыз. Жұмыс кеңістігіңізді"
-setup.description.fre_line2: "баптау және реттеу үшін Settings бөліміне өтуіңізге болады."
 
 setup.option.install: "%{agent} орнату"
 setup.option.install_hint: "(Автоматты түрде орнатылады)"
@@ -23,10 +20,14 @@ setup.option.signin: "%{agent} жүйеге кіру"
 setup.option.retry_detection: "Қайталап көріңіз"
 setup.option.retry_auth: "Мен кірдім — қайта қосылып көріңіз"
 setup.option.retry_connection: "Қайта қосылып көріңіз"
-setup.option.switch_to: "%{agent} ауыстыру"
 setup.status.installing: "Орнатылуда..."
+setup.status.installing_copilot_cli: "GitHub Copilot CLI орнатылуда"
+setup.status.connecting_agent: "%{agent} қызметіне қосылуда"
 setup.status.install_failed: "Орнату сәтсіз: "
 setup.status.installing_winget: " winget арқылы орнатылуда..."
+setup.error.install_start_failed: "Орнатушыны іске қосу мүмкін болмады. Қайталап көру үшін \"Қайталап көріңіз\" пәрменін таңдаңыз."
+setup.error.install_timed_out: "Орнату уақыты аяқталды. Басқа орнатуды бастамас бұрын \"Қайталап көріңіз\" пәрменін таңдаңыз."
+setup.error.install_detection_timed_out: "Орнату аяқталды, бірақ Copilot әлі көрінбейді. Қайта тексеру үшін \"Қайталап көріңіз\" пәрменін таңдаңыз."
 
 # ── Auth flow (src/ui/auth.rs) ──────────────────────────────────────────────
 # {Locked="CLI"} - acronym, common usage across Microsoft localizations
@@ -35,17 +36,19 @@ auth.agent_selected_with_status: "Агент %{name} — "
 auth.checking_authentication: "  %{spinner} Аутентификация тексерілуде..."
 auth.waiting_for_authorization: "  %{spinner} Авторизация күтілуде..."
 auth.code_copied_hint: "  Код буферге көшірілді — браузерге қойыңыз."
-auth.sign_in_prompt: "Агентіңізді пайдалану үшін жүйеге кіріңіз:"
+auth.device_code_prompt: "%{url} мекенжайына кіріп, кодты енгізіңіз: %{code}"  # Copilot device-flow sign-in progress; %{url} is the verification URL, %{code} is the device code
 auth.card_connect: "  Агент мүмкіндіктерін қосу үшін %{name} қосыңыз"
-auth.button_sign_in_github: "[ GitHub арқылы кіру ]"  # {Locked="GitHub"}
-auth.button_sign_in_with: "[ %{name} арқылы кіру ]"
-auth.hint_footer: "  Жүйеге кіру үшін Enter, артқа қайту үшін Esc басыңыз"  # {Locked="Enter","Esc"}
+auth.enterprise_prompt: "  Кіру үшін Enter · GitHub Enterprise үшін E · артқа қайту үшін Esc"  # {Locked="Enter","E","Esc"}
+auth.enterprise_domain_label: "  Enterprise домені: "
+auth.enterprise_hint_footer: "  Кіру үшін Enter · github.com үшін Esc"  # {Locked="Enter","Esc","github.com"}
+auth.login_failed_help_enterprise: "  Қайталау үшін Enter пернесін басыңыз немесе github.com үшін Esc. Жиі себептер: қате терілген немесе қолжетімсіз домен, мерзімі өткен код немесе сол хостта Copilot қатынасы жоқ."  # {Locked="Enter","Esc","github.com","Copilot"}
+auth.login_failed_help_default: "  Қайталау үшін Enter пернесін басыңыз немесе артқа қайту үшін Esc."  # {Locked="Enter","Esc"}
 
 # ── Chat view (src/ui/chat.rs) ──────────────────────────────────────────────
 chat.activity_thinking: "Ойланып жатырмын…"
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
 chat.welcome_title: "Зияткер терминал-ға қош келдіңіз!"
-chat.welcome_disclaimer: "Зияткер терминал AI пайдаланады. Қателерді тексеріңіз."
+chat.welcome_disclaimer: "Зияткер терминал AI пайдаланады."
 chat.plan_header: "Жоспар:"
 chat.plan_marker_completed: "[x]"  # {Locked}
 chat.plan_marker_in_progress: "[>]"  # {Locked}
@@ -53,11 +56,24 @@ chat.plan_marker_pending: "[ ]"  # {Locked}
 chat.autofix_prompt_label: "Соңғы пәрмен қателігі автоматты түрде диагноз қойылды"
 chat.turn_canceled: "(бас тартылды)"
 chat.turn_executed: "→ орындалды: %{title}"
+# Күй белгісінен кейін және тақырыптың алдында көрсетілетін тұрақты құрал санаты белгілері.
+chat.tool_kind.run: "Іске қосу"
+chat.tool_kind.insert: "Кірістіру"
+chat.tool_kind.read: "Оқу"
+chat.tool_kind.search: "Іздеу"
+chat.tool_kind.edit: "Өңдеу"
+chat.tool_kind.delete: "Жою"
+chat.tool_kind.move: "Жылжыту"
+chat.tool_kind.fetch: "Алу"
+chat.tool_kind.think: "Ойлау"
+chat.tool_kind.mode: "Режим"
+chat.tool_kind.other: "Құрал"
 
 # ── Input placeholders (src/ui/input.rs) ────────────────────────────────────
 input.placeholder.connected: "Кез келген сұрақ қойыңыз, / командалар үшін.."  # {Locked="/"}
 input.placeholder.connecting: "қосылуда..."
 input.placeholder.disconnected: "ажыратылды"
+input.image_attachments: "📎 Суреттер: %{items}"  # {Locked="📎","%{items}"}
 
 # ── Command popup (src/ui/command_popup.rs) ─────────────────────────────────
 # {Locked="/"} - slash-command prefix, must remain ASCII
@@ -74,9 +90,11 @@ commands.help_close_hint: "  Esc        Бұл көмекті жабу"  # {Lock
 commands.help.summary: "Осы командалар тізімін көрсету"
 commands.clear.summary: "Чаттың айналдыру журналын тазалау (сеансты сақтайды)"
 commands.new.summary: "Жаңа ACP сеансын бастау (тарихты жояды)"  # {Locked="ACP"}
+commands.fix.summary: "Diagnose the active terminal and suggest a fix (/fix <hint>)"  # {Locked="/fix","<hint>"}
 commands.restart.summary: "Агентті қайта іске қосу"
 commands.stop.summary: "Орындалып жатқан сұраудан бас тарту"
 commands.sessions.summary: "Тарихи сеанстар таңдағышын ашу (Ctrl+Shift+/)"  # {Locked="Ctrl+Shift+/"}
+commands.agent.summary: "Осы панель үшін агентді таңдаңыз (тікелей ауыстыру үшін /agent <id>)"  # {Locked="/agent","<id>"}
 
 # ── Recommendations panel (src/ui/recommendations.rs) ───────────────────────
 # {Locked="Enter","Esc","↵","↑","↓","←","→"} - key names and Return-key glyph, do not translate
@@ -104,9 +122,7 @@ permission.compact.prefix: "[!] "  # {Locked}
 permission.compact.hint: "[Y/N жауап үшін · толық карта үшін өлшемін өзгертіңіз]"  # {Locked="Y/N"}
 
 # ── Agent status (src/agent_check.rs) ───────────────────────────────────────
-agent.status.not_installed_auto: "Орнатылмаған — автоматты орнату үшін таңдаңыз"
 agent.status.not_found: "Табылмады"
-agent.status.detected: "Анықталды"
 # {Locked="winget","GitHub.Copilot","GitHub","Copilot"} - tool names and command, must run verbatim
 agent.install.running_winget: "Іске қосылуда: winget install GitHub.Copilot"
 agent.install.launch_failed: "winget іске қосылмады: %{error}"
@@ -117,8 +133,8 @@ agent.custom.auth_hint: "%{name} орнатылғанына және PATH-те �
 
 # ── Agents view (src/ui/agents_view.rs) ─────────────────────────────────────
 agents.loading: "Жүктелуде..."
-# {Locked="Enter","Esc","↑","↓"} - key combinations, do not translate
-agents.footer_hint: "(↑ ↓ шарлау үшін • Enter сеанс ашу үшін • Esc шығу үшін)"
+# {Locked="Enter","Esc","F5","↑","↓","/"} - key combinations, do not translate
+agents.footer_hint: "(↑ ↓ шарлау үшін • Enter сеанс ашу үшін • Esc шығу үшін • F5 жаңарту үшін • / іздеу үшін)"
 agents.status.active: "Белсенді"
 agents.status.waiting_for_input: "Енгізу күтілуде"
 agents.status.error: "Қате"
@@ -128,26 +144,47 @@ agents.status.idle: "Бос"
 layout.welcome_hint: "  (Ctrl+Shift+. агент панелін көрсету/жасыру • Ctrl+Shift+/ агент сеансын көрсету/жасыру)"  # {Locked="Ctrl+Shift+.","Ctrl+Shift+/"}
 
 # ── Connection state ────────────────────────────────────────────────────────
-connection.starting: "Агент іске қосылуда..."
+# Preparing the AI agent connection, including preflight and reuse of a cached agent.
+connection.starting: "Агентпен байланыс дайындалуда..."
 connection.reconnecting: "Қайта қосылуда..."
+# Retiring old AI agent sessions for /restart, before the next connection phases.
+connection.restarting: "Агент қайта іске қосылуда..."
+# Connecting the pane to WTA's local coordinator process, not to an AI model.
+connection.coordinator: "Жергілікті үйлестірушіге қосылуда..."
+# Initializing the helper/coordinator connection, including local preparation and AI agent initialization.
+connection.initializing: "Агентпен байланыс инициализациялануда..."
+# Refreshing the user's authentication with the AI agent after login; not verifying the agent's identity.
+connection.authenticating: "Агентте пайдаланушының түпнұсқалығы расталуда..."
+# Reading the coordinator's registry snapshot, including existing history; not fetching history from the AI agent.
+connection.syncing_sessions: "Сеанстар тізімі оқылуда..."
+# Creating the AI agent session, including local registration; internal agent progress is unknown.
+connection.creating_session: "Агент сеансы жасалуда..."
+# Applying the requested AI model before the connection is ready. Preserve %{model}.
+connection.selecting_model: "Сеанс моделі орнатылуда: %{model}..."  # {Locked="%{model}"}
+# Activity row while connecting to restore a conversation. Keep the actual stage first so narrow panes show it; session_id is shortened to eight characters.
+connection.resuming_stage: "%{stage} (%{session_id} жалғастырылуда)"  # {Locked="%{stage}","%{session_id}"}
 connection.connecting_activity: "Агентке қосылуда…"
 connection.lost: "Агентпен байланыс жоғалды. Қайта қосылу үшін /restart деп теріңіз."  # {Locked="/restart"}
 
 # ── System messages (src/app.rs) ────────────────────────────────────────────
+system.close_pane_hint: "Панельді жабу үшін Ctrl+C пернелерін қайта басыңыз"  # {Locked="Ctrl+C"}
+system.selection_copied: "Көшірілді"  # Brief hint shown after selected terminal text is copied
 system.cancelled: "Бас тартылды."
 system.no_prompt_in_flight: "Орындалып жатқан сұрау жоқ."
 system.authentication_failed: "Аутентификация сәтсіз аяқталды"
-system.command_copied_retry: "Команда көшірілді — басқа терминалда іске қосыңыз, содан кейін қайталау үшін Enter басыңыз"  # {Locked="Enter"}
 system.stopped_max_tokens: "Жауап модельдің шығыс шегіне жеткеннен кейін қиылды."
 system.stopped_max_turn_requests: "Агент осы кезек үшін сұраныс шегіне жеткеннен кейін тоқтады."
 system.stopped_refusal: "Агент бұл сұранысты жалғастырудан бас тартты."
 system.agent_busy: "Агент осы қойыншада бос емес — ағымдағы сұрау аяқталғанын күтіңіз."
+system.image_clipboard_empty: "Қою үшін алмасу буферінде сурет жоқ."
+system.image_not_supported: "Бұл агент кескін енгізуді қолдамайды."
+system.image_pasted: "Сурет тіркелді (%{label}). Жіберу үшін Enter басыңыз."  # {Locked="%{label}","Enter"}
 system.resuming_session: "%{session_id} сеансы жалғастырылуда..."
 system.unknown_command: "Белгісіз пәрмен \"%{command}\" — сұрау ретінде жіберілді. Тізім үшін /help теріңіз."  # {Locked="/help"}
 system.busy_use_stop: "Ағымдағы сұрау аяқталғанын күтіңіз немесе алдымен /stop пайдаланыңыз."  # {Locked="/stop"}
 system.cannot_focus_session: "%{session_id} сеансына фокус қою мүмкін емес: ол белсенді сияқты, бірақ әлі ешбір панель GUID-і байланыстырылмаған. Сәлден кейін қайталап көріңіз."
-system.cannot_resume_no_load_session: "Агент панелінде жалғастыру мүмкін емес: %{agent} ACP `loadSession` мүмкіндігін жарияламады. Оның орнына жаңа терминал панелінде жалғастыру үшін Enter (Shift баспай) басыңыз."  # {Locked="ACP","loadSession","Enter","Shift"}
-system.cannot_resume_no_resume_flag: "%{agent} сеансын жалғастыру мүмкін емес: бұл агентте `--resume` үлгісіндегі жалауша жоқ. Оның орнына ACP арқылы агент панелінде жалғастырып көру үшін Shift+Enter басыңыз."  # {Locked="--resume","Shift","Enter","ACP"}
+system.cannot_resume_no_load_session: "Агент панелінде жалғастыру мүмкін емес: %{agent} ACP `loadSession` мүмкіндігін жарияламады."  # {Locked="ACP","loadSession"}
+system.cannot_resume_no_resume_flag: "%{agent} сеансын жалғастыру мүмкін емес: бұл агентте `--resume` үлгісіндегі жалауша жоқ."  # {Locked="--resume"}
 system.cannot_resume_unknown_agent: "%{session_id} сеансын жалғастыру мүмкін емес: оның бастапқы агенті осы WTA құрастыруына белгісіз."
 system.cannot_resume_phantom_via_flag: "%{agent} %{session_id} сеансын жалғастыру мүмкін емес: ол басталған, бірақ ешқандай әңгіме жиналмаған, сондықтан %{agent} өзі жалғастыруды қабылдамайды. Жол жойылуда."
 system.cannot_resume_phantom_via_load: "%{agent} %{session_id} сеансын жалғастыру мүмкін емес: ол басталған, бірақ ешқандай әңгіме жиналмаған, сондықтан %{agent} жүктеуді қабылдамайды. Жол жойылуда."
@@ -189,7 +226,7 @@ hooks.marketplace_path_stale: "⚠ marketplace жолы ескірген"
 hooks.installed_but_disabled: "⚠ орнатылған бірақ өшірілген"
 hooks.not_installed: "✗ орнатылмаған"
 hooks.uninstall_skipped: "өткізілді (CLI PATH-те емес)"
-hooks.install_attempted: "wt-agent-hooks орнату әрекеті жасалды (idempotent). Нәтижені тексеру үшін `wta hooks status` іске қосыңыз. Із журналы: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
+hooks.install_succeeded: "✓ wt-agent-hooks %{clis} үшін орнатылған"
 # ── Relative time and date formatting ───────────────────────────────────────
 time.just_now: "жаңа ғана"
 time.minute_singular: "%{count} минут бұрын"
@@ -201,3 +238,32 @@ time.days_other: "%{count} күн бұрын"
 
 # ── Ұсынымды орындау (src/coordinator.rs) ───────────────────────────────────
 system.choice_execution_failed: "%{choice} таңдауы сәтсіз аяқталды: %{error}"
+
+# ── Agent picker (src/ui/agent_popup.rs) ────────────────────────────────────
+# {Locked="↑","↓","Enter","Esc"} - key names, do not translate
+agent_picker.title: "Агентді таңдаңыз (↑ ↓ • Enter • Esc)"  # Agent means an AI coding agent
+# Shown when no policy-allowed AI agent CLI is installed on the machine.
+system.no_agents: "Бұл компьютерде қолжетімді агент CLI табылмады."  # {Locked="CLI"}
+# {agent} is the unrecognized text the user typed after /agent.
+system.agent_unknown: "Белгісіз немесе қолжетімсіз агент %{agent} — қолжетімді тізімді көру үшін /agent теріңіз."  # {Locked="/agent"}
+# Shown only when /agent is used outside a Windows Terminal-owned agent pane.
+system.agent_switch_unavailable: "Агентті ауыстыру Windows Terminal қойындысынан тыс жерде қолжетімді емес."
+
+# ── Model picker (/model) ───────────────────────────────────────────────────
+commands.model.summary: "Осы панель үшін модельді таңдаңыз (тікелей ауыстыру үшін /model <id>)"  # {Locked="/model","<id>"}
+commands.config.summary: "Осы агент сеансын конфигурациялау"  # Agent means an AI coding agent; shown for the /config command. {Locked="/config"}
+commands.move.summary: "Осы қойындының агент панелін жылжыту (/move <position>)"  # {Locked="/move","<position>"}
+model_picker.title: "Модельді таңдаңыз (↑ ↓ • Enter • Esc)"  # {Locked="↑","↓","Enter","Esc"}
+system.no_models: "Қосылған агент таңдауға болатын ешбір модельді жарияламады."
+system.model_set: "Осы панельдің моделі %{model} етіп орнатылды."  # {Locked="%{model}"}
+
+# ── Session configuration picker (src/ui/config_popup.rs) ───────────────────
+# {Locked="↑","↓","Enter","Esc","ACP"} - key names and protocol name
+config_picker.title: "Сеанс конфигурациясы (↑ ↓ • Enter • Esc)"
+# Shown when /config is used but the AI agent exposed no ACP select options.
+system.no_config_options: "Қосылған агент ешқандай бапталатын сеанс опцияларын жарияламады."
+# {option} is an Agent-provided option name; {error} is the ACP error.
+system.config_update_failed: "%{option} жаңарту сәтсіз аяқталды: %{error}"
+system.yolo_disable_pending: "агент провайдері сеанстың талап етілген артықшылықсыз күйде екенін растаған жоқ"  # Shown after the localized failure prefix while prompts remain blocked until the AI agent provider confirms that its privileged session mode is off. Provider means an AI agent provider, not a network provider.
+system.provider_command_blocked_by_policy: "%{command}: Автоматты мақұлдау ұйымыңыздың саясаты арқылы өшірілген."  # {Locked="%{command}"} Shown when AllowAutomaticApproval blocks a provider-advertised privileged command.
+system.model_unknown: "Белгісіз модель %{model} — қолжетімді тізімді көру үшін /model теріңіз."  # {Locked="%{model}","/model"}

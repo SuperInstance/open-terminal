@@ -24,6 +24,7 @@ Author(s):
 #include "ColorScheme.h"
 #include "Theme.h"
 #include "NewTabMenuEntry.h"
+#include "CustomModelProvider.h"
 #include "RemainingProfilesEntry.h"
 
 // fwdecl unittest classes
@@ -95,12 +96,19 @@ namespace winrt::Microsoft::Terminal::Settings::Model::implementation
         hstring EffectiveDelegateAgent() const;
         bool EffectiveAutoErrorDetectionEnabled() const;
         bool EffectiveAutoFixEnabled() const;
+        bool EffectiveAgentSessionManagementEnabled() const;
+        bool EffectiveAgentPaneYoloMode() const;
+        bool CanEnableAgentPaneYoloMode() const;
+        bool CanEnableAgentPaneYoloModeForAgent(const winrt::hstring& agentId) const;
+        bool ClearAgentPaneYoloModeIfUnavailableDefault();
+        bool ClearAgentPaneYoloModeIfPolicyBlocked();
 
         // Whether GPO policy is actively restricting these settings.
         bool IsAgentPolicyLocked() const;
         bool IsCustomAgentPolicyLocked() const;
         bool IsAutoFixPolicyLocked() const;
         bool IsAgentSessionHooksPolicyLocked() const;
+        bool IsYoloModePolicyLocked() const;
 
         // ── Test-only seam ──────────────────────────────────────────────
         // Replace the SettingsModel DLL's cached AgentPolicy snapshot

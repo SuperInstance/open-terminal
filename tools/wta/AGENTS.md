@@ -1,377 +1,169 @@
-# WTA Agent Architecture
+# WTA development
 
-## What is WTA?
+These rules apply to `tools/wta/`. The repo-level `AGENTS.md` is the canonical
+source for build, deployment, supported providers, runtime paths, and log names.
+Do not duplicate those facts here.
 
-WTA (Windows Terminal Agent) is a Rust binary that bridges AI agent protocols with Windows Terminal.
-It provides three interfaces:
+## Roles and ownership
 
-- **ACP client** (default) -- TUI that spawns an agent CLI (Copilot, Claude, Gemini, Codex, or a custom command) and communicates over ACP via stdio JSON-RPC.
-- **MCP server** (`wta mcp`) -- headless tool server that an external agent calls to interact with shells and Windows Terminal.
-- **CLI helpers** (`wta list-panes`, `wta capture-pane`, `wta new-tab`, etc.) -- thin commands for humans and agents that can shell out. Direct keystroke injection is not exposed by the CLI.
+WTA is a Rust binary with three launch modes:
 
-ACP and MCP modes share `ShellManager`, which routes operations to either local subprocesses or Windows Terminal panes. WT pane operations use a `WtChannel` abstraction with a single implementation today:
+- **Master** (`--master <pipe>`): owns a pool of agent CLI subprocesses
+  and their ACP stdio connections, accepts helper named-pipe connections, and
+  routes each ACP SessionId to its owning helper. Helpers with the same
+  master-derived agent key share a process. Installed, policy-allowed native
+  host agents other than Gemini initialize in the background at startup and
+  remain resident. Gemini is excluded from automatic sidebar discovery;
+  explicit Gemini and other selections initialize on demand.
+  Implementation: `src/master/mod.rs`.
+- **Helper** (`--connect-master <pipe>`): one ratatui UI per agent pane. It is
+  an ACP client of master and owns pane-local UI state and `ShellManager`.
+  Implementation: `src/helper/mod.rs` and `src/app.rs`.
+- **CLI command**: one-shot commands such as `list-panes`, `capture-pane`,
+  `resolve-command`, `delegate`, `hooks`, and `sessions`. Dispatch:
+  `src/cli/`.
 
-- `CliChannel` shells out to `wtcli.exe`, which calls WT's COM `IProtocolServer`. All WT operations — including `send_input` (via `wtcli send-keys`) — go through this path.
+Bare `wta` without a role flag or subcommand is invalid. The session MCP
+listener is a master-owned service, not a fourth launch mode.
 
-## System Diagram
+## Protocol boundaries
 
-```
- Agent CLI (copilot/claude)     External agent       Human / AI shell-out
-       |  ACP/stdio                  |  MCP/stdio         |  CLI helpers
-       v                             v                    v
- +-----------+                +-----------+        +-------------+
- | ACP Mode  |                | MCP Mode  |        | CLI Mode    |
- | (TUI)     |                | (headless)|        | (one-shot)  |
- | client.rs |                | server.rs |        | main.rs     |
- +-----+-----+                +-----+-----+        +------+------+
-       |                             |                     |
-       +---------------+-------------+                     |
-                       |                                   |
-                 ShellManager                              |
-                       |                                   |
-                  CliChannel <-------------------------+---+
-                       |
-                       v
-              wtcli.exe -> COM IProtocolServer
-                       |
-                       v
-              TerminalProtocolComServer
-                       |
-                       v
-              Windows Terminal
-```
+### ACP
 
-## Protocol Stack
+ACP means Agent Client Protocol and is used on two hops:
 
-### ACP (Agent Client Protocol)
+1. Master is the ACP client of the agent CLI over stdio.
+2. Helper is an ACP client of master over the named pipe; master acts as the
+   ACP agent and multiplexes requests.
 
-WTA acts as an ACP **client**. It spawns an agent CLI as a child process and speaks JSON-RPC 2.0 over stdin/stdout.
+The owning helper services ACP client requests such as permission and
+`terminal/*` operations. Ordinary agent-reported tool calls are display-only:
+WTA does not own those processes or invent process controls for them.
 
-- Crate: `agent-client-protocol = "0.10"`
-- Implementation: `src/protocol/acp/client.rs`
-- The agent sends requests (`create_terminal`, `request_permission`, etc.) and WTA handles them.
-- Session notifications flow from agent to WTA: message chunks, tool calls, plans, and status changes.
+### Session MCP
 
-Key ACP message types handled:
+Master owns one loopback Streamable HTTP listener and publishes an independent
+server name and bearer capability for each eligible ACP session. WSL sessions
+use an on-demand distro-local relay to that listener. The endpoint exposes:
 
-- `session/update` -- agent message chunks, tool calls, plan entries
-- `request_permission` -- permission dialog with options (allow/reject)
-- `create_terminal` / `terminal_output` / `wait_for_terminal_exit` -- agent-managed shells
-- `release_terminal` / `kill_terminal` -- cleanup
+- `run_command_in_current_shell`
+- `create_workspace`
+- `delegate_task_in_new_workspace`
+- `request_user_input`
 
-### MCP (Model Context Protocol)
+Treat the bearer capability as the session identity. Revoke it when the exact
+agent CLI instance exits. Route requests through `session_to_helper`; the MCP
+endpoint must not execute terminal actions.
 
-WTA acts as an MCP **server**. An external agent calls tools exposed by WTA over stdio.
+### WT protocol
 
-- Crate: `rmcp = "1.1"` with `#[tool_router]` / `#[tool_handler]` macros
-- Implementation: `src/protocol/mcp/server.rs`
+All Windows Terminal operations use `CliChannel`, which invokes `wtcli.exe`;
+`wtcli` activates the COM `IProtocolServer` discovered through `WT_COM_CLSID`.
 
-Tools exposed:
-
-| Category | Tool | Description |
-|----------|------|-------------|
-| Shell | `run_command` | Execute command, return stdout and exit code |
-| Shell | `create_terminal` | Spawn persistent terminal session |
-| Shell | `get_terminal_output` | Read buffered output |
-| Shell | `wait_for_terminal` | Block until exit |
-| Shell | `kill_terminal` | Terminate session |
-| WT Query | `wt_list_windows` | All WT windows |
-| WT Query | `wt_list_tabs` | Tabs in a window |
-| WT Query | `wt_list_panes` | Panes in a tab |
-| WT Query | `wt_get_active_pane` | Currently focused pane |
-| WT Query | `wt_read_pane_output` | Terminal buffer text |
-| WT Query | `wt_get_process_status` | Running/exit status |
-| WT Control | `wt_create_tab` | Create new tab |
-| WT Control | `wt_split_pane` | Split a pane |
-| WT Control | `wt_send_input` | Type text into a pane via `wtcli send-keys` / COM `SendInput` |
-| WT Control | `wt_close_pane` | Close a pane |
-
-### WT COM Protocol
-
-All WT operations flow through `wtcli.exe` to WT's out-of-process COM server.
-
-- Client wrapper: `src/shell/wt_channel/cli_channel.rs`
-- CLI executable: `src/tools/wtcli/main.cpp`
+- WTA wrapper: `src/shell/wt_channel/cli_channel.rs`
+- CLI client: `src/tools/wtcli/main.cpp`
 - IDL: `src/cascadia/TerminalProtocol/TerminalProtocol.idl`
-- WT-side server: `src/cascadia/WindowsTerminal/TerminalProtocolComServer.cpp`
-- Discovery: `WT_COM_CLSID`, injected into panes by WT
+- COM server: `src/cascadia/WindowsTerminal/TerminalProtocolComServer.cpp`
 
-The COM surface exposes reads and mutations, including `list_*`, `read_pane_output`, `create_tab`, `split_pane`, `close_pane`, `focus_pane`, `send_input` (via `wtcli send-keys`), and event subscribe/publish.
+Do not treat `WT_COM_CLSID`, `pipe-id`, or `set-env` as security boundaries.
+The human-facing WTA CLI intentionally does not expose direct keystroke
+injection; internal `ShellManager::wt_send_input` uses `wtcli send-keys`.
 
-## Agent Integration
+## Agent commands
 
-### Copilot
+The Terminal settings layer resolves built-in IDs to ACP command lines.
+`src/cascadia/inc/AcpModelUtils.h` is authoritative for those commands and
+adapter versions; do not copy them into WTA code or documentation.
 
-```
-wta --agent "copilot --acp --stdio"
-```
+Custom agents arrive as a resolved `--agent` command plus their canonical
+`custom:<name>` ID. Do not re-parse a known ID from an adapter command when the
+host supplied `--agent-id`.
 
-WTA generates an MCP config file at startup pointing to `wta mcp` and injects it with Copilot's `--additional-mcp-config` option.
+## State and routing invariants
 
-### Claude and Codex
+- `session_to_helper` is the authoritative ACP SessionId routing map.
+- Per-tab state mutations must preserve both tab and window identity.
+- Helper disconnect, agent exit, pane close, and master restart are distinct
+  lifecycle events; do not collapse them into one generic failure.
+- `ShellManager` owns ACP client terminals. Agent-reported ordinary tool calls
+  remain agent-owned.
+- Command resolution must preserve the active pane's cwd, host PATH, shell,
+  and PowerShell profile behavior. Return `exists`, `not_found`,
+  `indeterminate`, or `unsupported` precisely.
+- Runtime state and cache paths must go through `runtime_paths.rs`.
 
-Claude and Codex are launched through ACP adapters:
+## Session management
 
-```
-wta --agent "npx -y @zed-industries/claude-code-acp"
-wta --agent "npx -y @zed-industries/codex-acp"
-```
+The registry models activity and liveness separately:
 
-The Terminal settings layer resolves the built-in agent IDs to these adapter commands.
+- Activity: `Idle`, `Working`, `Attention`, or `Error`
+- Liveness: `Live`, `Ended`, or `Historical`
 
-### Gemini
+Agent-pane and shell-pane sessions have different focus/resume behavior.
+Keep routing decisions in the pure `session_mgmt::decide_enter_action`
+boundary and side effects in its dispatch callers.
 
-```
-wta --agent "gemini --experimental-acp"
-```
+The picker currently defaults to shell-pane sessions through
+`MVP_SESSIONS_ORIGIN_FILTER`; `WTA_SESSIONS_SHOW_AGENT_PANE=1` is the debug
+override. Do not change that product behavior incidentally.
 
-### Custom agents
+Detailed tracking and resume behavior belongs in:
 
-Custom agents are configured through the Terminal settings (`custom:<cmd>` plus the stored custom command). WTA receives the resolved command line via `--agent`.
+- `doc/specs/hybrid-agent-session-tracking.md`
+- `doc/specs/per-cli-history-filtering.md`
+- `doc/specs/wsl-session-management.md`
 
-## CLI Helpers
+## Build and test
 
-Agents that can shell out, and humans debugging WTA, can use WTA as a small WT helper CLI:
+Run the explicit-target commands in the repo-level `AGENTS.md` from the
+repository root. Do not alternate between host-target and explicit-target Cargo
+outputs in one worktree because the package project prefers the explicit-target
+binary.
 
-| Command | Alias | WT protocol method |
-|---|---|---|
-| `list-windows` | `lsw` | `list_windows` |
-| `list-tabs` | `lst` | `list_tabs` |
-| `list-panes` | `lsp` | `list_panes` |
-| `new-tab` | `neww` | `create_tab` |
-| `split-pane` | `splitw` | `split_pane` |
-| `capture-pane` | `capturep` | `read_pane_output` |
-| `kill-pane` | `killp` | `close_pane` |
-| `active-pane` | -- | `get_active_pane` |
-| `wait-for` | -- | delegated to `wtcli wait-for` |
-| `pane-status` | -- | `get_process_status` |
-| `listen` | `mon` | COM event subscribe |
+Run the WTA test suite for every behavior change covered by, or deserving,
+unit tests. A successful Cargo build or C++ build does not compile
+`#[cfg(test)]` code.
 
-## Connection Discovery
+Use the smallest relevant test while iterating, then run:
 
-`CliChannel` uses `wtcli.exe`, and `wtcli.exe` discovers WT through `WT_COM_CLSID`. WT injects this environment variable into pane shells.
-
-`pipe-id` and `set-env` are diagnostic subcommands that surface the inherited `WT_COM_CLSID` value. They should not be described as a security boundary.
-
-## Pane Identity
-
-WTA discovers which WT pane it is running in by PID matching:
-
-1. Call `list_windows` -> `list_tabs` -> `list_panes` through `CliChannel`.
-2. Each pane has a `pid` field.
-3. Match against `std::process::id()`.
-4. Store `(pane_id, tab_id, window_id)` in app state.
-5. Display the identity in the status bar.
-
-## Logging
-
-WTA writes structured logs under the Intelligent Terminal runtime directory:
-
-```
-%LOCALAPPDATA%\IntelligentTerminal\logs\
+```powershell
+cargo test --target x86_64-pc-windows-msvc --manifest-path tools/wta/Cargo.toml
 ```
 
-When running packaged, `%LOCALAPPDATA%` is redirected to the package sandbox.
+If live processes lock the output, stop only PIDs whose executable paths exactly
+match the target being rebuilt. Do not kill all WTA processes by name.
 
-Current process logs include:
+## Dependencies and generated notices
 
-- `wta-main.log` -- default ACP TUI mode
-- `wta-delegate.log` -- `wta delegate`
-- `wta-install-hooks.log` -- hook installation and removal
+CI resolves the `ms-prod-1.93` pin in `rust-toolchain.toml` through MSRustup.
+The documented repo-root local commands use the installed active Rust toolchain
+while still loading the repo's static-CRT target configuration. Keep code
+compatible with Rust 1.93 and avoid dependencies that do not support static CRT.
 
-The log level is controlled by `WTA_LOG`; if unset, WTA defaults to a debug filter in `logging.rs`.
+When `Cargo.toml`, Cargo features, or `Cargo.lock` changes the shipped
+dependency graph, regenerate and commit both `tools/wta/cgmanifest.json` and the
+generated WTA block in `/NOTICE.md`:
 
-## Build Rule
+```powershell
+$env:RUSTUP_TOOLCHAIN = 'stable'
+pwsh -File .\build\scripts\Generate-WtaThirdPartyNotices.ps1
+```
 
-For normal local WTA development, always produce the binary at `tools/wta/target/debug/wta.exe`.
+The generator requires PowerShell 7+. Generated artifacts are not edited by
+hand.
 
-- Before running `cargo build` for WTA, kill any active `wta.exe` processes first. A live shared-host session can keep `target/debug/wta.exe` locked and make the build fail with `Access is denied`.
-- Preferred PowerShell sequence:
-  - `Get-Process wta -ErrorAction SilentlyContinue | Stop-Process -Force`
-  - `cargo build --manifest-path tools/wta/Cargo.toml`
-- Do not switch to an alternate `--target-dir` just to work around a locked `wta.exe` unless that is explicitly the task. The default expectation is to refresh `tools/wta/target/debug/wta.exe`.
+## Rust implementation conventions
 
-## Key Crates
+- Localize user-facing strings through `t!(...)`.
+- Use structured `tracing` fields and stable targets; do not log credentials,
+  bearer capabilities, or full provider configuration.
+- Initialize logging once near process startup and flush it before any
+  `std::process::exit`.
+- Preserve explicit error context across async/process/protocol boundaries.
+- Add tests around reducers, routing decisions, protocol translation, and
+  parsing rather than testing private implementation details.
+- Format with `cargo fmt`; address relevant Clippy findings without broad,
+  unrelated cleanup.
 
-| Crate | Version | Purpose |
-|-------|---------|---------|
-| `agent-client-protocol` | 0.10 | ACP client library |
-| `rmcp` | 1.1 | MCP server framework |
-| `tokio` | 1 | Async runtime |
-| `ratatui` | 0.30 | TUI rendering |
-| `crossterm` | 0.29 | Terminal I/O |
-| `clap` | 4 | CLI parsing |
-| `serde_json` | 1 | JSON handling |
-
----
-
-## Session liveness + Enter routing (session management view)
-
-The "Session management" view (a.k.a. `/sessions`) lists every
-agent session that WTA knows about — both currently connected ("Live")
-and replayed from on-disk history ("Historical" / "Ended"). Enter and
-Shift+Enter on a row are routed through a closed-form state machine
-that splits the legacy one-dimensional `AgentStatus` into a
-**two-dimensional** model.
-
-### The two axes
-
-* **Activity** — `Idle | Working | Attention | Error`. Surfaces what
-  the connected agent is *doing* right now. Driven by ACP
-  `session/update` (`ToolCall`, `ToolCallUpdate`) on Class A
-  sessions, and by shell-integration hooks on Class B.
-
-* **Liveness** — `Live { pane_session_id } | Ended | Historical`.
-  Surfaces whether the session is currently attached to a process.
-  `Historical` = reconstructed from disk only; `Ended` = was Live
-  in this WTA process at some point, then closed.
-
-The legacy `AgentStatus` field is still the storage; `activity()`
-and `liveness()` derive from it (see `agent_sessions.rs`).
-
-### Class A vs Class B
-
-* **Class A** (`SessionOrigin::AgentPane`) — created by WTA on behalf
-  of an Intelligent Terminal agent pane (recorded in
-  `agent-pane-sessions.jsonl`). For these rows the natural Enter
-  target is the *same* agent pane; the natural Resume target is ACP
-  `session/load` so the conversation rehydrates in-place.
-
-* **Class B** (`SessionOrigin::Unknown`) — user ran the CLI directly
-  (`copilot`, `claude`, `gemini`) in a normal pane. The natural
-  Enter target is to focus that pane; the natural Resume target is
-  the CLI's own `--resume` flag (because the CLI owns the
-  conversation, not WTA).
-
-### Liveness data sources (composite)
-
-* **Class A** is composite: `liveness = Live` requires *both*
-  `alive_mirror.lookup(sid).is_some()` (the master-pushed registry
-  mirror via `intellterm.wta/session_added|removed` ext
-  notifications) *and* no local `PaneClosed` tombstone. Local
-  pane-close events trump the mirror so the row flips to `Ended`
-  immediately, even if master's `session_removed` notification
-  hasn't landed yet.
-
-* **Class B** is driven entirely by hooks + WT pane events
-  (`SessionStarted` / `SessionStopped` / `PaneClosed`).
-
-### Cold-startup race
-
-History scan and alive-mirror bootstrap arrive in either order. Both
-paths post `AppEvent::AliveJoinUpgrade`, which calls
-`AgentSessionRegistry::apply_alive_session_join` to upgrade
-**Historical** rows whose ACP session_id is in the alive mirror to
-`LivenessState::Live`. **Ended** rows (locally tombstoned by a
-`PaneClosed` event in this process) are **not** upgraded — local
-tombstones are authoritative, so a stale `session_added` broadcast
-arriving after `PaneClosed` cannot resurrect a row that has no
-demotion path back. Live rows are never demoted — preserves
-tool/attention state. See `agent_sessions.rs::apply_alive_session_join`.
-
-### Steady-state alive-mirror updates
-
-Every `intellterm.wta/session_added` notification from master also
-runs the incremental join synchronously in `app.rs` (calls
-`apply_alive_session_join([(sid, pane)])` before the async mirror
-upsert), so a Historical row matched by an arriving alive broadcast
-becomes Live in the same tick. Every `intellterm.wta/session_removed`
-notification calls `apply_master_session_ended(sid)` — the
-counterpart of `apply_alive_pane_snapshot` for a single explicit
-disappearance — which demotes a Live row to Ended, clears the pane
-binding, and prunes `known_alive_panes`. Without these two
-synchronous reducer calls, session management rows would stay frozen at whatever
-state the last bootstrap snapshot saw.
-
-### Enter / Shift+Enter dispatch
-
-The pure-function core is `session_mgmt::decide_enter_action`. It
-takes a `RowSnapshot` (origin + liveness + cli + agent capabilities)
-and a `shift` boolean, and returns one of:
-
-* `Focus { pane_session_id }` — hand off to `wtcli focus-pane`
-  (which transparently restores a stashed agent pane after PR A).
-* `ResumeInAgentPane { key, cli }` — new tab + agent pane + ACP
-  `session/load(key)` (requires `loadSession` capability).
-* `ResumeCliFlag { key, cli }` — new tab + plain pane running
-  `<cli> --resume <key>` (requires the CLI to advertise a resume
-  flag — Codex doesn't).
-* `NotResumable { reason }` — surface a system message.
-
-The table (matching `session_mgmt.rs` and the plan):
-
-| Row state                  | Enter            | Shift+Enter      |
-| -------------------------- | ---------------- | ---------------- |
-| Any Live (Class A or B)    | Focus            | Focus (same)     |
-| Class A dead (Ended/Hist)  | ResumeInAgentPane| ResumeCliFlag    |
-| Class B dead (Ended/Hist)  | ResumeCliFlag    | ResumeInAgentPane|
-| Unknown CLI                | NotResumable     | NotResumable     |
-| Missing capability         | NotResumable     | NotResumable     |
-
-Shift on Live is intentionally identical to Enter — agents forbid two
-clients on one session, so any "force second copy" attempt would just
-error out. Shift is a safety alias there.
-
-### Dispatch boundary
-
-`App::activate_agent_session_with_shift` (`app.rs`) is the only
-caller of `decide_enter_action` from production code. It then
-dispatches into the existing helpers (`dispatch_focus_pane`,
-`dispatch_resume_in_agent_pane`, `dispatch_resume`) — those own
-all the side effects:
-
-* phantom-on-disk guard (`key_is_resumable_on_disk`),
-* optimistic `SessionEvent::ResumeDispatched` state flip,
-* `resume_in_new_agent_tab` event publish (for the WT side to open
-  a new tab + reconcile the agent pane),
-* on-failure `PaneClosed` rebroadcast (so a stuck Live row
-  transitions to Ended after `wtcli focus-pane` returns NotFound).
-
-### MVP origin filter (session management picker shows shell-pane sessions only)
-
-The session management picker currently ships in MVP mode: it only surfaces
-**Class B** (shell-pane) sessions — the user manually ran `copilot`
-/ `claude` / `gemini` in a regular shell. **Class A** (agent-pane)
-sessions stay in the registry so Enter routing, alive-mirror
-reconciliation, `intellterm.wta/session_added|removed`, and
-`wta sessions list` all keep seeing every row; they just don't
-render in the picker and aren't reachable by the cursor.
-
-The gate is a single constant — `app.rs::MVP_SESSIONS_ORIGIN_FILTER` —
-threaded through `App::sessions_origin_filter` so that the three places
-that have to stay in sync read the same value:
-
-1. `App::agents_rows_for_tab` (cursor / Enter dispatch source of
-   truth) — applies the filter to both the snapshot path and the
-   registry-fallback path.
-2. The post-history-scan auto-select and the Delete clamp (same
-   file) — `iter_sorted_with_filters(cli, self.sessions_origin_filter)`.
-3. `ui/agents_view::render` — applies the same retain to keep the
-   rendered rows lined up with the cursor model.
-
-`agent_sessions::OriginFilter` (`ShellOnly | AgentPaneOnly | All`)
-is the public surface; `iter_sorted_with_filters` is the registry
-API. `iter_sorted_filtered` is preserved as a thin wrapper
-(`origin = All`) so existing call sites keep their behavior.
-
-**Debug overrides** (no rebuild required):
-
-| Surface | How to see everything |
-|---|---|
-| session management picker, single helper | `WTA_SESSIONS_SHOW_AGENT_PANE=1` in that helper's env |
-| Out-of-band debug list | `wta sessions list` (defaults to `--origin all`) |
-| Slice to shell only | `wta sessions list --origin shell` |
-| Slice to agent-pane only | `wta sessions list --origin agent-pane` |
-
-`wta sessions list` always asks master for the full registry and
-filters client-side, so it can act as the eye-of-god view even
-while every helper's session management picker stays in `ShellOnly`. The table
-output gains an `ORIGIN` column (`Shell` / `AgentPane` / `-` for
-untagged legacy rows); JSON output is unchanged because the field
-was already serialized.
-
-**Removing MVP gate.** When agent-pane session management is
-ready, flip `MVP_SESSIONS_ORIGIN_FILTER` to `OriginFilter::All` and
-delete `WTA_SESSIONS_SHOW_AGENT_PANE` handling in
-`resolve_sessions_origin_filter`. No other call site needs to change.
-
+See `.github/instructions/rust-wta.instructions.md` for file-scoped coding
+rules and `tools/wta/README.md` for human-facing CLI and diagnostics.

@@ -180,6 +180,165 @@
   <data name="TabCloseAfter" xml:space="preserve">
     <value>Tabs nach rechts schließen</value>
   </data>
+  <data name="TabCloseBelow" xml:space="preserve">
+    <value>Tabs darunter schließen</value>
+  </data>
+  <data name="VerticalTabsCollapsePane" xml:space="preserve">
+    <value>Seitenleiste einklappen</value>
+    <comment>Tooltip and accessible name for the vertical tabs sidebar toggle button. Refers to the left sidebar, not the Agent Pane.</comment>
+  </data>
+  <data name="VerticalTabsExpandPane" xml:space="preserve">
+    <value>Seitenleiste ausklappen</value>
+    <comment>Tooltip and accessible name for the vertical tabs sidebar toggle button. Refers to the left sidebar, not the Agent Pane.</comment>
+  </data>
+  <data name="VerticalTabsExpandGroup" xml:space="preserve">
+    <value>Registerkartengruppe erweitern</value>
+    <comment>Accessibility name and tooltip for the button that expands a group of tabs in the sidebar.</comment>
+  </data>
+  <data name="VerticalTabsCollapseGroup" xml:space="preserve">
+    <value>Registerkartengruppe einklappen</value>
+    <comment>Accessibility name and tooltip for the button that collapses a group of tabs in the sidebar.</comment>
+  </data>
+  <data name="VerticalTabsFallbackTabTitle" xml:space="preserve">
+    <value>Registerkarte</value>
+    <comment>Fallback title for a terminal tab in the sidebar when no title is available.</comment>
+  </data>
+  <data name="VerticalTabsHeader.Text" xml:space="preserve">
+    <value>Registerkarten</value>
+  </data>
+  <data name="VerticalTabsSearchButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Registerkarten durchsuchen</value>
+  </data>
+  <data name="VerticalTabsSearchButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>Registerkarten durchsuchen</value>
+  </data>
+  <data name="VerticalTabsSearchBox.PlaceholderText" xml:space="preserve">
+    <value>Registerkarten durchsuchen</value>
+  </data>
+  <data name="VerticalTabsSearchBox.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Registerkarten durchsuchen</value>
+  </data>
+  <data name="VerticalTabsFilterButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Registerkarten filtern</value>
+  </data>
+  <data name="VerticalTabsFilterButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>Registerkarten filtern</value>
+  </data>
+  <data name="VerticalTabsFilterSection.Text" xml:space="preserve">
+    <value>Filter</value>
+    <comment>Section heading above the controls that filter which tabs are shown in the sidebar.</comment>
+  </data>
+  <data name="VerticalTabsFilterAllTabs.Text" xml:space="preserve">
+    <value>Alle Registerkarten</value>
+  </data>
+  <data name="VerticalTabsFilterAgentsOnly.Text" xml:space="preserve">
+    <value>Nur Agenten</value>
+  </data>
+  <data name="VerticalTabsMetadataSection.Text" xml:space="preserve">
+    <value>Tab-Metadaten</value>
+    <comment>Section heading above the options that choose which metadata appears in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsMetadataAgentStatus.Text" xml:space="preserve">
+    <value>Agentenstatus</value>
+    <comment>Option that shows an agent's current status in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsMetadataWorkingDirectory.Text" xml:space="preserve">
+    <value>Aktuelles Arbeitsverzeichnis</value>
+    <comment>Option that shows the current working directory in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsMetadataRepository.Text" xml:space="preserve">
+    <value>Git-Repository</value>
+    <comment>Option that shows the Git repository name in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsMetadataBranch.Text" xml:space="preserve">
+    <value>Git-Zweig</value>
+    <comment>Option that shows the Git branch name in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsMetadataChanges.Text" xml:space="preserve">
+    <value>Git-Änderungen</value>
+    <comment>Option that shows the Git working tree change summary in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsFilterStatusSingle" xml:space="preserve">
+    <value>1 Agentsitzung wird angezeigt</value>
+  </data>
+  <data name="VerticalTabsFilterStatusPlural" xml:space="preserve">
+    <value>{0} Agentsitzungen werden angezeigt</value>
+  </data>
+  <data name="VerticalTabsFilterCurrentHidden.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Die aktuelle Registerkarte wird durch diesen Filter ausgeblendet</value>
+  </data>
+  <data name="VerticalTabsFilterCurrentHidden.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>Die aktuelle Registerkarte wird durch diesen Filter ausgeblendet</value>
+  </data>
+  <data name="VerticalTabsFilterShowAll.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Alle Registerkarten anzeigen</value>
+  </data>
+  <data name="VerticalTabsFilterShowAll.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>Alle Registerkarten anzeigen</value>
+  </data>
+  <data name="VerticalTabsHistoryButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Agenten</value>
+    <comment>Accessible name of the toolbar button that opens the Agents sidebar view. Agents are AI agents, not human representatives; the view lists their live and historical sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistoryButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>Agenten</value>
+    <comment>Tooltip for the toolbar button that opens the Agents sidebar view. Agents are AI agents, not human representatives; the view lists their live and historical sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistoryHeader.Text" xml:space="preserve">
+    <value>Agenten</value>
+    <comment>Header of the Agents sidebar view. Agents are AI agents, not human representatives; the view lists their live and historical sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistoryCloseButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Ansicht „Agenten“ schließen</value>
+    <comment>Accessible name of the button that closes the Agents sidebar view. Closing this view hides the sidebar; it does not terminate any agents or sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistoryCloseButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>Ansicht „Agenten“ schließen</value>
+    <comment>Tooltip for the button that closes the Agents sidebar view. Closing this view hides the sidebar; it does not terminate any agents or sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistorySearchBox.PlaceholderText" xml:space="preserve">
+    <value>Agentsitzungen suchen</value>
+  </data>
+  <data name="VerticalTabsHistorySearchBox.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Agentsitzungen suchen</value>
+  </data>
+  <data name="VerticalTabsHistoryCurrentSession" xml:space="preserve">
+    <value>Aktuelle Sitzung</value>
+    <comment>UI Automation status for the live AI-agent session associated with the active terminal pane. This identifies the currently displayed session, not keyboard selection or the most recent session.</comment>
+  </data>
+  <data name="VerticalTabsHistoryEmpty" xml:space="preserve">
+    <value>Keine Agentsitzungen gefunden.</value>
+  </data>
+  <data name="VerticalTabsHistoryNoMatches" xml:space="preserve">
+    <value>Keine übereinstimmenden Agentsitzungen.</value>
+  </data>
+  <data name="VerticalTabsHistoryLoadError" xml:space="preserve">
+    <value>Agentsitzungen konnten nicht geladen werden.</value>
+    <comment>Error shown when the Agent sessions sidebar view cannot load its list of live and historical AI-agent sessions. This refers to loading the session list, not starting or resuming a session.</comment>
+  </data>
+  <data name="VerticalTabsHistoryInvalidResponse" xml:space="preserve">
+    <value>Agentsitzungen konnten nicht geladen werden: ungültige Antwort.</value>
+    <comment>Error shown when the Agent sessions sidebar receives an invalid response while loading its list of live and historical AI-agent sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistoryActivationError" xml:space="preserve">
+    <value>Die ausgewählte Sitzung konnte nicht aktiviert werden.</value>
+  </data>
+  <data name="VerticalTabsHistoryLiveAgentTitleFormat" xml:space="preserve">
+    <value>{0}-Agentsitzung</value>
+    <comment>History row title for a live agent-pane session whose provider did not supply a conversation title. {0} is the provider display name.</comment>
+  </data>
+  <data name="CompactNewTabButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Neuer Tab</value>
+  </data>
+  <data name="CompactNewTabButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>Neuer Tab</value>
+  </data>
+  <data name="CompactNewTabMenuButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Menü „Neuer Tab“</value>
+  </data>
+  <data name="CompactNewTabMenuButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>Menü „Neuer Tab“</value>
+  </data>
   <data name="TabCloseOther" xml:space="preserve">
     <value>Andere Registerkarten schließen</value>
   </data>
@@ -499,23 +658,47 @@
     <value>Hinweise von Drittanbietern</value>
     <comment>A hyperlink name for the Terminal's third-party notices</comment>
   </data>
-  <data name="QuitDialog.CloseButtonText" xml:space="preserve">
+  <data name="ConfirmCloseDialog_Cancel" xml:space="preserve">
     <value>Abbrechen</value>
   </data>
-  <data name="QuitDialog.PrimaryButtonText" xml:space="preserve">
-    <value>Alle schließen</value>
-  </data>
-  <data name="QuitDialog.Title" xml:space="preserve">
+  <data name="ConfirmCloseDialog_CloseAllTitle" xml:space="preserve">
     <value>Möchten Sie alle Fenster schließen?</value>
   </data>
-  <data name="CloseAllDialog.CloseButtonText" xml:space="preserve">
-    <value>Abbrechen</value>
-  </data>
-  <data name="CloseAllDialog.PrimaryButtonText" xml:space="preserve">
+  <data name="ConfirmCloseDialog_CloseAllPrimary" xml:space="preserve">
     <value>Alle schließen</value>
   </data>
-  <data name="CloseAllDialog.Title" xml:space="preserve">
+  <data name="ConfirmCloseDialog_WindowTitle" xml:space="preserve">
     <value>Möchten Sie alle Registerkarten schließen?</value>
+  </data>
+  <data name="ConfirmCloseDialog_WindowPrimary" xml:space="preserve">
+    <value>Alle schließen</value>
+  </data>
+  <data name="ConfirmCloseDialog_TabTitle" xml:space="preserve">
+    <value>Möchten Sie diese Registerkarte schließen?</value>
+  </data>
+  <data name="ConfirmCloseDialog_TabPrimary" xml:space="preserve">
+    <value>Registerkarte schließen</value>
+  </data>
+  <data name="ConfirmCloseDialog_PaneTitle" xml:space="preserve">
+    <value>Möchten Sie diesen Bereich schließen?</value>
+  </data>
+  <data name="ConfirmCloseDialog_PanePrimary" xml:space="preserve">
+    <value>Bereich schließen</value>
+  </data>
+  <data name="ConfirmCloseDialog_MultipleTabsTitle" xml:space="preserve">
+    <value>Möchten Sie diese Registerkarten schließen?</value>
+  </data>
+  <data name="ConfirmCloseDialog_MultipleTabsPrimary" xml:space="preserve">
+    <value>Registerkarten schließen</value>
+  </data>
+  <data name="ConfirmCloseDialog_MultiplePanesTitle" xml:space="preserve">
+    <value>Möchten Sie diese Bereiche schließen?</value>
+  </data>
+  <data name="ConfirmCloseDialog_MultiplePanesPrimary" xml:space="preserve">
+    <value>Bereiche schließen</value>
+  </data>
+  <data name="DontAskAgainCheckBox.Content" xml:space="preserve">
+    <value>Nicht mehr fragen</value>
   </data>
   <data name="CloseReadOnlyDialog.CloseButtonText" xml:space="preserve">
     <value>Abbrechen</value>
@@ -722,6 +905,42 @@
     <value>Unbenanntes Fenster</value>
     <comment>text used to identify when a window hasn't been assigned a name by the user</comment>
   </data>
+  <data name="NameThisWindowMenuItem" xml:space="preserve">
+    <value>Dieses Fenster benennen...</value>
+    <comment>Menu item text shown when the current window has no name assigned</comment>
+  </data>
+  <data name="RenameThisWindowMenuItem" xml:space="preserve">
+    <value>Dieses Fenster umbenennen...</value>
+    <comment>Menu item text shown when the current window already has a name</comment>
+  </data>
+  <data name="WindowListUnnamedEntry" xml:space="preserve">
+    <value>#{0} (unbenannt)</value>
+    <comment>{locked="{0}"}{0} is the window ID number. Shown in the workspace flyout for windows that have no name assigned.</comment>
+  </data>
+  <data name="DeleteWorkspaceMenuItem" xml:space="preserve">
+    <value>Arbeitsbereich löschen?</value>
+    <comment>Menu item text shown in the right-click context menu on a saved workspace</comment>
+  </data>
+  <data name="OpenWorkspaceMenuItem" xml:space="preserve">
+    <value>Arbeitsbereich öffnen</value>
+    <comment>Menu item text for opening a saved workspace</comment>
+  </data>
+  <data name="ConfirmDeleteWorkspaceTitle" xml:space="preserve">
+    <value>„{0}“ löschen?</value>
+    <comment>{locked="{0}"}{0} is the workspace name. Shown as the title of a confirmation dialog when the user tries to delete a saved workspace.</comment>
+  </data>
+  <data name="ConfirmDeleteWorkspaceBody" xml:space="preserve">
+    <value>Möchten Sie "{0}" wirklich löschen? Diesem Arbeitsbereich zugeordnete Sitzungen werden ebenfalls gelöscht.</value>
+    <comment>{locked="{0}"}{0} is the workspace name. Body text of the confirmation dialog shown when the user tries to delete a saved workspace.</comment>
+  </data>
+  <data name="ConfirmDeleteWorkspaceDelete" xml:space="preserve">
+    <value>Löschen</value>
+    <comment>Primary button text on the delete workspace confirmation dialog</comment>
+  </data>
+  <data name="ConfirmDeleteWorkspaceCancel" xml:space="preserve">
+    <value>Abbrechen</value>
+    <comment>Cancel button text on the delete workspace confirmation dialog</comment>
+  </data>
   <data name="WindowRenamer.Subtitle" xml:space="preserve">
     <value>Geben Sie einen neuen Namen ein:</value>
   </data>
@@ -748,6 +967,14 @@
     <value>Windows</value>
     <comment>This is displayed as a label for the context menu item that holds the submenu of available windows.</comment>
   </data>
+  <data name="NotificationMessage_TabActivity" xml:space="preserve">
+    <value>Aktivität auf der Registerkarte „{0}“</value>
+    <comment>{0} is the tab title. Shown as the body of a desktop notification when tab activity is detected.</comment>
+  </data>
+  <data name="NotificationMessage_TabActivityInWindow" xml:space="preserve">
+    <value>Aktivität auf der Registerkarte „{0}“ (Fenster „{1}“)</value>
+    <comment>{0} is the tab title, {1} is the window name. Shown as the body of a desktop notification when tab activity is detected and the window has a name.</comment>
+  </data>
   <data name="DropPathTabRun.Text" xml:space="preserve">
     <value>Eine neue Registerkarte im angegebenen Startverzeichnis öffnen</value>
   </data>
@@ -763,6 +990,20 @@
   <data name="FindText" xml:space="preserve">
     <value>Suchen</value>
   </data>
+  <data name="SwitchToHorizontalTabsText" xml:space="preserve">
+    <value>Zu horizontalen Tabs wechseln</value>
+  </data>
+  <data name="SwitchToHorizontalTabsToolTip" xml:space="preserve">
+    <value>Horizontale Tabs in allen Terminal-Fenstern verwenden</value>
+  </data>
+  <data name="SwitchToVerticalTabsText" xml:space="preserve">
+    <value>Zur Seitenleiste wechseln</value>
+    <comment>Context-menu command that changes the tab layout from horizontal tabs to the sidebar.</comment>
+  </data>
+  <data name="SwitchToVerticalTabsToolTip" xml:space="preserve">
+    <value>Die Seitenleiste in allen Terminal-Fenstern verwenden</value>
+    <comment>Tooltip for the command that changes the tab layout from horizontal tabs to the sidebar in every Terminal window.</comment>
+  </data>
   <data name="CloseOnExitInfoBar.Message" xml:space="preserve">
     <value>Das Beendigungsverhalten kann in den erweiterten Profileinstellungen konfiguriert werden.</value>
   </data>
@@ -771,6 +1012,9 @@
   </data>
   <data name="ElevationShield.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
     <value>Dieses Terminalfenster wird als Administrator ausgeführt.</value>
+  </data>
+  <data name="WorkspaceDropdown.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>Arbeitsbereiche</value>
   </data>
   <data name="CommandPalette_MatchesAvailable" xml:space="preserve">
     <value>Gefundene Vorschläge: {0}</value>
@@ -822,6 +1066,9 @@
   </data>
   <data name="TabCloseAfterToolTip" xml:space="preserve">
     <value>Alle Registerkarten rechts neben dieser Registerkarte schließen</value>
+  </data>
+  <data name="TabCloseBelowToolTip" xml:space="preserve">
+    <value>Alle Registerkarten unterhalb dieser Registerkarte schließen</value>
   </data>
   <data name="TabCloseOtherToolTip" xml:space="preserve">
     <value>Alle Registerkarten mit Ausnahme dieser Registerkarte schließen</value>
@@ -884,10 +1131,10 @@
     <value>Wenn diese Option festgelegt ist, wird der Befehl an den Standardbefehl des Profils angefügt, anstatt ihn zu ersetzen.</value>
   </data>
   <data name="RestartConnectionText" xml:space="preserve">
-    <value>Verbindung neu starten</value>
+    <value>Sitzung neu starten</value>
   </data>
   <data name="RestartConnectionToolTip" xml:space="preserve">
-    <value>Verbindung mit aktivem Bereich neu starten</value>
+    <value>Sitzung im aktiven Bereich neu starten</value>
   </data>
   <data name="SnippetPaneTitle.Text" xml:space="preserve">
     <value>Schnipsel</value>
@@ -929,34 +1176,27 @@
   <data name="TabMoveRight" xml:space="preserve">
     <value>Nach rechts</value>
   </data>
+  <data name="TabMoveUp" xml:space="preserve">
+    <value>Nach oben verschieben</value>
+    <comment>Command in a tab context menu that moves the selected tab earlier in a vertical tab list.</comment>
+  </data>
+  <data name="TabMoveDown" xml:space="preserve">
+    <value>Nach unten verschieben</value>
+    <comment>Command in a tab context menu that moves the selected tab later in a vertical tab list.</comment>
+  </data>
   <data name="InvalidRegex" xml:space="preserve">
     <value>Ein ungültiger regulärer Ausdruck wurde entdeckt.</value>
   </data>
-  <data name="ConfirmCloseDialog_Cancel" xml:space="preserve"><value>Abbrechen</value></data>
-  <data name="ConfirmCloseDialog_CloseAllTitle" xml:space="preserve"><value>Möchten Sie alle Fenster schließen?</value></data>
-  <data name="ConfirmCloseDialog_CloseAllPrimary" xml:space="preserve"><value>Alle schließen</value></data>
-  <data name="ConfirmCloseDialog_WindowTitle" xml:space="preserve"><value>Möchten Sie alle Registerkarten schließen?</value></data>
-  <data name="ConfirmCloseDialog_WindowPrimary" xml:space="preserve"><value>Alle schließen</value></data>
-  <data name="ConfirmCloseDialog_TabTitle" xml:space="preserve"><value>Möchten Sie diese Registerkarte schließen?</value></data>
-  <data name="ConfirmCloseDialog_TabPrimary" xml:space="preserve"><value>Registerkarte schließen</value></data>
-  <data name="ConfirmCloseDialog_PaneTitle" xml:space="preserve"><value>Möchten Sie diesen Bereich schließen?</value></data>
-  <data name="ConfirmCloseDialog_PanePrimary" xml:space="preserve"><value>Bereich schließen</value></data>
-  <data name="ConfirmCloseDialog_MultipleTabsTitle" xml:space="preserve"><value>Möchten Sie diese Registerkarten schließen?</value></data>
-  <data name="ConfirmCloseDialog_MultipleTabsPrimary" xml:space="preserve"><value>Registerkarten schließen</value></data>
-  <data name="ConfirmCloseDialog_MultiplePanesTitle" xml:space="preserve"><value>Möchten Sie diese Bereiche schließen?</value></data>
-  <data name="ConfirmCloseDialog_MultiplePanesPrimary" xml:space="preserve"><value>Bereiche schließen</value></data>
   <data name="CommandPaletteModeAnnouncement_AgentForegroundMode" xml:space="preserve"><value>Agent-Abfragemodus</value><comment>This text will be read aloud using assistive technologies when the command palette switches into the agent foreground prompt mode.</comment></data>
   <data name="CommandPaletteModeAnnouncement_AgentBackgroundMode" xml:space="preserve"><value>Agent-Hintergrundaufgabenmodus</value><comment>This text will be read aloud using assistive technologies when the command palette switches into the agent background task mode.</comment></data>
   <data name="CmdPalAgentForegroundPrompt" xml:space="preserve"><value>Agent fragen...</value><comment>Placeholder text shown in the command palette search box when in agent foreground prompt mode.</comment></data>
   <data name="CmdPalAgentBackgroundPrompt" xml:space="preserve"><value>Agentaufgabe im Hintergrund ausführen...</value><comment>Placeholder text shown in the command palette search box when in agent background task mode.</comment></data>
-  <data name="NotificationMessage_TabActivity" xml:space="preserve"><value>Aktivität auf der Registerkarte "{0}"</value><comment>{0} is the tab title. Shown as the body of a desktop notification when tab activity is detected.</comment></data>
-  <data name="NotificationMessage_TabActivityInWindow" xml:space="preserve"><value>Aktivität auf der Registerkarte "{0}" (Fenster "{1}")</value><comment>{0} is the tab title, {1} is the window name. Shown as the body of a desktop notification when tab activity is detected and the window has a name.</comment></data>
   <data name="InitShellIntegrationSuccessTitle" xml:space="preserve"><value>Shellintegration initialisiert</value></data>
-  <data name="InitShellIntegrationSuccessMessage" xml:space="preserve"><value>Die Shellintegration wurde konfiguriert. Starten Sie Ihre PowerShell-Sitzung neu oder öffnen Sie eine neue Registerkarte, damit die Änderungen wirksam werden.</value><comment>{Locked="PowerShell"}</comment></data>
+  <data name="InitShellIntegrationSuccessMessage" xml:space="preserve"><value>Die Shellintegration wurde konfiguriert. Sie wird nur in neuen Shell-Sitzungen wirksam (PowerShell, bash oder WSL bash).</value><comment>{Locked="PowerShell","bash","WSL bash"}</comment></data>
   <data name="InitShellIntegrationAlreadyConfiguredTitle" xml:space="preserve"><value>Shellintegration bereits konfiguriert</value></data>
-  <data name="InitShellIntegrationAlreadyConfiguredMessage" xml:space="preserve"><value>Die Shellintegration ist in Ihrem PowerShell-Profil bereits konfiguriert.</value><comment>{Locked="PowerShell"}</comment></data>
+  <data name="InitShellIntegrationAlreadyConfiguredMessage" xml:space="preserve"><value>Die Shellintegration ist für die auf Ihrem System erkannten Shells bereits konfiguriert (PowerShell, bash oder WSL bash).</value><comment>{Locked="PowerShell","bash","WSL bash"}</comment></data>
   <data name="InitShellIntegrationErrorTitle" xml:space="preserve"><value>Fehler bei der Shellintegration</value></data>
-  <data name="InitShellIntegrationErrorMessage" xml:space="preserve"><value>Die Shellintegration konnte nicht initialisiert werden. Der Pfad zu Ihrem PowerShell-Profil konnte nicht ermittelt werden. Stellen Sie sicher, dass die Ziel-Shell installiert ist.</value><comment>{Locked="PowerShell"}</comment></data>
+  <data name="InitShellIntegrationErrorMessage" xml:space="preserve"><value>Die Shellintegration konnte nicht initialisiert werden. Überprüfen Sie die Details unten, und versuchen Sie es erneut.</value><comment>Body of the error dialog shown when the shell-integration install fails for one or more shells. The actual per-shell error message (e.g. "bash: Profile directory not writable") is appended by the caller as a separate paragraph below this sentence.</comment></data>
   <data name="AgentNotConfiguredTitle" xml:space="preserve"><value>KI-Agent ist nicht verfügbar</value></data>
   <data name="AgentNotConfiguredSubtitle" xml:space="preserve"><value>Es konnte kein KI-Agent gefunden werden. Installieren Sie einen Agenten (z. B. copilot, gemini) und stellen Sie sicher, dass er sich in Ihrem PATH befindet, oder konfigurieren Sie einen unter Einstellungen &gt; Agenten.</value><comment>{Locked="PATH","copilot","gemini"}</comment></data>
   <!-- ═══ FRE Welcome Page ═══ -->
@@ -966,10 +1206,11 @@
   </data>
   <data name="FreOverlay_WelcomeSubtitlePrefix" xml:space="preserve">
     <value>Richten Sie Ihren integrierten Assistenten ein, um Fehler zu erklären, Befehle zu entwerfen und Aufgaben direkt dort zu lösen, wo Sie arbeiten. </value>
+    <comment>Text shown immediately before the FreOverlay_WelcomeSubtitleLink hyperlink. Include any spacing needed to separate the prefix from the link in the target language.</comment>
   </data>
   <data name="FreOverlay_PolicyLocked" xml:space="preserve">
     <value>Diese Einstellung wird von Ihrer Organisation verwaltet.</value>
-    <comment>Text shown when Group Policy controls this feature. Standard Windows policy notice wording.</comment>
+    <comment>Text shown below a first-run setting when Group Policy manages or restricts the feature. The associated control may be disabled or filtered to allowed choices. Standard Windows policy notice wording.</comment>
   </data>
   <data name="FreOverlay_WelcomeSubtitleLink" xml:space="preserve">
     <value>Erfahren Sie mehr über Intelligentes Terminal</value>
@@ -977,74 +1218,100 @@
   </data>
   <data name="FreOverlay_Card1Title.Text" xml:space="preserve">
     <value>Bleiben Sie im Fluss mit Ihrem integrierten KI-Agenten</value>
+    <comment>In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
   </data>
   <data name="FreOverlay_Card1Description.Text" xml:space="preserve">
     <value>Ihr Agent verfolgt, was in Ihrem Terminal passiert, und kann Ihnen helfen, Fehler zu verstehen und zu beheben, sobald sie auftreten.</value>
+    <comment>In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
   </data>
   <data name="FreOverlay_Card2Title.Text" xml:space="preserve">
     <value>Machen Sie genau dort weiter, wo Sie aufgehört haben</value>
   </data>
   <data name="FreOverlay_Card2Description.Text" xml:space="preserve">
     <value>Behalten Sie Ihre aktiven und vergangenen Agentsitzungen im Blick und kehren Sie in Sekundenschnelle zu Ihrer Arbeit zurück. Überprüfen Sie laufende Aufgaben oder greifen Sie auf frühere Arbeiten zurück, ohne den Überblick zu verlieren.</value>
+    <comment>In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
   </data>
   <data name="FreOverlay_NextButton.Content" xml:space="preserve">
     <value>Weiter</value>
   </data>
   <!-- ═══ FRE Settings Page ═══ -->
   <data name="FreOverlay_SettingsTitle.Text" xml:space="preserve">
-    <value>Willkommen bei Intelligentes Terminal</value>
-    <comment>{Locked=qps-ploc,qps-ploca,qps-plocm} "Intelligent Terminal" is the product name.</comment>
+    <value>Terminal einrichten</value>
   </data>
   <data name="FreOverlay_SettingsSubtitlePrefix" xml:space="preserve">
     <value>Wählen Sie, was Sie jetzt einrichten möchten. Sie können diese Einstellungen jederzeit ändern. </value>
+    <comment>Text shown immediately before the FreOverlay_SettingsSubtitleLink hyperlink. Include any spacing needed to separate the prefix from the link in the target language.</comment>
   </data>
   <data name="FreOverlay_SettingsSubtitleLink" xml:space="preserve">
     <value>Erfahren Sie, wie Daten verwendet werden</value>
   </data>
+  <data name="FreOverlay_TabModeLabel.Text" xml:space="preserve">
+    <value>Registerkartenmodus</value>
+    <comment>Label for the first-run dropdown that chooses the layout of terminal tabs, not indentation or the keyboard Tab key.</comment>
+  </data>
+  <data name="FreOverlay_TabModeDescription.Text" xml:space="preserve">
+    <value>Zwischen der neuen Seitenleiste und der klassischen horizontalen Registerkartenansicht wechseln</value>
+    <comment>Help text for the first-run tab layout dropdown. The sidebar shows tabs vertically in a side panel; the classic layout shows tabs horizontally across the top. This is a choice between layouts, not an on/off switch.</comment>
+  </data>
+  <data name="FreOverlay_TabModeSidebar" xml:space="preserve">
+    <value>Seitenleiste</value>
+    <comment>Dropdown option for displaying terminal tabs vertically in a side panel. This is the same layout called Vertical in Settings.</comment>
+  </data>
+  <data name="FreOverlay_TabModeHorizontal" xml:space="preserve">
+    <value>Horizontal</value>
+    <comment>Dropdown option for displaying terminal tabs across the top of the window. Use the same terminology as the Horizontal tab layout option in Settings.</comment>
+  </data>
   <data name="FreOverlay_AgentLabel.Text" xml:space="preserve">
     <value>Agent</value>
+    <comment>In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
   </data>
   <data name="FreOverlay_AgentDescription.Text" xml:space="preserve">
     <value>Wählen Sie den Agenten aus, der im Agentbereich verwendet wird und ACP unterstützt.</value>
-    <comment>{Locked="ACP"}</comment>
+    <comment>{Locked="ACP"} Description for choosing an AI agent for the agent pane. The selected agent must support ACP. "ACP" is rendered as a hyperlink at runtime and must appear exactly once. In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
   </data>
-  <data name="FreOverlay_AgentInstallHint.Text" xml:space="preserve">
-    <value>Dieser Agent erfordert Node.js und NPX, die automatisch installiert werden, falls noch nicht vorhanden.</value>
-    <comment>{Locked="Node.js","NPX"}</comment>
+  <data name="FreOverlay_ErrorDetectionLabel.Text" xml:space="preserve">
+    <value>Fehlererkennung</value>
+    <comment>Header for the dropdown that configures how the terminal handles failed commands.</comment>
   </data>
-  <data name="FreOverlay_AutoErrorLabel.Text" xml:space="preserve">
-    <value>Automatischer Fehlervorschlag</value>
+  <data name="FreOverlay_ErrorDetectionDescription.Text" xml:space="preserve">
+    <value>Fehlgeschlagene Befehle in der Shell automatisch erkennen und optional zur automatischen Korrektur an Ihren Agenten senden.</value>
+    <comment>Description for the error-detection dropdown in the first-run wizard. The dropdown includes detect-only, detect-and-fix, and off modes; the selected mode controls whether shell errors are detected and whether failed commands are automatically sent to the selected AI agent. In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
   </data>
-  <data name="FreOverlay_AutoErrorDescription.Text" xml:space="preserve">
-    <value>Erlauben Sie Intelligent Terminal, Fehler an Ihren Agent zu senden, um automatisch Korrekturen vorzuschlagen.</value>
-    <comment>{Locked=qps-ploc,qps-ploca,qps-plocm} "Intelligent Terminal" is the product name.</comment>
+  <data name="FreOverlay_ErrorDetectionDetectOption.Content" xml:space="preserve">
+    <value>Fehler erkennen</value>
+    <comment>Dropdown option that detects shell errors without automatically sending failed commands to the selected AI agent.</comment>
   </data>
   <data name="FreOverlay_SessionLabel.Text" xml:space="preserve">
-    <value>Sitzungsverwaltung</value>
+    <value>Sitzungen</value>
   </data>
   <data name="FreOverlay_SessionDescription.Text" xml:space="preserve">
-    <value>Erteilen Sie Intelligentes Terminal die Berechtigung, den Status Ihrer laufenden oder aktiven Agenten zu verfolgen.</value>
-    <comment>{Locked=qps-ploc,qps-ploca,qps-plocm} "Intelligent Terminal" is the product name.</comment>
+    <value>Verfolgen Sie, welche Agenten ausgeführt werden und welche Ihre Aufmerksamkeit benötigen.</value>
+    <comment>In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
   </data>
-  <data name="FreOverlay_SessionHint.Text" xml:space="preserve">
-    <value>Durch Aktivieren werden Integrations-hooks installiert, um Sitzungen über Ihre Agenten hinweg zu verfolgen.</value>
-    <comment>{Locked="hooks"}</comment>
-  </data>
+  <data name="FreOverlay_ShowTokenUsageAndCostLabel.Text" xml:space="preserve"><value>Tokennutzung</value><comment>Header for a first-run toggle that shows remaining context and session cost in the terminal bottom bar.</comment></data>
+  <data name="FreOverlay_ShowTokenUsageAndCostDescription.Text" xml:space="preserve"><value>Verbleibenden Kontext und Sitzungskosten anzeigen, sofern verfügbar.</value><comment>Description for the token-usage visibility toggle in the first-run wizard. Either value may be unavailable.</comment></data>
   <data name="FreOverlay_PanePositionLabel.Text" xml:space="preserve">
-    <value>Bereichsposition</value>
+    <value>Agentenposition</value>
   </data>
   <data name="FreOverlay_PanePositionDescription.Text" xml:space="preserve">
-    <value>Wo der Agentbereich relativ zu Ihrem Terminal geöffnet wird.</value>
+    <value>Wo sich Ihr Agent befindet.</value>
+    <comment>Description for choosing where the AI agent pane appears within the terminal window. In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
   </data>
   <data name="FreOverlay_SaveButton.Content" xml:space="preserve">
-    <value>Speichern</value>
+    <value>Erste Schritte</value>
   </data>
   <!-- ═══ FRE Dynamic strings (used from C++ code-behind) ═══ -->
-  <data name="FreOverlay_AgentStatusWillInstall" xml:space="preserve">
-    <value> (wird installiert)</value>
+  <data name="FreOverlay_AgentStatusSetupRequired" xml:space="preserve">
+    <value> (Einrichtung erforderlich)</value>
+    <comment>Status suffix appended directly to the GitHub Copilot display name when Copilot is confirmed missing and will be set up later in the Agent pane. Include any spacing and punctuation needed to separate the suffix from the agent name.</comment>
   </data>
   <data name="FreOverlay_AgentStatusInstalled" xml:space="preserve">
     <value> (installiert)</value>
+    <comment>Status suffix appended directly to an AI agent display name when that agent is already installed. Include any spacing and punctuation needed to separate the suffix from the agent name.</comment>
+  </data>
+  <data name="FreOverlay_AgentProbeUnavailable" xml:space="preserve">
+    <value>Es konnte nicht überprüft werden, welche Agenten installiert sind. Die Verfügbarkeit wird erneut überprüft, wenn der Agentbereich geöffnet wird.</value>
+    <comment>Non-blocking warning shown in the first-run settings page when installed AI agents could not be detected. In this context, "Agent pane" is the product UI that hosts an AI agent.</comment>
   </data>
   <data name="FreOverlay_PanePositionBottom" xml:space="preserve">
     <value>Unten</value>
@@ -1061,24 +1328,87 @@
   <data name="FreOverlay_SettingUp" xml:space="preserve">
     <value>Wird eingerichtet...</value>
   </data>
-  <data name="FreOverlay_InstallErrorCopilot" xml:space="preserve">
-    <value>⚠ GitHub Copilot konnte nicht installiert werden. Überprüfen Sie Ihre Netzwerkverbindung und versuchen Sie es erneut.</value>
-    <comment>{Locked="GitHub Copilot"}</comment>
+  <data name="FreOverlay_HookingUpAgent" xml:space="preserve">
+    <value>{0} wird mit Ihrem Agentbereich verbunden...</value>
+    <comment>Progress text shown while preparing the selected AI agent. {0} is the localized agent display name, for example "GitHub Copilot". In this context, "agent" refers to an AI agent, not a human representative.</comment>
+  </data>
+  <data name="FreOverlay_HookingUpAgentFallback" xml:space="preserve">
+    <value>Ihr Agentbereich wird verbunden...</value>
+    <comment>Progress text shown while preparing an AI agent when its display name is unavailable. In this context, "agent" refers to an AI agent, not a human representative.</comment>
+  </data>
+  <data name="FreOverlay_TurningOnErrorDetection" xml:space="preserve">
+    <value>Fehlererkennung wird aktiviert...</value>
+  </data>
+  <data name="FreOverlay_TurningOnSessions" xml:space="preserve">
+    <value>Sitzungen werden aktiviert...</value>
+  </data>
+  <data name="FreOverlay_ProgressCompleted" xml:space="preserve">
+    <value>Abgeschlossen</value>
+    <comment>Accessible status for a completed step in the FRE setup progress checklist.</comment>
+  </data>
+  <data name="FreOverlay_ProgressWarning" xml:space="preserve">
+    <value>Mit einer Warnung abgeschlossen</value>
+    <comment>Accessible status for a non-blocking warning in the FRE setup progress checklist.</comment>
+  </data>
+  <data name="FreOverlay_ProgressFailed" xml:space="preserve">
+    <value>Fehlgeschlagen</value>
+    <comment>Accessible status for a failed step in the FRE setup progress checklist.</comment>
+  </data>
+  <data name="FreOverlay_ProgressAccessibleStatus" xml:space="preserve">
+    <value>{0}, {1}</value>
+    <comment>Accessible name for a completed FRE setup step. {0} is the step label and {1} is its result, such as "Completed" or "Failed".</comment>
+  </data>
+  <data name="FreOverlay_InstallError_BlockedByPolicy" xml:space="preserve">
+    <value>Die Installation von {0} wurde durch eine Windows-Paket-Manager-Richtlinie blockiert. Wenn Sie ein verwaltetes Gerät verwenden, wenden Sie sich an Ihren IT-Administrator.</value>
+    <comment>FRE setup error. {0} is the package display name. Shown when winget reports BlockedByPolicy or an equivalent policy-related HRESULT.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_Generic" xml:space="preserve">
+    <value>{0} konnte nicht installiert werden (Fehlercode {1}). Überprüfen Sie das Protokoll auf Details, oder installieren Sie {0} manuell.</value>
+    <comment>FRE setup error fallback. {0} is the package display name (appears twice). {1} is a pre-formatted HRESULT string like "0x80190194". Shown for failure causes we don't have a more specific message for.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_GenericNoCode" xml:space="preserve">
+    <value>{0} konnte nicht installiert werden. Überprüfen Sie das Protokoll auf Details, oder installieren Sie {0} manuell.</value>
+    <comment>FRE setup error fallback used when no actionable error code is available (e.g. the catalog connect/search failed before an installer ever ran). {0} is the package display name (appears twice).</comment>
+  </data>
+  <data name="FreOverlay_InstallError_InstallerFailed" xml:space="preserve">
+    <value>Das Installationsprogramm für {0} hat einen Fehler gemeldet (Code {1}). Überprüfen Sie das Protokoll auf Details, oder installieren Sie {0} manuell.</value>
+    <comment>FRE setup error. {0} is the package display name (appears twice). {1} is the installer-reported error code as a decimal number (e.g. MSI 1603). Shown when winget reached the install phase but the installer itself failed.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_Network" xml:space="preserve">
+    <value>Der Windows-Paket-Manager konnte während der Installation von {0} nicht erreicht werden. Überprüfen Sie Ihre Internetverbindung (VPN, Proxy oder Firewall blockieren sie möglicherweise), und versuchen Sie es erneut.</value>
+    <comment>{Locked="VPN"} FRE setup error. {0} is the package display name (FreOverlay_PackageDisplayName_Copilot or _Node). Shown when winget couldn't reach its catalog or the package download failed with a network-class HRESULT.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_NoCompatibleInstaller" xml:space="preserve">
+    <value>Auf diesem System ist kein kompatibles Installationsprogramm für {0} verfügbar (Betriebssystemversion oder Architektur wird möglicherweise nicht unterstützt). Installieren Sie {0} manuell.</value>
+    <comment>FRE setup error. {0} is the package display name (appears twice). Shown when winget returned NoApplicableInstallers — the manifest exists but no installer entry matches this OS/arch/scope.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_PackageNotFound" xml:space="preserve">
+    <value>{0} wurde im Katalog des Windows-Paket-Managers nicht gefunden. Versuchen Sie, die winget-Quellen zu aktualisieren, oder installieren Sie {0} manuell.</value>
+    <comment>{Locked="winget"} FRE setup error. {0} is the package display name (appears twice). Shown when no manifest with the requested package ID was returned from the catalog search.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_Timeout" xml:space="preserve">
+    <value>Die Installation von {0} hat länger als 20 Minuten gedauert. Intelligent Terminal wartet nicht mehr, aber das Installationsprogramm wird möglicherweise noch im Hintergrund ausgeführt. Überprüfen Sie Task Manager, oder versuchen Sie es später erneut.</value>
+    <comment>{Locked="Intelligent Terminal","Task Manager"} FRE setup error. {0} is the package display name. Shown when our 20-minute hard timeout expired before the install completed.</comment>
   </data>
   <data name="FreOverlay_InstallErrorWingetMissing" xml:space="preserve">
-    <value>⚠ Der Windows-Paket-Manager (winget) ist nicht installiert oder nicht verfügbar. Installieren Sie ihn zuerst, und versuchen Sie es dann erneut.</value>
-    <comment>{Locked="winget","PATH"} Error shown in the FRE setup overlay when a prerequisite install was attempted but the winget command is not on PATH.</comment>
+    <value>Der Windows-Paket-Manager (winget) ist nicht installiert oder nicht verfügbar. Installieren Sie ihn zuerst, und versuchen Sie es dann erneut.</value>
+    <comment>{Locked="winget"} Error shown in the FRE setup overlay when a prerequisite install was attempted but winget itself is not available on this system.</comment>
   </data>
-  <data name="FreOverlay_InstallErrorNode" xml:space="preserve">
-    <value>⚠ Node.js konnte nicht installiert werden. Überprüfen Sie Ihre Netzwerkverbindung und versuchen Sie es erneut.</value>
-    <comment>{Locked="Node.js"}</comment>
+  <data name="FreOverlay_PackageDisplayName_Copilot" xml:space="preserve">
+    <value>GitHub Copilot</value>
+    <comment>{Locked="GitHub Copilot"} Product display name substituted into the FreOverlay_InstallError_* templates when reporting a winget install failure for the Copilot CLI prerequisite.</comment>
+  </data>
+  <data name="FreOverlay_PackageDisplayName_Node" xml:space="preserve">
+    <value>Node.js (LTS)</value>
+    <comment>{Locked="Node.js","LTS"} Product display name substituted into the FreOverlay_InstallError_* templates when reporting a winget install failure for the Node.js prerequisite.</comment>
   </data>
   <data name="FreOverlay_InstallErrorHooks" xml:space="preserve">
-    <value>⚠ Sitzungs-hooks konnten nicht installiert werden. Die Sitzungsverwaltung wurde deaktiviert. Sie können sie erneut aktivieren und es noch einmal versuchen, oder speichern, um ohne sie fortzufahren.</value>
-    <comment>{Locked="hooks"}</comment>
+    <value>Sitzungs-hooks konnten nicht installiert werden. Die Sitzungsverwaltung wurde deaktiviert. Sie können sie erneut aktivieren und es noch einmal versuchen, oder speichern, um ohne sie fortzufahren.</value>
+    <comment>{Locked="hooks"} FRE setup error shown when session hooks cannot be installed. Session management is turned off so setup can continue, and the user may re-enable it to retry.</comment>
   </data>
   <data name="FreOverlay_InstallErrorShellIntegration" xml:space="preserve">
-    <value>⚠ Die Shell-Integration konnte nicht installiert werden. Die Fehlererkennung wurde deaktiviert. Sie können sie erneut aktivieren und es noch einmal versuchen, oder speichern, um ohne sie fortzufahren.</value>
+    <value>Die Shell-Integration konnte nicht installiert werden. Die Fehlererkennung wurde deaktiviert. Sie können sie erneut aktivieren und es noch einmal versuchen, oder speichern, um ohne sie fortzufahren.</value>
+    <comment>FRE setup error shown when shell integration cannot be installed. Error detection is turned off so setup can continue, and the user may re-enable it to retry.</comment>
   </data>
   <data name="FreOverlay_ErrorHelpLink" xml:space="preserve">
     <value>Erfahren Sie, wie Sie dies manuell beheben</value>
@@ -1154,32 +1484,159 @@
     <value>Agentsitzungen</value>
     <comment>Titel im Agentbereich, wenn die Sitzungsverwaltung aktiv ist.</comment>
   </data>
+  <data name="AgentPane_SwitchAgentAutomationName" xml:space="preserve">
+    <value>Agent wechseln</value>
+    <comment>Accessibility (screen reader) name for the agent-bar button that opens a menu to pick which AI agent runs in this tab. In this context, agent refers to an AI agent, not a human representative.</comment>
+  </data>
   <data name="AgentPane_SessionsTitleFormat" xml:space="preserve">
     <value>Agentsitzungen: {0}</value>
     <comment>Titel im Agentbereich. {0} wird durch den Agentnamen ersetzt.</comment>
+  </data>
+  <data name="AgentPane_SessionsDisabledHint.Text" xml:space="preserve">
+    <value>Aktivieren Sie „Sitzungen“ unter Einstellungen &gt; Agenten, um Sitzungen optimal zu verwalten.</value>
+    <comment>Subtle hint below the agent sessions title, shown only in session management when Sessions is off and policy permits changes. Navigation is Settings &gt; Agents, then turn on Sessions. Match the displayed labels: Settings uses SettingsMenuItem/SettingsTab, Agents uses Nav_AIAgents.Content, and Sessions uses AIAgents_SessionManagement.Header, including fallback labels where a locale has no translation. Turning Sessions off only prevents hook updates; existing hooks and session functionality can keep working. Do not imply that tracking, data refresh, or functionality stops.</comment>
   </data>
   <data name="TerminalProtocolTeachingTipTitle" xml:space="preserve">
     <value>Terminal Protocol</value>
     <comment>{Locked="Terminal Protocol"}</comment>
   </data>
-  <data name="FreOverlay_AutoDetectLabel.Text" xml:space="preserve">
-    <value>Automatische Fehlererkennung</value>
+  <data name="FreOverlay_ErrorDetectionAutoFixOption.Content" xml:space="preserve">
+    <value>Fehler erkennen und beheben</value>
+    <comment>Dropdown option that detects shell errors and automatically sends failed commands to the selected AI agent. In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
   </data>
-  <data name="FreOverlay_AutoDetectDescription.Text" xml:space="preserve">
-    <value>Erlauben Sie Intelligent Terminal, auf Ihre Shell zuzugreifen und Fehler automatisch zu erkennen.</value>
+  <data name="FreOverlay_ErrorDetectionOffOption.Content" xml:space="preserve">
+    <value>Aus</value>
+    <comment>Dropdown option that disables automatic shell error detection.</comment>
   </data>
-  <data name="FreOverlay_AutoDetectShellIntegrationHintPrefix" xml:space="preserve">
-    <value>Wenn Sie diese Option aktivieren, wird Shellintegration installiert, um Befehlsfehler zu erkennen. </value>
-  </data>
-  <data name="FreOverlay_AutoDetectShellIntegrationHintLink" xml:space="preserve">
-    <value>Weitere Informationen</value>
+  <data name="FreOverlay_ErrorDetectionAutoFixPolicyLocked" xml:space="preserve">
+    <value>Die Option für automatische Korrekturen wird von Ihrer Organisation verwaltet.</value>
+    <comment>Text shown below the error-detection dropdown when Group Policy disables its automatic-fix option.</comment>
   </data>
   <data name="InitShellIntegrationExecutionPolicyErrorMessage" xml:space="preserve">
     <value>Die PowerShell-Ausführungsrichtlinie blockiert Skripts.</value>
     <comment>Body of an error dialog shown after the user tries to install PowerShell shell integration but their PowerShell execution policy (Restricted or AllSigned) is blocking scripts. A separate "Learn how to fix this manually" hyperlink (FreOverlay_ErrorHelpLink) is rendered on its own line below this sentence. {Locked="PowerShell"}</comment>
   </data>
   <data name="FreOverlay_InstallErrorShellIntegrationExecutionPolicy" xml:space="preserve">
-    <value>⚠ Die PowerShell-Ausführungsrichtlinie blockiert Skripts. Fehlererkennung deaktiviert.</value>
-    <comment>{Locked="PowerShell"}</comment>
+    <value>Die PowerShell-Ausführungsrichtlinie blockiert Skripts. Fehlererkennung deaktiviert.</value>
+    <comment>{Locked="PowerShell"} FRE setup error shown when PowerShell execution policy prevents shell-integration scripts from running. Error detection is turned off so setup can continue.</comment>
+  </data>
+  <data name="UsageGroup/[using:Windows.UI.Xaml.Automation]AutomationProperties/Name" xml:space="preserve"><value>Nutzung</value><comment>Accessibility name for the session usage summary in the terminal bottom bar.</comment></data>
+  <data name="Usage_TokensUnit" xml:space="preserve"><value>Token</value><comment>Unit label for AI context-window token counts. Translate this term using the established AI/LLM terminology for the locale.</comment></data>
+  <data name="Usage_ContextWindowLabel" xml:space="preserve"><value>Kontextfenster</value><comment>Label for the AI agent context-window usage percentage shown in the terminal bottom bar.</comment></data>
+  <data name="CmdAppHelpFooter" xml:space="preserve">
+    <value>Hinweis: Nicht erkannte Argumente werden automatisch an den Unterbefehl „new-tab“ übergeben.
+Beispielsweise entspricht 'wt -p "Ubuntu" -d C:\' 'wt new-tab -p "Ubuntu" -d C:\'.
+Für alle verfügbaren Optionen führen Sie 'wt new-tab --help' aus.</value>
+    <comment>{Locked="wt","new-tab","-p","-d","--help"}</comment>
+  </data>
+  <data name="AgentPane_DefaultTitle" xml:space="preserve">
+    <value>KI-Assistent</value>
+    <comment>Default title shown in the agent pane title bar before an agent reports its name. "AI assistant" refers to the built-in AI coding assistant, not a human assistant.</comment>
+  </data>
+  <data name="AgentPane_ConnectingTitle" xml:space="preserve">
+    <value>Agent · Verbindung wird hergestellt</value>
+    <comment>Status shown in the agent pane title bar while the AI agent is connecting. Preserve the centered dot separator. Here "agent" means an AI intelligent agent, not a proxy or human agent.</comment>
+  </data>
+  <data name="NotificationIconRestoreKeptTab" xml:space="preserve">
+    <value>Wiederherstellen</value>
+    <comment>Command in the notification-area menu that brings a background tab and its still-running terminal panes back into a window. It does not restart the processes or restore a file backup.</comment>
+  </data>
+  <data name="KeepTabRunningText" xml:space="preserve">
+    <value>Registerkarte weiter ausführen</value>
+    <comment>Command at the top of a vertical terminal tab's context menu that enables keeping all panes running after the tab or window is closed. Also labels the tab's keep-running status indicator. This does not pin the tab or save it for a restart.</comment>
+  </data>
+  <data name="PinTabText" xml:space="preserve">
+    <value>Registerkarte anheften</value>
+    <comment>Context menu action to keep a terminal tab at the start of the tab list until unpinned. Does not keep its processes running after closing or persist across restarts.</comment>
+  </data>
+  <data name="PinTabToolTip" xml:space="preserve">
+    <value>Diese Registerkarte vor nicht angeheftete Registerkarten verschieben.</value>
+  </data>
+  <data name="UnpinTabText" xml:space="preserve">
+    <value>Registerkarte lösen</value>
+    <comment>Context menu action to move a pinned terminal tab back into the regular tab group.</comment>
+  </data>
+  <data name="UnpinTabToolTip" xml:space="preserve">
+    <value>Diese Registerkarte hinter angeheftete Registerkarten verschieben.</value>
+  </data>
+  <data name="PinnedTabName" xml:space="preserve">
+    <value>Angeheftet</value>
+    <comment>Accessibility name and tooltip for a terminal tab pinned at the beginning of the tab list.</comment>
+  </data>
+  <data name="CollapsedPinnedTabIcon.AutomationProperties.Name" xml:space="preserve">
+    <value>Angeheftet</value>
+    <comment>Accessibility name for the pin indicator on a terminal tab in the collapsed sidebar.</comment>
+  </data>
+  <data name="KeepTabRunningToolTip" xml:space="preserve">
+    <value>Diese Registerkarte nach dem Schließen der Registerkarte oder des Fensters im Hintergrund weiter ausführen.</value>
+    <comment>Tooltip and accessibility help for Keep tab running. Includes shell panes and the AI assistant; their current processes and sessions stay alive, rather than restarting later.</comment>
+  </data>
+  <data name="TurnOffKeepTabRunningText" xml:space="preserve">
+    <value>„Weiter ausführen“ deaktivieren</value>
+    <comment>Command shown instead of Keep tab running when that tab already has keep running enabled. It only turns off the background-running behavior; it does not close the tab or stop its current processes immediately.</comment>
+  </data>
+  <data name="TurnOffKeepTabRunningToolTip" xml:space="preserve">
+    <value>Diese Registerkarte wird nach dem Schließen der Registerkarte oder des Fensters nicht mehr weiter ausgeführt.</value>
+    <comment>Tooltip and accessibility help for Turn off keep running. After this action, closing the tab or its window closes its panes normally instead of retaining them in the background. The current tab and processes are not closed by this action.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusIdle" xml:space="preserve">
+    <value>Inaktiv</value>
+    <comment>Agent History session status: the session is live but has no active work.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusWorking" xml:space="preserve">
+    <value>Aktiv</value>
+    <comment>Agent History session status: the agent is actively processing a request.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusAttention" xml:space="preserve">
+    <value>Wartet auf Eingabe</value>
+    <comment>Agent History session status: the agent needs a response or approval from the user.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusError" xml:space="preserve">
+    <value>Fehler</value>
+    <comment>Agent History session status: the session encountered an error.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusHistorical" xml:space="preserve">
+    <value>Historisch</value>
+    <comment>Agent History session status: a closed or saved session with no live pane. Both ended and historical registry states use this label.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusUnknown" xml:space="preserve">
+    <value>Unbekannt</value>
+    <comment>Agent History session status: the registry did not provide a recognized status.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeJustNow" xml:space="preserve">
+    <value>gerade eben</value>
+    <comment>Agent History relative time: the session&apos;s latest activity was less than one minute ago.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeMinute" xml:space="preserve">
+    <value>vor 1 Minute</value>
+    <comment>Agent History relative time: the session&apos;s latest activity was one minute ago.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeMinutes" xml:space="preserve">
+    <value>vor {0} Minuten</value>
+    <comment>Agent History relative time. {0} is the whole number of minutes since the session&apos;s latest activity, from 2 to 59.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeHour" xml:space="preserve">
+    <value>vor 1 Stunde</value>
+    <comment>Agent History relative time: the session&apos;s latest activity was one hour ago.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeHours" xml:space="preserve">
+    <value>vor {0} Stunden</value>
+    <comment>Agent History relative time. {0} is the whole number of hours since the session&apos;s latest activity, from 2 to 23.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeDay" xml:space="preserve">
+    <value>vor 1 Tag</value>
+    <comment>Agent History relative time: the session&apos;s latest activity was one day ago.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeDays" xml:space="preserve">
+    <value>vor {0} Tagen</value>
+    <comment>Agent History relative time. {0} is the whole number of days since the session&apos;s latest activity, at least 2.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeUnknown" xml:space="preserve">
+    <value>Unbekannt</value>
+    <comment>Agent History time label when the session&apos;s latest activity timestamp is missing or invalid. Do not imply that the session was recently active.</comment>
+  </data>
+  <data name="NotificationIconCloseAllKeptTabs" xml:space="preserve">
+    <value>Alle im Hintergrund ausgeführten Registerkarten schließen</value>
+    <comment>Command below the background tabs in the notification-area menu. Closes all detached tabs retained by Keep tab running and terminates their panes and processes. Does not close tabs still in a window or only turn off keep running.</comment>
   </data>
 </root>

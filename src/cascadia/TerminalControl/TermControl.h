@@ -50,6 +50,12 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         TermControl(IControlSettings settings, Control::IControlAppearance unfocusedAppearance, TerminalConnection::ITerminalConnection connection);
 
         static Control::TermControl NewControlByAttachingContent(Control::ControlInteractivity content);
+        static Control::TermControl PrepareControlByAttachingContent(Control::ControlInteractivity content);
+        void SuspendContentTransfer();
+        bool ResumeContentTransfer();
+        void CommitContentTransfer();
+        void CommitContentDetach();
+        Control::ContentTransferState TransferState() const noexcept;
 
         void UpdateControlSettings(Control::IControlSettings settings);
         void UpdateControlSettings(Control::IControlSettings settings, Control::IControlAppearance unfocusedAppearance);
@@ -63,6 +69,8 @@ namespace winrt::Microsoft::Terminal::Control::implementation
 
         bool CopySelectionToClipboard(bool dismissSelection, bool singleLine, bool withControlSequences, const CopyFormat formats);
         void PasteTextFromClipboard();
+        void EnableAgentPasteShortcutFallback(bool enabled) noexcept { _agentPasteShortcutFallbackEnabled = enabled; }
+        void EnableAgentMouseWheelZoom(bool enabled) noexcept { _agentMouseWheelZoomEnabled = enabled; }
         void SelectAll();
         bool ToggleBlockSelection();
         void ToggleMarkMode();
@@ -92,11 +100,15 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         hstring Title();
         Windows::Foundation::IReference<winrt::Windows::UI::Color> TabColor() noexcept;
         hstring WorkingDirectory() const;
+        bool WorkingDirectoryReportedByShell() const;
+        hstring ShellName() const;
+        hstring ShellVersion() const;
 
         TerminalConnection::ConnectionState ConnectionState() const;
 
         int ScrollOffset() const;
         int ViewHeight() const;
+        int ViewWidth() const;
         int BufferHeight() const;
 
         bool HasSelection() const;
@@ -172,7 +184,9 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         static Windows::UI::Xaml::Thickness ParseThicknessFromPadding(const hstring padding);
 
         hstring ReadEntireBuffer() const;
+        hstring ReadBufferTail(int32_t maxLogicalLines, int32_t maxCharacters) const;
         hstring ReadLastPrompt() const;
+        hstring ReadLastPromptBounded(int32_t maxLogicalLines, int32_t maxCharacters) const;
         Control::CommandHistoryContext CommandHistory() const;
         void UpdateWinGetSuggestions(Windows::Foundation::Collections::IVector<hstring> suggestions);
 
@@ -232,6 +246,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         BUBBLED_FORWARDED_TYPED_EVENT(RestartTerminalRequested, IInspectable, IInspectable);
         BUBBLED_FORWARDED_TYPED_EVENT(WriteToClipboard,         IInspectable, Control::WriteToClipboardEventArgs);
         BUBBLED_FORWARDED_TYPED_EVENT(PasteFromClipboard,       IInspectable, Control::PasteFromClipboardEventArgs);
+        BUBBLED_FORWARDED_TYPED_EVENT(ShowNotification,         IInspectable, Control::ShowNotificationEventArgs);
 
         // clang-format on
 
@@ -253,6 +268,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         Control::ControlInteractivity _interactivity{ nullptr };
         Control::ControlCore _core{ nullptr };
         Control::IKeyBindings _keyBindings{ nullptr };
+        bool _agentMouseWheelZoomEnabled{ false };
         TsfDataProvider _tsfDataProvider{ this };
         winrt::com_ptr<SearchBoxControl> _searchBox;
 
@@ -286,6 +302,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         bool _initializedTerminal{ false };
         bool _quickFixButtonCollapsible{ false };
         bool _quickFixesAvailable{ false };
+        bool _agentPasteShortcutFallbackEnabled{ false };
         til::CoordType _quickFixBufferPos{};
 
         std::shared_ptr<ThrottledFunc<>> _playWarningBell;
@@ -319,7 +336,9 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         bool _showMarksInScrollbar{ false };
 
         bool _isBackgroundLight{ false };
-        bool _detached{ false };
+        using ContentState = Control::ContentTransferState;
+        ContentState _contentState{ ContentState::Owned };
+        uint64_t _transferOwningHwnd{ 0 };
         til::CoordType _searchScrollOffset = 0;
 
         Windows::Foundation::Collections::IObservableVector<Windows::UI::Xaml::Controls::ICommandBarElement> _originalPrimaryElements{ nullptr };
@@ -328,6 +347,8 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         Windows::Foundation::Collections::IObservableVector<Windows::UI::Xaml::Controls::ICommandBarElement> _originalSelectedSecondaryElements{ nullptr };
 
         Control::CursorDisplayState _cursorVisibility{ Control::CursorDisplayState::Default };
+        winrt::Windows::UI::Core::CoreCursor _completedTurnPriorPointerCursor{ nullptr };
+        bool _completedTurnActionHovered{ false };
 
         inline bool _IsClosing() const noexcept
         {
@@ -338,7 +359,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
                 assert(dispatcher.HasThreadAccess());
             }
 #endif
-            return _closing;
+            return _closing || _contentState == ContentState::Suspended;
         }
 
         void _initializeForAttach();
@@ -420,6 +441,9 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         void _handleSearchResults(SearchResults results);
 
         void _hoveredHyperlinkChanged(const IInspectable& sender, const IInspectable& args);
+        void _setCompletedTurnActionHover(CompletedTurnAction action);
+        void _restoreCompletedTurnActionPointer();
+        void _reassertCompletedTurnActionPointer();
         safe_void_coroutine _updateSelectionMarkers(IInspectable sender, Control::UpdateSelectionMarkersEventArgs args);
 
         void _coreFontSizeChanged(const IInspectable& s, const Control::FontSizeChangedArgs& args);
@@ -472,6 +496,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
             Control::ControlCore::RestartTerminalRequested_revoker RestartTerminalRequested;
             Control::ControlCore::SearchMissingCommand_revoker SearchMissingCommand;
             Control::ControlCore::VtSequenceReceived_revoker VtSequenceReceived;
+            Control::ControlCore::ShowNotification_revoker ShowNotification;
             Control::ControlCore::RefreshQuickFixUI_revoker RefreshQuickFixUI;
             Control::ControlCore::WindowSizeChanged_revoker WindowSizeChanged;
 

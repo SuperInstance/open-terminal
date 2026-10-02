@@ -5,10 +5,9 @@
     supported agent CLIs (Copilot, Claude, Gemini, Codex).
 
 .DESCRIPTION
-    Wrapper around `wta hooks status --json` / `wta install-hooks` /
-    `wta hooks uninstall --json`. Same JSON contract that the Settings
-    UI's "AI agents → Agent Hooks" section consumes — so the script and
-    the UI can never disagree about install state.
+    Wrapper around `wta hooks status --json` / `wta hooks install` /
+    `wta hooks uninstall --json`. Uses the JSON contracts defined in
+    tools/wta/src/agent_hooks_installer.rs for status and diagnostics.
 
     Internals are factored into named functions
     (Resolve-WtaPath, Get-AgentHooksStatus, Format-AgentHooksTable,
@@ -20,7 +19,7 @@
 .PARAMETER Mode
     Check    — print a colored status table and exit non-zero if any CLI
                  is in an inconsistent state.
-    Install  — run `wta install-hooks`, then run Check.
+    Install  — run `wta hooks install`, then run Check.
     Uninstall— run `wta hooks uninstall --cli=<filter> --json`, then Check.
 
 .PARAMETER CliFilter
@@ -29,9 +28,8 @@
     Check always reports all four).
 
 .PARAMETER SmokeTest
-    After Check / Install, fire a no-op prompt at each detected CLI and
-    tail %LOCALAPPDATA%\IntelligentTerminal\logs\hook-trace.log for an
-    `ENTER` line proving the hook fired.
+    After Check / Install, verify that the installed wtcli exposes the native
+    `agent-hook` command and print the enabled integrations.
 
 .PARAMETER WtaPath
     Override path to wta.exe. Defaults to a sibling of this script (the
@@ -74,9 +72,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 # Schema version this script understands. Mirrors STATUS_SCHEMA_VERSION
-# in tools/wta/src/agent_hooks_installer.rs and SupportedStatusSchemaVersion
-# in src/cascadia/inc/AgentHooksStatus.h. Bump in lockstep.
-$script:SupportedStatusSchemaVersion = 3
+# in tools/wta/src/agent_hooks_installer.rs. Bump in lockstep.
+$script:SupportedStatusSchemaVersion = 4
 
 $script:CliDisplayNames = @{
     copilot = 'Copilot CLI'
@@ -177,20 +174,57 @@ function Get-AgentHooksStatus {
     return $report
 }
 
+# v4: render the installed hook version, and the bundle version alongside it
+# when the two disagree. Every other column answers "are hooks installed?";
+# this one answers "are they the hooks this wta ships?" — the question a
+# marketplace registered against a stale worktree leaves wrong while all the
+# boolean columns still read healthy.
+#
+# Both fields are optional *within* v4: wta omits them when it cannot establish
+# a version, so absence means "unknown here", not "older payload" — anything
+# below v4 was already rejected outright by Get-AgentHooksStatus.
+function Get-AgentHookVersionLabel {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][psobject]$Cli,
+        [Parameter(Mandatory)][bool]$PluginInstalled
+    )
+
+    if (-not $PluginInstalled) { return '' }
+
+    $installed = $null
+    if (Get-Member -InputObject $Cli -Name installed_version -ErrorAction SilentlyContinue) {
+        $installed = $Cli.installed_version
+    }
+    # "Installed but won't say which build" is a real state (fs-fallback
+    # detection), and it is not the same as "nothing installed".
+    if (-not $installed) { return 'v?' }
+
+    $bundle = $null
+    if (Get-Member -InputObject $Cli -Name bundle_version -ErrorAction SilentlyContinue) {
+        $bundle = $Cli.bundle_version
+    }
+    if ($bundle -and $bundle -ne $installed) {
+        return "v$installed (bundle v$bundle)"
+    }
+    return "v$installed"
+}
+
 # Render one row of the table as a hashtable (consumed by Format-Table /
 # Write-Host). Returns:
-#   @{ CLI = 'copilot'; OnPath = $true; State = 'installed'; Color = 'Green'; Detail = '...' }
+#   @{ CLI = 'copilot'; OnPath = $true; State = 'installed'; Color = 'Green'; Detail = '...'; Version = 'v0.1.5' }
 function Get-AgentHookCliRow {
     [CmdletBinding()]
     param([Parameter(Mandatory)][psobject]$Cli)
 
     if (-not $Cli.binary_on_path) {
         return @{
-            CLI    = $Cli.name
-            OnPath = $false
-            State  = 'CLI not on PATH'
-            Color  = 'DarkGray'
-            Detail = ''
+            CLI     = $Cli.name
+            OnPath  = $false
+            State   = 'CLI not on PATH'
+            Color   = 'DarkGray'
+            Detail  = ''
+            Version = ''
         }
     }
 
@@ -224,11 +258,12 @@ function Get-AgentHookCliRow {
     }
 
     $row = @{
-        CLI    = $Cli.name
-        OnPath = $true
-        State  = $state
-        Color  = $color
-        Detail = if ($state -eq 'PARTIAL') { $detail } else { '' }
+        CLI     = $Cli.name
+        OnPath  = $true
+        State   = $state
+        Color   = $color
+        Detail  = if ($state -eq 'PARTIAL') { $detail } else { '' }
+        Version = Get-AgentHookVersionLabel -Cli $Cli -PluginInstalled $plugin
     }
 
     if ((Get-Member -InputObject $Cli -Name detection_fallback -ErrorAction SilentlyContinue) -and $Cli.detection_fallback) {
@@ -262,7 +297,10 @@ function Format-AgentHooksTable {
     foreach ($cli in $Report.clis) {
         $row = Get-AgentHookCliRow -Cli $cli
         $name = if ($script:CliDisplayNames.ContainsKey($row.CLI)) { $script:CliDisplayNames[$row.CLI] } else { $row.CLI }
-        $line = '  {0,-13} {1}' -f $name, $row.State
+        $line = '  {0,-13} {1,-16}' -f $name, $row.State
+        if ($row.Version) {
+            $line += "  $($row.Version)"
+        }
         if ($row.Detail) {
             $line += "  ($($row.Detail))"
         }
@@ -310,10 +348,10 @@ function Invoke-HooksInstall {
     param([Parameter(Mandatory)][string]$WtaPath)
 
     Write-Host ''
-    Write-Host '→ Running: wta install-hooks' -ForegroundColor Cyan
-    & $WtaPath install-hooks
+    Write-Host '→ Running: wta hooks install' -ForegroundColor Cyan
+    & $WtaPath hooks install
     if ($LASTEXITCODE -ne 0) {
-        throw "wta install-hooks exited with code $LASTEXITCODE"
+        throw "wta hooks install exited with code $LASTEXITCODE"
     }
 }
 
@@ -350,21 +388,36 @@ function Invoke-HooksSmokeTest {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][psobject]$Report,
-        [Parameter()][string]$Cli = 'all'
+        [Parameter()][string]$Cli = 'all',
+        [Parameter()][string]$WtaPath
     )
 
-    $logPath = Join-Path $env:LOCALAPPDATA 'IntelligentTerminal\logs\hook-trace.log'
-    if (-not (Test-Path -LiteralPath $logPath)) {
-        Write-Host ''
-        Write-Host "Smoke-test skipped: $logPath not found (no hooks have ever fired on this machine)." -ForegroundColor Yellow
-        return
+    $wtcliPath = $null
+    if ($WtaPath) {
+        $sibling = Join-Path (Split-Path -Parent $WtaPath) 'wtcli.exe'
+        if (Test-Path -LiteralPath $sibling) {
+            $wtcliPath = $sibling
+        }
+    }
+    if (-not $wtcliPath) {
+        $wtcliPath = (Get-Command wtcli.exe -ErrorAction SilentlyContinue).Source
     }
 
     Write-Host ''
-    Write-Host '→ Smoke test: tailing hook-trace.log for ENTER lines (informational only).' -ForegroundColor Cyan
-    Get-Content -LiteralPath $logPath -Tail 20 |
-        Where-Object { $_ -match 'ENTER' } |
-        ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+    if (-not $wtcliPath) {
+        Write-Host 'Smoke-test failed: wtcli.exe was not found.' -ForegroundColor Red
+        return
+    }
+    $helpText = (& $wtcliPath --help 2>&1) -join "`n"
+    if ($helpText -notmatch '(?m)^\s*agent-hook\s+') {
+        Write-Host "Smoke-test failed: $wtcliPath does not expose agent-hook." -ForegroundColor Red
+        return
+    }
+
+    Write-Host "→ Native bridge available: $wtcliPath" -ForegroundColor Cyan
+    $Report.clis |
+        Where-Object { ($Cli -eq 'all' -or $_.name -eq $Cli) -and $_.plugin_enabled } |
+        ForEach-Object { Write-Host "  $($_.name): installed and enabled" -ForegroundColor DarkGray }
 }
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -389,7 +442,7 @@ $report = Get-AgentHooksStatus -WtaPath $wtaPath -Json $StatusJson
 Format-AgentHooksTable -Report $report -Title "wt-agent-hooks status (mode=$Mode)"
 
 if ($SmokeTest) {
-    Invoke-HooksSmokeTest -Report $report -Cli $CliFilter
+    Invoke-HooksSmokeTest -Report $report -Cli $CliFilter -WtaPath $wtaPath
 }
 
 $result = Test-AgentHooksConsistent -Report $report

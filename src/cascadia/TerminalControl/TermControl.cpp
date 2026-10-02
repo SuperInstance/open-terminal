@@ -329,6 +329,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         _revokers.RestartTerminalRequested = _core.RestartTerminalRequested(winrt::auto_revoke, { get_weak(), &TermControl::_bubbleRestartTerminalRequested });
         _revokers.SearchMissingCommand = _core.SearchMissingCommand(winrt::auto_revoke, { get_weak(), &TermControl::_bubbleSearchMissingCommand });
         _revokers.VtSequenceReceived = _core.VtSequenceReceived(winrt::auto_revoke, { get_weak(), &TermControl::_bubbleVtSequenceReceived });
+        _revokers.ShowNotification = _core.ShowNotification(winrt::auto_revoke, { get_weak(), &TermControl::_bubbleShowNotification });
         _revokers.WindowSizeChanged = _core.WindowSizeChanged(winrt::auto_revoke, { get_weak(), &TermControl::_bubbleWindowSizeChanged });
         _revokers.WriteToClipboard = _core.WriteToClipboard(winrt::auto_revoke, { get_weak(), &TermControl::_bubbleWriteToClipboard });
 
@@ -494,9 +495,78 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     // - The newly constructed TermControl.
     Control::TermControl TermControl::NewControlByAttachingContent(Control::ControlInteractivity content)
     {
+        const auto term = PrepareControlByAttachingContent(std::move(content));
+        term.CommitContentTransfer();
+        return term;
+    }
+
+    Control::TermControl TermControl::PrepareControlByAttachingContent(Control::ControlInteractivity content)
+    {
         const auto term{ winrt::make_self<TermControl>(content) };
+        term->_contentState = ContentState::Prepared;
         term->_initializeForAttach();
         return *term;
+    }
+
+    void TermControl::SuspendContentTransfer()
+    {
+        THROW_HR_IF(E_ILLEGAL_METHOD_CALL, _IsClosing() || _contentState != ContentState::Owned);
+        _transferOwningHwnd = OwningHwnd();
+        _contentState = ContentState::Suspended;
+        _interactivity.Detach();
+    }
+
+    bool TermControl::ResumeContentTransfer()
+    {
+        (void)_IsClosing();
+        if (!_closing && _contentState == ContentState::Suspended)
+        {
+            _contentState = ContentState::Owned;
+            _initializedTerminal = false;
+            _initializeForAttach();
+            OwningHwnd(_transferOwningHwnd);
+            if (_automationPeer)
+            {
+                const auto peer = winrt::get_self<implementation::TermControlAutomationPeer>(_automationPeer);
+                winrt::get_self<implementation::ControlInteractivity>(_interactivity)->AttachAutomationPeer(peer->InteractivityPeer());
+            }
+            if (_InitializeTerminal(InitializeReason::Reattach))
+            {
+                _layoutUpdatedRevoker.revoke();
+            }
+            if (_focused)
+            {
+                _GotFocusHandler(nullptr, nullptr);
+            }
+            else
+            {
+                _LostFocusHandler(nullptr, nullptr);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    void TermControl::CommitContentTransfer()
+    {
+        THROW_HR_IF(E_ILLEGAL_METHOD_CALL, _IsClosing() || _contentState != ContentState::Prepared);
+        _contentState = ContentState::Owned;
+    }
+
+    void TermControl::CommitContentDetach()
+    {
+        (void)_IsClosing();
+        THROW_HR_IF(E_ILLEGAL_METHOD_CALL, _closing || _contentState != ContentState::Suspended);
+        // The receiver already owns the renderer; do not detach it a second time.
+        _revokers = {};
+        _interactivity = nullptr;
+        _contentState = ContentState::Detached;
+    }
+
+    Control::ContentTransferState TermControl::TransferState() const noexcept
+    {
+        (void)_IsClosing();
+        return _closing ? ContentState::Closed : _contentState;
     }
 
     void TermControl::_initializeForAttach()
@@ -549,20 +619,20 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         // * we're already not closing
         // * caller already checked weak ptr to make sure we're still alive
 
-        _isInternalScrollBarUpdate = true;
-
         auto scrollBar = ScrollBar();
-        if (update.newValue)
         {
-            scrollBar.Value(*update.newValue);
+            const auto wasInternal = std::exchange(_isInternalScrollBarUpdate, true);
+            const auto restoreInternal = wil::scope_exit([&]() { _isInternalScrollBarUpdate = wasInternal; });
+            scrollBar.Maximum(update.newMaximum);
+            scrollBar.Minimum(update.newMinimum);
+            if (update.newValue)
+            {
+                scrollBar.Value(*update.newValue);
+            }
+            scrollBar.ViewportSize(update.newViewportSize);
+            // scroll one full screen worth at a time when the scroll bar is clicked
+            scrollBar.LargeChange(std::max(update.newViewportSize - 1, 0.));
         }
-        scrollBar.Maximum(update.newMaximum);
-        scrollBar.Minimum(update.newMinimum);
-        scrollBar.ViewportSize(update.newViewportSize);
-        // scroll one full screen worth at a time when the scroll bar is clicked
-        scrollBar.LargeChange(std::max(update.newViewportSize - 1, 0.));
-
-        _isInternalScrollBarUpdate = false;
 
         if (_showMarksInScrollbar)
         {
@@ -1252,7 +1322,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         // MSFT 33353327: We're purposefully not using _initializedTerminal to ensure we're fully initialized.
         // Doing so makes us return nullptr when XAML requests an automation peer.
         // Instead, we need to give XAML an automation peer, then fix it later.
-        if (!_IsClosing() && !_detached)
+        if (!_IsClosing() && _contentState != ContentState::Detached)
         {
             // It's unexpected that interactivity is null even when we're not closing or in detached state.
             THROW_HR_IF_NULL(E_UNEXPECTED, _interactivity);
@@ -1416,18 +1486,22 @@ namespace winrt::Microsoft::Terminal::Control::implementation
 
         _core.EnablePainting();
 
-        auto bufferHeight = _core.BufferHeight();
-
-        ScrollBar().Maximum(0);
-        ScrollBar().Minimum(0);
-        ScrollBar().Value(0);
-        ScrollBar().ViewportSize(bufferHeight);
-        ScrollBar().LargeChange(bufferHeight); // scroll one "screenful" at a time when the scroll bar is clicked
-
         // Now that the renderer is set up, update the appearance for initialization
         _UpdateAppearanceFromUIThread(_core.FocusedAppearance());
 
         _initializedTerminal = true;
+        // Reattachment must not turn scrollbar initialization into user input
+        // that changes the existing core's viewport.
+        // Match ThrottledFunc's exception boundary for this synchronous update.
+        try
+        {
+            _throttledUpdateScrollbar(ScrollBarUpdate{
+                static_cast<double>(_core.ScrollOffset()),
+                static_cast<double>(_core.BufferHeight() - _core.ViewHeight()),
+                0,
+                static_cast<double>(_core.ViewHeight()) });
+        }
+        CATCH_LOG();
 
         // MSFT 33353327: If the AutomationPeer was created before we were done initializing,
         // make sure it's properly set up now.
@@ -1598,6 +1672,20 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         // about.
         if (_IsClosing() || vkey == VK_LWIN || vkey == VK_RWIN)
         {
+            return true;
+        }
+
+        if (_agentPasteShortcutFallbackEnabled &&
+            vkey == 'V' &&
+            modifiers.IsCtrlPressed() &&
+            !modifiers.IsShiftPressed() &&
+            !modifiers.IsAltPressed() &&
+            !modifiers.IsWinPressed())
+        {
+            if (keyDown)
+            {
+                _interactivity.RequestPasteTextFromClipboard();
+            }
             return true;
         }
 
@@ -1779,6 +1867,12 @@ namespace winrt::Microsoft::Terminal::Control::implementation
             // character, it's not an alt-up event, and we still have an ongoing composition.
             _altNumpadState = {};
         }
+
+        // If a composition just ended, its text is still queued up inside TSF. Hand it to
+        // the connection now, so that a key the IME passed on to us can't reach the
+        // connection before the text it finalized - neither by being forwarded to the PTY,
+        // nor by triggering an action bound to it. GH#20244
+        GetTSFHandle().FlushPendingComposition();
 
         // GH#2235: Terminal::Settings hasn't been modified to differentiate
         // between AltGr and Ctrl+Alt yet.
@@ -2040,6 +2134,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
                                                                        TermControl::GetPointerUpdateKind(point),
                                                                        ControlKeyStates(args.KeyModifiers()),
                                                                        pixelPosition);
+            _reassertCompletedTurnActionPointer();
 
             // GH#9109 - Only start an auto-scroll when the drag actually
             // started within our bounds. Otherwise, someone could start a drag
@@ -2149,12 +2244,16 @@ namespace winrt::Microsoft::Terminal::Control::implementation
 
         const auto point = args.GetCurrentPoint(*this);
         auto delta = point.Properties().MouseWheelDelta();
-        auto result = _interactivity.MouseWheel(ControlKeyStates{ args.KeyModifiers() },
-                                                point.Properties().IsHorizontalMouseWheel() ?
-                                                    Core::Point{ delta, 0 } :
-                                                    Core::Point{ 0, delta },
-                                                _toTerminalOrigin(point.Position()),
-                                                TermControl::GetPressedMouseButtons(point));
+        const auto modifiers = ControlKeyStates{ args.KeyModifiers() };
+        const auto wheelDelta = point.Properties().IsHorizontalMouseWheel() ?
+                                    Core::Point{ delta, 0 } :
+                                    Core::Point{ 0, delta };
+        const auto interactivity = winrt::get_self<implementation::ControlInteractivity>(_interactivity);
+        const auto result = interactivity->MouseWheel(modifiers,
+                                                      wheelDelta,
+                                                      _toTerminalOrigin(point.Position()),
+                                                      TermControl::GetPressedMouseButtons(point),
+                                                      _agentMouseWheelZoomEnabled);
         if (result)
         {
             args.Handled(true);
@@ -2184,7 +2283,8 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         WI_SetFlagIf(state, Control::MouseButtonState::IsMiddleButtonDown, midButtonDown);
         WI_SetFlagIf(state, Control::MouseButtonState::IsRightButtonDown, rightButtonDown);
 
-        return _interactivity.MouseWheel(modifiers, delta, _toTerminalOrigin(location), state);
+        const auto interactivity = winrt::get_self<implementation::ControlInteractivity>(_interactivity);
+        return interactivity->MouseWheel(modifiers, delta, _toTerminalOrigin(location), state, _agentMouseWheelZoomEnabled);
     }
 
     // Method Description:
@@ -2550,6 +2650,21 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         return _core.WorkingDirectory();
     }
 
+    bool TermControl::WorkingDirectoryReportedByShell() const
+    {
+        return _core.WorkingDirectoryReportedByShell();
+    }
+
+    hstring TermControl::ShellName() const
+    {
+        return _core.ShellName();
+    }
+
+    hstring TermControl::ShellVersion() const
+    {
+        return _core.ShellVersion();
+    }
+
     bool TermControl::BracketedPasteEnabled() const noexcept
     {
         return _core.BracketedPasteEnabled();
@@ -2642,9 +2757,11 @@ namespace winrt::Microsoft::Terminal::Control::implementation
 
     void TermControl::Close()
     {
-        if (!_IsClosing())
+        (void)_IsClosing();
+        if (!_closing)
         {
             _closing = true;
+            _restoreCompletedTurnActionPointer();
             if (_automationPeer)
             {
                 auto autoPeerImpl{ winrt::get_self<implementation::TermControlAutomationPeer>(_automationPeer) };
@@ -2668,22 +2785,33 @@ namespace winrt::Microsoft::Terminal::Control::implementation
             // ~TermControl() calls Close() so this should be safe.
             GetTSFHandle().Unfocus(&_tsfDataProvider);
 
-            if (!_detached)
+            if (_contentState != ContentState::Detached)
             {
-                _interactivity.Close();
+                if (_contentState == ContentState::Prepared)
+                {
+                    Detach();
+                }
+                else
+                {
+                    _interactivity.Close();
+                }
             }
         }
     }
 
     void TermControl::Detach()
     {
+        if (_contentState == ContentState::Detached)
+        {
+            return;
+        }
         _revokers = {};
 
         Control::ControlInteractivity old{ nullptr };
         std::swap(old, _interactivity);
         old.Detach();
 
-        _detached = true;
+        _contentState = ContentState::Detached;
     }
 
     // Method Description:
@@ -2707,6 +2835,11 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     int TermControl::ViewHeight() const
     {
         return _core.ViewHeight();
+    }
+
+    int TermControl::ViewWidth() const
+    {
+        return _core.ViewWidth();
     }
 
     int TermControl::BufferHeight() const
@@ -3467,6 +3600,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     void TermControl::_PointerExitedHandler(const Windows::Foundation::IInspectable& /*sender*/,
                                             const Windows::UI::Xaml::Input::PointerRoutedEventArgs& /*e*/)
     {
+        _restoreCompletedTurnActionPointer();
         _core.ClearHoveredCell();
     }
 
@@ -3475,11 +3609,20 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         const auto lastHoveredCell = _core.HoveredCell();
         if (!lastHoveredCell)
         {
+            _setCompletedTurnActionHover(CompletedTurnAction::None);
             return;
         }
 
         auto uriText = _core.HoveredUriText();
         if (uriText.empty())
+        {
+            _setCompletedTurnActionHover(CompletedTurnAction::None);
+            return;
+        }
+
+        const auto completedTurnAction = ParseCompletedTurnActionHyperlink(uriText);
+        _setCompletedTurnActionHover(completedTurnAction);
+        if (completedTurnAction != CompletedTurnAction::None)
         {
             return;
         }
@@ -3537,6 +3680,53 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         // Move the border to the top left corner of the cell
         OverlayCanvas().SetLeft(HyperlinkTooltipBorder(), locationInDIPs.X - offset.x);
         OverlayCanvas().SetTop(HyperlinkTooltipBorder(), locationInDIPs.Y - offset.y);
+    }
+
+    void TermControl::_setCompletedTurnActionHover(const CompletedTurnAction action)
+    {
+        const auto hoveringAction = action != CompletedTurnAction::None;
+        if (hoveringAction)
+        {
+            LinkTip().IsOpen(false);
+            if (const auto coreWindow = Windows::UI::Core::CoreWindow::GetForCurrentThread())
+            {
+                if (!_completedTurnActionHovered)
+                {
+                    _completedTurnPriorPointerCursor = coreWindow.PointerCursor();
+                }
+                coreWindow.PointerCursor(Windows::UI::Core::CoreCursor{ Windows::UI::Core::CoreCursorType::Hand, 0 });
+                _completedTurnActionHovered = true;
+            }
+        }
+        else if (!hoveringAction)
+        {
+            _restoreCompletedTurnActionPointer();
+        }
+    }
+
+    void TermControl::_restoreCompletedTurnActionPointer()
+    {
+        if (!_completedTurnActionHovered)
+        {
+            return;
+        }
+        if (const auto coreWindow = Windows::UI::Core::CoreWindow::GetForCurrentThread())
+        {
+            coreWindow.PointerCursor(_completedTurnPriorPointerCursor);
+        }
+        _completedTurnPriorPointerCursor = nullptr;
+        _completedTurnActionHovered = false;
+    }
+
+    void TermControl::_reassertCompletedTurnActionPointer()
+    {
+        if (_completedTurnActionHovered)
+        {
+            if (const auto coreWindow = Windows::UI::Core::CoreWindow::GetForCurrentThread())
+            {
+                coreWindow.PointerCursor(Windows::UI::Core::CoreCursor{ Windows::UI::Core::CoreCursorType::Hand, 0 });
+            }
+        }
     }
 
     safe_void_coroutine TermControl::_updateSelectionMarkers(IInspectable /*sender*/, Control::UpdateSelectionMarkersEventArgs args)
@@ -3733,9 +3923,17 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     {
         return _core.ReadEntireBuffer();
     }
+    hstring TermControl::ReadBufferTail(const int32_t maxLogicalLines, const int32_t maxCharacters) const
+    {
+        return _core.ReadBufferTail(maxLogicalLines, maxCharacters);
+    }
     hstring TermControl::ReadLastPrompt() const
     {
         return _core.ReadLastPrompt();
+    }
+    hstring TermControl::ReadLastPromptBounded(const int32_t maxLogicalLines, const int32_t maxCharacters) const
+    {
+        return _core.ReadLastPromptBounded(maxLogicalLines, maxCharacters);
     }
     Control::CommandHistoryContext TermControl::CommandHistory() const
     {
@@ -3849,6 +4047,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
 
     void TermControl::_coreOutputIdle(const IInspectable& /*sender*/, const IInspectable& /*args*/)
     {
+        get_self<ControlCore>(_core)->RefreshHoveredCell();
         _refreshSearch();
     }
 

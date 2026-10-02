@@ -1,9 +1,7 @@
 # Titoli della schermata di configurazione
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.title.first_run: "Benvenuto in Terminale Intelligente!"
 setup.title.agent_missing: "Agente non trovato"
 setup.title.agent_error: "Connessione all'agente non riuscita"
-setup.title.switch_agent: "Cambia agente"
 setup.title.not_available: "Agente non disponibile"
 setup.title.sign_in: "Accesso richiesto"
 
@@ -12,10 +10,9 @@ setup.subtitle.copilot_missing: "L'agente \"%{agent}\" non è installato. Segui 
 setup.subtitle.agent_missing: "L'agente \"%{agent}\" non è installato. Reinstallalo manualmente, quindi riprova. Per cambiare agente, vai a Impostazioni di Terminale Intelligente > Agente."
 setup.subtitle.copilot_auth: "L'agente \"%{agent}\" richiede l'autenticazione. Segui i passaggi seguenti per accedere. Per cambiare agente, vai a Impostazioni di Terminale Intelligente > Agente."
 setup.subtitle.agent_auth: "L'agente \"%{agent}\" richiede l'autenticazione. Accedi tramite l'agente, quindi seleziona \"Ho effettuato l'accesso\" di seguito. Per cambiare agente, vai a Impostazioni di Terminale Intelligente > Agente."
+setup.subtitle.connection_failed: "Non è stato possibile avviare %{agent}."
 
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.description.fre_line1: "Scegli la CLI dell'agente predefinita da utilizzare in Terminale Intelligente. Puoi"
-setup.description.fre_line2: "accedere alle impostazioni per configurare e impostare il tuo spazio di lavoro."
 
 setup.option.install: "Installa %{agent}"
 setup.option.install_hint: "(Verrà installato automaticamente)"
@@ -23,10 +20,14 @@ setup.option.signin: "Accedi a %{agent}"
 setup.option.retry_detection: "Riprova"
 setup.option.retry_auth: "Ho effettuato l'accesso — riprova a connetterti"
 setup.option.retry_connection: "Riprova a connetterti"
-setup.option.switch_to: "Passa a %{agent}"
 setup.status.installing: "Installazione in corso..."
+setup.status.installing_copilot_cli: "Installazione di GitHub Copilot CLI"
+setup.status.connecting_agent: "Connessione a %{agent}"
 setup.status.install_failed: "Installazione non riuscita: "
 setup.status.installing_winget: " Installazione tramite winget..."
+setup.error.install_start_failed: "Non è stato possibile avviare il programma di installazione. Seleziona \"Riprova\" per riprovare."
+setup.error.install_timed_out: "Il tempo per l'installazione è scaduto. Seleziona \"Riprova\" prima di avviare un'altra installazione."
+setup.error.install_detection_timed_out: "L'installazione è terminata, ma Copilot non è ancora visibile. Seleziona \"Riprova\" per verificare di nuovo."
 
 # ── Flusso di autenticazione (src/ui/auth.rs) ──────────────────────────────────────────────
 # {Locked="CLI"} - abbreviazione, non tradurre
@@ -35,17 +36,19 @@ auth.agent_selected_with_status: "CLI dell'agente %{name} — "
 auth.checking_authentication: "  %{spinner} Verifica dell'autenticazione..."
 auth.waiting_for_authorization: "  %{spinner} In attesa dell'autorizzazione..."
 auth.code_copied_hint: "  Codice copiato negli appunti — incollalo nel browser."
-auth.sign_in_prompt: "Accedi per usare il tuo agente:"
+auth.device_code_prompt: "Visita %{url} e immetti il codice: %{code}"  # Copilot device-flow sign-in progress; %{url} is the verification URL, %{code} is the device code
 auth.card_connect: "  Connetti %{name} per abilitare le funzionalità dell'agente"
-auth.button_sign_in_github: "[ Accedi con GitHub ]"  # {Locked="GitHub"}
-auth.button_sign_in_with: "[ Accedi con %{name} ]"
-auth.hint_footer: "  Premi Enter per accedere, Esc per tornare indietro"  # {Locked="Enter","Esc"}
+auth.enterprise_prompt: "  Enter per accedere · E per GitHub Enterprise · Esc per tornare indietro"  # {Locked="Enter","E","Esc"}
+auth.enterprise_domain_label: "  Dominio Enterprise: "
+auth.enterprise_hint_footer: "  Enter per accedere · Esc per github.com"  # {Locked="Enter","Esc","github.com"}
+auth.login_failed_help_enterprise: "  Premi Enter per riprovare, oppure Esc per github.com. Cause comuni: dominio digitato in modo errato o non raggiungibile, codice scaduto oppure nessun accesso a Copilot su quell'host."  # {Locked="Enter","Esc","github.com","Copilot"}
+auth.login_failed_help_default: "  Premi Enter per riprovare, oppure Esc per tornare indietro."  # {Locked="Enter","Esc"}
 
 # ── Vista chat (src/ui/chat.rs) ──────────────────────────────────────────────
 chat.activity_thinking: "Elaborazione in corso…"
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
 chat.welcome_title: "Benvenuto in Terminale Intelligente!"
-chat.welcome_disclaimer: "Terminale Intelligente usa l'IA. Verifica la presenza di errori."
+chat.welcome_disclaimer: "Terminale Intelligente usa l'IA."
 chat.plan_header: "Piano:"
 chat.plan_marker_completed: "[x]"  # {Locked}
 chat.plan_marker_in_progress: "[>]"  # {Locked}
@@ -53,11 +56,24 @@ chat.plan_marker_pending: "[ ]"  # {Locked}
 chat.autofix_prompt_label: "Diagnosticato automaticamente un errore recente di un comando"
 chat.turn_canceled: "(annullato)"
 chat.turn_executed: "→ eseguito: %{title}"
+# Etichette persistenti delle categorie di strumenti mostrate dopo un indicatore di stato e prima del soggetto.
+chat.tool_kind.run: "Esegui"
+chat.tool_kind.insert: "Inserisci"
+chat.tool_kind.read: "Leggi"
+chat.tool_kind.search: "Cerca"
+chat.tool_kind.edit: "Modifica"
+chat.tool_kind.delete: "Elimina"
+chat.tool_kind.move: "Sposta"
+chat.tool_kind.fetch: "Recupera"
+chat.tool_kind.think: "Pensa"
+chat.tool_kind.mode: "Modalità"
+chat.tool_kind.other: "Strumento"
 
 # ── Segnaposto di input (src/ui/input.rs) ────────────────────────────────────────────
 input.placeholder.connected: "Chiedi qualsiasi cosa, / per i comandi.."  # {Locked="/"}
 input.placeholder.connecting: "Connessione in corso..."
 input.placeholder.disconnected: "Disconnesso"
+input.image_attachments: "📎 Immagini: %{items}"  # {Locked="📎","%{items}"}
 
 # ── Popup dei comandi (src/ui/command_popup.rs) ─────────────────────────────────
 # {Locked="/"} - prefisso del comando slash, deve rimanere ASCII
@@ -93,9 +109,7 @@ permission.compact.prefix: "[!] "  # {Locked}
 permission.compact.hint: "[Y/N per rispondere · ridimensiona per la scheda completa]"  # {Locked="Y/N"}
 
 # ── Stato dell'agente (src/agent_check.rs) ───────────────────────────────────────
-agent.status.not_installed_auto: "Non installato — seleziona per installare automaticamente"
 agent.status.not_found: "Non trovato"
-agent.status.detected: "Rilevato"
 # {Locked="winget","GitHub.Copilot","GitHub","Copilot"} - nomi degli strumenti e comando, mantenere invariato
 agent.install.running_winget: "Esecuzione: winget install GitHub.Copilot"
 agent.install.launch_failed: "Impossibile avviare winget: %{error}"
@@ -106,8 +120,8 @@ agent.custom.auth_hint: "Assicurati che %{name} sia installato e nel PATH."  # {
 
 # ── Vista agenti (src/ui/agents_view.rs) ─────────────────────────────────────
 agents.loading: "Caricamento..."
-# {Locked="Enter","Esc","↑","↓"} - combinazioni di tasti, non tradurre
-agents.footer_hint: "(↑ ↓ per navigare • Enter per avviare la sessione • Esc per uscire)"
+# {Locked="Enter","Esc","F5","↑","↓","/"} - combinazioni di tasti, non tradurre
+agents.footer_hint: "(↑ ↓ per navigare • Enter per avviare la sessione • Esc per uscire • F5 per aggiornare • / per cercare)"
 agents.status.active: "Attivo"
 agents.status.waiting_for_input: "In attesa di input"
 agents.status.error: "Errore"
@@ -117,26 +131,47 @@ agents.status.idle: "Inattivo"
 layout.welcome_hint: "  (Ctrl+Shift+. per mostrare/nascondere il riquadro agente • Ctrl+Shift+/ per mostrare/nascondere la sessione dell'agente)"  # {Locked="Ctrl+Shift+.","Ctrl+Shift+/"}
 
 # ── Stato della connessione ────────────────────────────────────────────────────────────
-connection.starting: "Avvio dell'agente..."
+# Preparing the AI agent connection, including preflight and reuse of a cached agent.
+connection.starting: "Preparazione della connessione all'agente..."
 connection.reconnecting: "Riconnessione..."
+# Retiring old AI agent sessions for /restart, before the next connection phases.
+connection.restarting: "Riavvio dell'agente..."
+# Connecting the pane to WTA's local coordinator process, not to an AI model.
+connection.coordinator: "Connessione al coordinatore locale..."
+# Initializing the helper/coordinator connection, including local preparation and AI agent initialization.
+connection.initializing: "Inizializzazione della connessione all'agente..."
+# Refreshing the user's authentication with the AI agent after login; not verifying the agent's identity.
+connection.authenticating: "Autenticazione dell'utente presso l'agente..."
+# Reading the coordinator's registry snapshot, including existing history; not fetching history from the AI agent.
+connection.syncing_sessions: "Lettura dell'elenco delle sessioni..."
+# Creating the AI agent session, including local registration; internal agent progress is unknown.
+connection.creating_session: "Creazione della sessione dell'agente..."
+# Applying the requested AI model before the connection is ready. Preserve %{model}.
+connection.selecting_model: "Impostazione del modello della sessione: %{model}..."  # {Locked="%{model}"}
+# Activity row while connecting to restore a conversation. Keep the actual stage first so narrow panes show it; session_id is shortened to eight characters.
+connection.resuming_stage: "%{stage} (ripresa di %{session_id})"  # {Locked="%{stage}","%{session_id}"}
 connection.connecting_activity: "Connessione all'agente…"
 connection.lost: "La connessione all'agente è stata persa. Digita /restart per riconnetterti."  # {Locked="/restart"}
 
 # ── Messaggi di sistema (src/app.rs) ────────────────────────────────────────────────
+system.close_pane_hint: "Premi di nuovo Ctrl+C per chiudere il riquadro"  # {Locked="Ctrl+C"}
+system.selection_copied: "Copiato"  # Brief hint shown after selected terminal text is copied
 system.cancelled: "Annullato."
 system.no_prompt_in_flight: "Nessun prompt in corso."
 system.authentication_failed: "Autenticazione non riuscita"
-system.command_copied_retry: "Comando copiato — eseguilo in un altro terminale, quindi premi Enter per riprovare"  # {Locked="Enter"}
 system.stopped_max_tokens: "La risposta è stata troncata dopo aver raggiunto il limite di output del modello."
 system.stopped_max_turn_requests: "L'agente si è fermato dopo aver raggiunto il limite di richieste per questo turno."
 system.stopped_refusal: "L'agente ha rifiutato di continuare con questa richiesta."
 system.agent_busy: "L’agente è occupato in questa scheda — attendere il completamento del prompt corrente."
+system.image_clipboard_empty: "Nessuna immagine negli Appunti da incollare."
+system.image_not_supported: "Questo agente non supporta l'input di immagini."
+system.image_pasted: "Immagine allegata (%{label}). Premi Enter per inviare."  # {Locked="%{label}","Enter"}
 system.resuming_session: "Ripresa della sessione %{session_id}..."
 system.unknown_command: "Comando sconosciuto \"%{command}\" — inviato come prompt. Digitare /help per visualizzare l’elenco."
 system.busy_use_stop: "Attendere il completamento del prompt corrente oppure usare prima /stop."
 system.cannot_focus_session: "Non è possibile attivare la sessione %{session_id}: sembra attiva, ma nessun GUID di riquadro è ancora associato. Riprovare tra qualche istante."
-system.cannot_resume_no_load_session: "Non è possibile riprendere nel riquadro dell’agente: %{agent} non ha annunciato la funzionalità ACP `loadSession`. Premere Enter (senza Shift) per riprendere invece in un nuovo riquadro del terminale."
-system.cannot_resume_no_resume_flag: "Non è possibile riprendere la sessione %{agent}: questo agente non dispone di un flag in stile `--resume`. Premere Shift+Enter per provare a riprendere all’interno del riquadro dell’agente tramite ACP."
+system.cannot_resume_no_load_session: "Non è possibile riprendere nel riquadro dell’agente: %{agent} non ha annunciato la funzionalità ACP `loadSession`."
+system.cannot_resume_no_resume_flag: "Non è possibile riprendere la sessione %{agent}: questo agente non dispone di un flag in stile `--resume`."
 system.cannot_resume_unknown_agent: "Non è possibile riprendere la sessione %{session_id}: l’agente di origine è sconosciuto a questa build."
 system.cannot_resume_phantom_via_flag: "Non è possibile riprendere la sessione %{agent} %{session_id}: è stata avviata ma non ha mai accumulato alcuna conversazione, quindi %{agent} rifiuterebbe la ripresa. Rimozione della riga."
 system.cannot_resume_phantom_via_load: "Non è possibile riprendere la sessione %{agent} %{session_id}: è stata avviata ma non ha mai accumulato alcuna conversazione, quindi %{agent} rifiuterebbe il caricamento. Rimozione della riga."
@@ -178,7 +213,7 @@ hooks.marketplace_path_stale: "⚠ Percorso del marketplace obsoleto"
 hooks.installed_but_disabled: "⚠ Installato ma disabilitato"
 hooks.not_installed: "✗ Non installato"
 hooks.uninstall_skipped: "Ignorato (CLI non nel PATH)"
-hooks.install_attempted: "Installazione di wt-agent-hooks tentata (idempotente). Esegui `wta hooks status` per ispezionare il risultato. Log di traccia: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
+hooks.install_succeeded: "✓ wt-agent-hooks installato per %{clis}"
 
 # ── Relative time + date formatting (src/ui/agents_view.rs) ─────────────────
 time.just_now: "proprio ora"
@@ -195,9 +230,40 @@ time.days_other: "%{count} giorni fa"
 commands.help.summary: "Mostra questo elenco di comandi"
 commands.clear.summary: "Cancella la cronologia chat (mantiene la sessione)"
 commands.new.summary: "Avvia una nuova sessione ACP (cancella la cronologia)"
+commands.fix.summary: "Diagnostica il terminale attivo e suggerisci una correzione (/fix <hint>)"  # {Locked="/fix","<hint>"}
 commands.restart.summary: "Riavvia agente"
 commands.stop.summary: "Annulla la richiesta in corso"
 commands.sessions.summary: "Apri il selettore delle sessioni storiche (Ctrl+Shift+/)"
+commands.agent.summary: "Scegli l'agente per questa scheda (/agent <id> per cambiare direttamente)"  # {Locked="/agent","<id>"}
 
 # ── Esecuzione della raccomandazione (src/coordinator.rs) ───────────────────────────
 system.choice_execution_failed: "Scelta %{choice} non riuscita: %{error}"
+
+# ── Agent picker (src/ui/agent_popup.rs) ────────────────────────────────────
+# {Locked="↑","↓","Enter","Esc"} - key names, do not translate
+agent_picker.title: "Seleziona agente (↑ ↓ • Enter • Esc)"  # Agent means an AI coding agent
+# Shown when no policy-allowed AI agent CLI is installed on the machine.
+system.no_agents: "Non è stata trovata alcuna CLI dell'agente disponibile su questo computer."  # {Locked="CLI"}
+# {agent} is the unrecognized text the user typed after /agent.
+system.agent_unknown: "Agente sconosciuto o non disponibile %{agent} — digita /agent per visualizzare l'elenco disponibile."  # {Locked="/agent"}
+# Shown only when /agent is used outside a Windows Terminal-owned agent pane.
+system.agent_switch_unavailable: "La commutazione dell'agente non è disponibile all'esterno di una scheda di Windows Terminal."
+
+# ── Model picker (/model) ───────────────────────────────────────────────────
+commands.model.summary: "Scegli il modello per questo riquadro (/model <id> per cambiare direttamente)"  # {Locked="/model","<id>"}
+commands.config.summary: "Configura questa sessione dell’agente"  # Agent means an AI coding agent; shown for the /config command. {Locked="/config"}
+commands.move.summary: "Sposta il riquadro agente di questa scheda (/move <position>)"  # {Locked="/move","<position>"}
+model_picker.title: "Seleziona modello (↑ ↓ • Enter • Esc)"  # {Locked="↑","↓","Enter","Esc"}
+system.no_models: "L'agente connesso non ha annunciato alcun modello selezionabile."
+system.model_set: "Modello per questo riquadro impostato su %{model}."  # {Locked="%{model}"}
+
+# ── Session configuration picker (src/ui/config_popup.rs) ───────────────────
+# {Locked="↑","↓","Enter","Esc","ACP"} - key names and protocol name
+config_picker.title: "Configurazione sessione (↑ ↓ • Enter • Esc)"
+# Shown when /config is used but the AI agent exposed no ACP select options.
+system.no_config_options: "L’agente connesso non ha annunciato alcuna opzione di sessione configurabile."
+# {option} is an Agent-provided option name; {error} is the ACP error.
+system.config_update_failed: "Aggiornamento di %{option} non riuscito: %{error}"
+system.yolo_disable_pending: "il provider non ha confermato lo stato di sessione non privilegiato richiesto"  # Shown after the localized failure prefix while prompts remain blocked until the AI agent provider confirms that its privileged session mode is off. Provider means an AI agent provider, not a network provider.
+system.provider_command_blocked_by_policy: "%{command}: L'approvazione automatica è disabilitata dai criteri della tua organizzazione."  # {Locked="%{command}"} Shown when AllowAutomaticApproval blocks a provider-advertised privileged command.
+system.model_unknown: "Modello sconosciuto %{model} — digita /model per visualizzare l'elenco disponibile."  # {Locked="%{model}","/model"}

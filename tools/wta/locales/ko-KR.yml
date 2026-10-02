@@ -1,8 +1,6 @@
 # 설정 화면 제목
-setup.title.first_run: "지능형 터미널에 오신 것을 환영합니다!"
 setup.title.agent_missing: "에이전트를 찾을 수 없음"
 setup.title.agent_error: "에이전트 연결 실패"
-setup.title.switch_agent: "에이전트 전환"
 setup.title.not_available: "에이전트를 사용할 수 없음"
 setup.title.sign_in: "로그인 필요"
 
@@ -11,8 +9,7 @@ setup.subtitle.copilot_missing: "에이전트 \"%{agent}\"이(가) 설치되어 
 setup.subtitle.agent_missing: "에이전트 \"%{agent}\"이(가) 설치되어 있지 않습니다. 수동으로 다시 설치한 후 재시도하세요. 에이전트를 전환하려면 지능형 터미널 Settings > Agent로 이동하세요."
 setup.subtitle.copilot_auth: "에이전트 \"%{agent}\"에 인증이 필요합니다. 아래 단계에 따라 로그인하세요. 에이전트를 전환하려면 지능형 터미널 Settings > Agent로 이동하세요."
 setup.subtitle.agent_auth: "에이전트 \"%{agent}\"에 인증이 필요합니다. 에이전트를 통해 로그인한 후 아래에서 \"로그인 완료\"를 선택하세요. 에이전트를 전환하려면 지능형 터미널 Settings > Agent로 이동하세요."
-setup.description.fre_line1: "지능형 터미널에서 사용할 기본 에이전트를 선택하세요."
-setup.description.fre_line2: "설정으로 이동하여 작업 영역을 구성하고 설정할 수 있습니다."
+setup.subtitle.connection_failed: "%{agent} 시작에 실패했습니다."
 
 setup.option.install: "%{agent} 설치"
 setup.option.install_hint: "(자동으로 설치됩니다)"
@@ -20,10 +17,14 @@ setup.option.signin: "%{agent}에 로그인"
 setup.option.retry_detection: "다시 시도"
 setup.option.retry_auth: "로그인 완료 — 다시 연결 시도"
 setup.option.retry_connection: "다시 연결 시도"
-setup.option.switch_to: "%{agent}(으)로 전환"
 setup.status.installing: "설치 중..."
+setup.status.installing_copilot_cli: "GitHub Copilot CLI 설치 중"
+setup.status.connecting_agent: "%{agent}에 연결 중"
 setup.status.install_failed: "설치 실패: "
 setup.status.installing_winget: " winget을 통해 설치 중..."
+setup.error.install_start_failed: "설치 관리자를 시작할 수 없습니다. 다시 시도하려면 \"다시 시도\"를 선택하세요."
+setup.error.install_timed_out: "설치 시간이 초과되었습니다. 다른 설치를 시작하기 전에 \"다시 시도\"를 선택하세요."
+setup.error.install_detection_timed_out: "설치가 완료되었지만 Copilot이 아직 표시되지 않습니다. 다시 확인하려면 \"다시 시도\"를 선택하세요."
 
 # ── 인증 흐름 (src/ui/auth.rs) ──────────────────────────────────────────────
 # {Locked="CLI"} - 약어, 번역하지 마세요
@@ -32,16 +33,18 @@ auth.agent_selected_with_status: "에이전트 %{name} — "
 auth.checking_authentication: "  %{spinner} 인증 확인 중..."
 auth.waiting_for_authorization: "  %{spinner} 승인 대기 중..."
 auth.code_copied_hint: "  코드가 클립보드에 복사되었습니다 — 브라우저에 붙여넣으세요."
-auth.sign_in_prompt: "에이전트를 사용하려면 로그인하세요:"
+auth.device_code_prompt: "%{url}을(를) 방문하고 코드 %{code}을(를) 입력하세요"  # Copilot device-flow sign-in progress; %{url} is the verification URL, %{code} is the device code
 auth.card_connect: "  %{name}을(를) 연결하여 에이전트 기능 사용"
-auth.button_sign_in_github: "[ GitHub로 로그인 ]"  # {Locked="GitHub"}
-auth.button_sign_in_with: "[ %{name}(으)로 로그인 ]"
-auth.hint_footer: "  Enter를 눌러 로그인, Esc를 눌러 뒤로 가기"  # {Locked="Enter","Esc"}
+auth.enterprise_prompt: "  Enter 키로 로그인 · E 키로 GitHub Enterprise 사용 · Esc 키로 뒤로 이동"  # {Locked="Enter","E","Esc"}
+auth.enterprise_domain_label: "  엔터프라이즈 도메인: "
+auth.enterprise_hint_footer: "  Enter 키로 로그인 · Esc 키로 github.com 사용"  # {Locked="Enter","Esc","github.com"}
+auth.login_failed_help_enterprise: "  Enter 키를 눌러 다시 시도하거나 Esc 키로 github.com을 사용하세요. 일반적인 원인: 도메인 오타 또는 연결할 수 없는 도메인, 만료된 코드, 또는 해당 호스트에서 계정에 Copilot 액세스 권한이 없음."  # {Locked="Enter","Esc","github.com","Copilot"}
+auth.login_failed_help_default: "  Enter 키를 눌러 다시 시도하거나 Esc 키를 눌러 뒤로 이동하세요."  # {Locked="Enter","Esc"}
 
 # ── 채팅 보기 (src/ui/chat.rs) ──────────────────────────────────────────────
 chat.activity_thinking: "생각 중…"
 chat.welcome_title: "지능형 터미널에 오신 것을 환영합니다!"
-chat.welcome_disclaimer: "지능형 터미널은 AI를 사용합니다. 실수가 있는지 확인하세요."
+chat.welcome_disclaimer: "지능형 터미널은 AI를 사용합니다."
 chat.plan_header: "계획:"
 chat.plan_marker_completed: "[x]"  # {Locked}
 chat.plan_marker_in_progress: "[>]"  # {Locked}
@@ -49,11 +52,24 @@ chat.plan_marker_pending: "[ ]"  # {Locked}
 chat.autofix_prompt_label: "최근 명령 실패를 자동으로 진단했습니다"
 chat.turn_canceled: "(취소됨)"
 chat.turn_executed: "→ 실행됨: %{title}"
+# 상태 표시자 뒤와 대상 앞에 표시되는 영구적인 도구 범주 레이블입니다.
+chat.tool_kind.run: "실행"
+chat.tool_kind.insert: "삽입"
+chat.tool_kind.read: "읽기"
+chat.tool_kind.search: "검색"
+chat.tool_kind.edit: "편집"
+chat.tool_kind.delete: "삭제"
+chat.tool_kind.move: "이동"
+chat.tool_kind.fetch: "가져오기"
+chat.tool_kind.think: "생각"
+chat.tool_kind.mode: "모드"
+chat.tool_kind.other: "도구"
 
 # ── 입력 자리 표시자 (src/ui/input.rs) ────────────────────────────────────────────
 input.placeholder.connected: "무엇이든 물어보세요, / 명령어.."  # {Locked="/"}
 input.placeholder.connecting: "연결 중..."
 input.placeholder.disconnected: "연결 끊김"
+input.image_attachments: "📎 이미지: %{items}"  # {Locked="📎","%{items}"}
 
 # ── 명령어 팝업 (src/ui/command_popup.rs) ─────────────────────────────────
 # {Locked="/"} - 슬래시 명령 접두사, ASCII로 유지
@@ -89,9 +105,7 @@ permission.compact.prefix: "[!] "  # {Locked}
 permission.compact.hint: "[Y/N으로 응답 · 전체 카드를 보려면 크기 조정]"  # {Locked="Y/N"}
 
 # ── 에이전트 상태 (src/agent_check.rs) ───────────────────────────────────────
-agent.status.not_installed_auto: "설치되지 않음 — 선택하면 자동으로 설치됩니다"
 agent.status.not_found: "찾을 수 없음"
-agent.status.detected: "감지됨"
 # {Locked="winget","GitHub.Copilot","GitHub","Copilot"} - 도구 이름 및 명령, 그대로 유지
 agent.install.running_winget: "실행 중: winget install GitHub.Copilot"
 agent.install.launch_failed: "winget을 시작할 수 없습니다: %{error}"
@@ -102,8 +116,8 @@ agent.custom.auth_hint: "%{name}이(가) 설치되어 있고 PATH에 있는지 �
 
 # ── 에이전트 보기 (src/ui/agents_view.rs) ─────────────────────────────────────
 agents.loading: "로드 중..."
-# {Locked="Enter","Esc","↑","↓"} - 키 조합, 번역하지 마세요
-agents.footer_hint: "(↑ ↓ 탐색 • Enter 세션 시작 • Esc 종료)"
+# {Locked="Enter","Esc","F5","↑","↓","/"} - 키 조합, 번역하지 마세요
+agents.footer_hint: "(↑ ↓ 탐색 • Enter 세션 시작 • Esc 종료 • F5 새로 고침 • / 검색)"
 agents.status.active: "활성"
 agents.status.waiting_for_input: "입력 대기 중"
 agents.status.error: "오류"
@@ -113,26 +127,47 @@ agents.status.idle: "유휴"
 layout.welcome_hint: "  (Ctrl+Shift+. 에이전트 창 표시/숨기기 • Ctrl+Shift+/ 에이전트 세션 표시/숨기기)"  # {Locked="Ctrl+Shift+.","Ctrl+Shift+/"}
 
 # ── 연결 상태 ────────────────────────────────────────────────────────────
-connection.starting: "에이전트 시작 중..."
+# Preparing the AI agent connection, including preflight and reuse of a cached agent.
+connection.starting: "에이전트 연결 준비 중..."
 connection.reconnecting: "다시 연결 중..."
+# Retiring old AI agent sessions for /restart, before the next connection phases.
+connection.restarting: "에이전트 다시 시작 중..."
+# Connecting the pane to WTA's local coordinator process, not to an AI model.
+connection.coordinator: "로컬 코디네이터에 연결 중..."
+# Initializing the helper/coordinator connection, including local preparation and AI agent initialization.
+connection.initializing: "에이전트 연결 초기화 중..."
+# Refreshing the user's authentication with the AI agent after login; not verifying the agent's identity.
+connection.authenticating: "에이전트에서 사용자 인증 중..."
+# Reading the coordinator's registry snapshot, including existing history; not fetching history from the AI agent.
+connection.syncing_sessions: "세션 목록 읽는 중..."
+# Creating the AI agent session, including local registration; internal agent progress is unknown.
+connection.creating_session: "에이전트 세션 생성 중..."
+# Applying the requested AI model before the connection is ready. Preserve %{model}.
+connection.selecting_model: "세션 모델 설정 중: %{model}..."  # {Locked="%{model}"}
+# Activity row while connecting to restore a conversation. Keep the actual stage first so narrow panes show it; session_id is shortened to eight characters.
+connection.resuming_stage: "%{stage} (%{session_id} 재개 중)"  # {Locked="%{stage}","%{session_id}"}
 connection.connecting_activity: "에이전트에 연결 중…"
 connection.lost: "에이전트와의 연결이 끊어졌습니다. 다시 연결하려면 /restart 명령을 입력하세요."  # {Locked="/restart"}
 
 # ── 시스템 메시지 (src/app.rs) ────────────────────────────────────────────────
+system.close_pane_hint: "창을 닫으려면 Ctrl+C 를 한 번 더 누르세요"  # {Locked="Ctrl+C"}
+system.selection_copied: "복사됨"  # Brief hint shown after selected terminal text is copied
 system.cancelled: "취소되었습니다."
 system.no_prompt_in_flight: "진행 중인 프롬프트가 없습니다."
 system.authentication_failed: "인증 실패"
-system.command_copied_retry: "명령이 복사되었습니다 — 다른 터미널에서 실행한 후 Enter를 눌러 재시도하세요"  # {Locked="Enter"}
 system.stopped_max_tokens: "모델의 출력 한도에 도달하여 응답이 잘렸습니다."
 system.stopped_max_turn_requests: "이 턴의 요청 한도에 도달하여 에이전트가 중지되었습니다."
 system.stopped_refusal: "에이전트가 이 요청을 계속하기를 거부했습니다."
 system.agent_busy: "이 탭에서 에이전트가 사용 중입니다 — 현재 프롬프트가 완료될 때까지 기다리세요."
+system.image_clipboard_empty: "붙여넣을 클립보드 이미지가 없습니다."
+system.image_not_supported: "이 에이전트는 이미지 입력을 지원하지 않습니다."
+system.image_pasted: "이미지가 첨부되었습니다(%{label}). 보내려면 Enter 키를 누르세요."  # {Locked="%{label}","Enter"}
 system.resuming_session: "세션 %{session_id} 재개 중..."
 system.unknown_command: "알 수 없는 명령 \"%{command}\" — 프롬프트로 보냈습니다. 목록을 보려면 /help를 입력하세요."  # {Locked="/help"}
 system.busy_use_stop: "현재 프롬프트가 완료될 때까지 기다리거나 먼저 /stop을 실행하세요."  # {Locked="/stop"}
 system.cannot_focus_session: "세션 %{session_id}에 포커스할 수 없습니다. 라이브 상태로 보이지만 아직 창 GUID가 바인딩되지 않았습니다. 잠시 후 다시 시도하세요."
-system.cannot_resume_no_load_session: "에이전트 창에서 재개할 수 없습니다. %{agent}이(가) ACP `loadSession` 기능을 알리지 않았습니다. 대신 Enter(Shift 제외)를 눌러 새 터미널 창에서 재개하세요."  # {Locked="ACP","loadSession","Enter","Shift"}
-system.cannot_resume_no_resume_flag: "%{agent} 세션을 재개할 수 없습니다. 이 에이전트에는 `--resume` 스타일 플래그가 없습니다. 대신 Shift+Enter를 눌러 ACP를 통해 에이전트 창 안에서 재개를 시도하세요."  # {Locked="--resume","Shift","Enter","ACP"}
+system.cannot_resume_no_load_session: "에이전트 창에서 재개할 수 없습니다. %{agent}이(가) ACP `loadSession` 기능을 알리지 않았습니다."  # {Locked="ACP","loadSession"}
+system.cannot_resume_no_resume_flag: "%{agent} 세션을 재개할 수 없습니다. 이 에이전트에는 `--resume` 스타일 플래그가 없습니다."  # {Locked="--resume"}
 system.cannot_resume_unknown_agent: "세션 %{session_id}을(를) 재개할 수 없습니다. 원본 에이전트를 이 빌드에서 인식할 수 없습니다."
 system.cannot_resume_phantom_via_flag: "%{agent} 세션 %{session_id}을(를) 재개할 수 없습니다. 시작되었지만 대화가 전혀 누적되지 않았으므로 %{agent} 자체에서 재개를 거부합니다. 행을 제거합니다."
 system.cannot_resume_phantom_via_load: "%{agent} 세션 %{session_id}을(를) 재개할 수 없습니다. 시작되었지만 대화가 전혀 누적되지 않았으므로 %{agent}이(가) 로드를 거부합니다. 행을 제거합니다."
@@ -174,7 +209,7 @@ hooks.marketplace_path_stale: "⚠ 마켓플레이스 경로가 오래됨"
 hooks.installed_but_disabled: "⚠ 설치되었지만 사용하지 않도록 설정됨"
 hooks.not_installed: "✗ 설치되지 않음"
 hooks.uninstall_skipped: "건너뜀(CLI가 PATH에 없음)"
-hooks.install_attempted: "wt-agent-hooks 설치가 시도되었습니다(멱등). 결과를 확인하려면 `wta hooks status`를 실행하세요. 추적 로그: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
+hooks.install_succeeded: "✓ %{clis}에 대해 wt-agent-hooks가 설치됨"
 # ── Relative time + date formatting (src/ui/agents_view.rs) ─────────────────
 time.just_now: "방금"
 time.minute_singular: "%{count}분 전"
@@ -190,9 +225,40 @@ time.days_other: "%{count}일 전"
 commands.help.summary: "이 명령 목록 표시"
 commands.clear.summary: "채팅 스크롤백 지우기(세션 유지)"
 commands.new.summary: "새 ACP 세션 시작(기록 삭제)"
+commands.fix.summary: "활성 터미널을 진단하고 수정 방법 제안 (/fix <hint>)"  # {Locked="/fix","<hint>"}
 commands.restart.summary: "에이전트 다시 시작"
 commands.stop.summary: "진행 중인 프롬프트 취소"
 commands.sessions.summary: "기록된 세션 선택기 열기(Ctrl+Shift+/)"
+commands.agent.summary: "이 탭의 에이전트 선택 (/agent <id>로 바로 전환)"  # {Locked="/agent","<id>"}
 
 # ── 추천 실행 (src/coordinator.rs) ───────────────────────────
 system.choice_execution_failed: "선택 %{choice} 실패: %{error}"
+
+# ── Agent picker (src/ui/agent_popup.rs) ────────────────────────────────────
+# {Locked="↑","↓","Enter","Esc"} - key names, do not translate
+agent_picker.title: "에이전트 선택 (↑ ↓ • Enter • Esc)"  # Agent means an AI coding agent
+# Shown when no policy-allowed AI agent CLI is installed on the machine.
+system.no_agents: "이 컴퓨터에서 사용할 수 있는 에이전트 CLI를 찾을 수 없습니다."  # {Locked="CLI"}
+# {agent} is the unrecognized text the user typed after /agent.
+system.agent_unknown: "알 수 없거나 사용할 수 없는 에이전트 %{agent} — 사용 가능한 목록을 보려면 /agent을 입력하세요."  # {Locked="/agent"}
+# Shown only when /agent is used outside a Windows Terminal-owned agent pane.
+system.agent_switch_unavailable: "Windows Terminal 탭 외부에서는 에이전트 전환을 사용할 수 없습니다."
+
+# ── Model picker (/model) ───────────────────────────────────────────────────
+commands.model.summary: "이 창의 모델 선택 (/model <id>로 바로 전환)"  # {Locked="/model","<id>"}
+commands.config.summary: "이 에이전트 세션 구성"  # Agent means an AI coding agent; shown for the /config command. {Locked="/config"}
+commands.move.summary: "이 탭의 에이전트 창 이동 (/move <position>)"  # {Locked="/move","<position>"}
+model_picker.title: "모델 선택 (↑ ↓ • Enter • Esc)"  # {Locked="↑","↓","Enter","Esc"}
+system.no_models: "연결된 에이전트가 선택 가능한 모델을 알리지 않았습니다."
+system.model_set: "이 창의 모델이 %{model}(으)로 설정되었습니다."  # {Locked="%{model}"}
+
+# ── Session configuration picker (src/ui/config_popup.rs) ───────────────────
+# {Locked="↑","↓","Enter","Esc","ACP"} - key names and protocol name
+config_picker.title: "세션 구성 (↑ ↓ • Enter • Esc)"
+# Shown when /config is used but the AI agent exposed no ACP select options.
+system.no_config_options: "연결된 에이전트가 구성 가능한 세션 옵션을 알리지 않았습니다."
+# {option} is an Agent-provided option name; {error} is the ACP error.
+system.config_update_failed: "%{option} 업데이트 실패: %{error}"
+system.yolo_disable_pending: "에이전트 공급자가 필요한 비특권 세션 상태를 아직 확인하지 않았습니다"  # Shown after the localized failure prefix while prompts remain blocked until the AI agent provider confirms that its privileged session mode is off. Provider means an AI agent provider, not a network provider.
+system.provider_command_blocked_by_policy: "%{command}: 조직의 정책에 따라 자동 승인이 비활성화되어 있습니다."  # {Locked="%{command}"} Shown when AllowAutomaticApproval blocks a provider-advertised privileged command.
+system.model_unknown: "알 수 없는 모델 %{model} — 사용 가능한 목록을 보려면 /model을 입력하세요."  # {Locked="%{model}","/model"}

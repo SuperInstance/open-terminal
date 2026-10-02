@@ -1,9 +1,7 @@
 # Setup screen titles
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.title.first_run: "ჭკვიანი ტერმინალი-ში მოგესალმებით!"
 setup.title.agent_missing: "აგენტი ვერ მოიძებნა"
 setup.title.agent_error: "აგენტთან კავშირი ვერ შედგა"
-setup.title.switch_agent: "აგენტის შეცვლა"
 setup.title.not_available: "აგენტი მიუწვდომელია"
 setup.title.sign_in: "საჭიროა შესვლა"
 
@@ -12,21 +10,24 @@ setup.subtitle.copilot_missing: "თქვენი აგენტი \"%{agent
 setup.subtitle.agent_missing: "თქვენი აგენტი \"%{agent}\" არ არის დაინსტალირებული. ხელით ხელახლა დააინსტალირეთ და სცადეთ თავიდან. აგენტის შესაცვლელად გადადით ჭკვიანი ტერმინალი Settings > Agent-ში."
 setup.subtitle.copilot_auth: "თქვენი აგენტი \"%{agent}\" მოითხოვს ავთენტიფიკაციას. შესასვლელად მიჰყევით ქვემოთ მოცემულ ნაბიჯებს. აგენტის შესაცვლელად გადადით ჭკვიანი ტერმინალი Settings > Agent-ში."
 setup.subtitle.agent_auth: "თქვენი აგენტი \"%{agent}\" მოითხოვს ავთენტიფიკაციას. შედით აგენტით და შემდეგ აირჩიეთ \"შევედი\" ქვემოთ. აგენტის შესაცვლელად გადადით ჭკვიანი ტერმინალი Settings > Agent-ში."
+setup.subtitle.connection_failed: "%{agent}-ის გაშვება ვერ მოხერხდა."
 
 # {Locked=qps-ploc,qps-ploca,qps-plocm}, {Locked="Settings"}
-setup.description.fre_line1: "აირჩიეთ ნაგულისხმევი აგენტი, რომლის გამოყენებაც გსურთ ჭკვიანი ტერმინალი-ში. შეგიძლიათ"
-setup.description.fre_line2: "გადახვიდეთ Settings-ში სამუშაო გარემოს კონფიგურაციისთვის."
 
 setup.option.install: "%{agent}-ის დაინსტალირება"
 setup.option.install_hint: "(ავტომატურად დაინსტალირდება)"
 setup.option.signin: "შესვლა %{agent}-ში"
 setup.option.retry_detection: "სცადეთ თავიდან"
 setup.option.retry_auth: "შევედი — კავშირის ხელახლა სცადეთ"
-setup.option.retry_connection: "კავშირის ხელახლა სცადეთ"
-setup.option.switch_to: "გადართვა %{agent}-ზე"
+setup.option.retry_connection: "კავშირის ხელახლა ცდა"
 setup.status.installing: "ინსტალაცია..."
+setup.status.installing_copilot_cli: "GitHub Copilot CLI პროგრამის ინსტალაცია"
+setup.status.connecting_agent: "%{agent}-თან დაკავშირება"
 setup.status.install_failed: "ინსტალაცია ვერ მოხერხდა: "
 setup.status.installing_winget: " winget-ით ინსტალაცია..."
+setup.error.install_start_failed: "ინსტალატორის გაშვება ვერ მოხერხდა. ხელახლა საცდელად აირჩიეთ \"სცადეთ თავიდან\"."
+setup.error.install_timed_out: "ინსტალაციის დრო ამოიწურა. სხვა ინსტალაციის დაწყებამდე აირჩიეთ \"სცადეთ თავიდან\"."
+setup.error.install_detection_timed_out: "ინსტალაცია დასრულდა, მაგრამ Copilot ჯერ არ ჩანს. ხელახლა შესამოწმებლად აირჩიეთ \"სცადეთ თავიდან\"."
 
 # ── ავთენტიფიკაციის პროცესი (src/ui/auth.rs) ──────────────────────────────────────────────
 # {Locked="CLI"} - აბრევიატურა, Microsoft-ის ლოკალიზაციებში გავრცელებული გამოყენება
@@ -35,17 +36,19 @@ auth.agent_selected_with_status: "აგენტის %{name} — "
 auth.checking_authentication: "  %{spinner} ავთენტიფიკაციის შემოწმება..."
 auth.waiting_for_authorization: "  %{spinner} ავტორიზაციის მოლოდინში..."
 auth.code_copied_hint: "  კოდი კოპირებულია — ჩასვით ბრაუზერში."
-auth.sign_in_prompt: "შედით აგენტის გამოსაყენებლად:"
+auth.device_code_prompt: "გადადით %{url} მისამართზე და შეიყვანეთ კოდი: %{code}"  # Copilot device-flow sign-in progress; %{url} is the verification URL, %{code} is the device code
 auth.card_connect: "  დაუკავშირეთ %{name} აგენტის ფუნქციების გასააქტიურებლად"
-auth.button_sign_in_github: "[ GitHub-ით შესვლა ]"  # {Locked="GitHub"}
-auth.button_sign_in_with: "[ %{name}-ით შესვლა ]"
-auth.hint_footer: "  დააჭირეთ Enter შესასვლელად, Esc უკან დასაბრუნებლად"  # {Locked="Enter","Esc"}
+auth.enterprise_prompt: "  Enter შესასვლელად · E GitHub Enterprise-ისთვის · Esc უკან დასაბრუნებლად"  # {Locked="Enter","E","Esc"}
+auth.enterprise_domain_label: "  Enterprise დომენი: "
+auth.enterprise_hint_footer: "  Enter შესასვლელად · Esc github.com-ისთვის"  # {Locked="Enter","Esc","github.com"}
+auth.login_failed_help_enterprise: "  დააჭირეთ Enter-ს ხელახლა საცდელად, ან Esc-ს github.com-ისთვის. ხშირი მიზეზები: არასწორად აკრეფილი ან მიუწვდომელი დომენი, ვადაგასული კოდი, ან ამ ჰოსტზე Copilot-ზე წვდომის არქონა."  # {Locked="Enter","Esc","github.com","Copilot"}
+auth.login_failed_help_default: "  დააჭირეთ Enter-ს ხელახლა საცდელად, ან Esc-ს უკან დასაბრუნებლად."  # {Locked="Enter","Esc"}
 
 # ── ჩატის ხედი (src/ui/chat.rs) ──────────────────────────────────────────────
 chat.activity_thinking: "ვფიქრობ…"
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
 chat.welcome_title: "ჭკვიანი ტერმინალი-ში მოგესალმებით!"
-chat.welcome_disclaimer: "ჭკვიანი ტერმინალი იყენებს AI-ს. შეამოწმეთ შეცდომები."
+chat.welcome_disclaimer: "ჭკვიანი ტერმინალი იყენებს AI-ს."
 chat.plan_header: "გეგმა:"
 chat.plan_marker_completed: "[x]"  # {Locked}
 chat.plan_marker_in_progress: "[>]"  # {Locked}
@@ -53,11 +56,24 @@ chat.plan_marker_pending: "[ ]"  # {Locked}
 chat.autofix_prompt_label: "ბრძანების ბოლო შეცდომა ავტომატურად დიაგნოსტირებულია"
 chat.turn_canceled: "(გაუქმდა)"
 chat.turn_executed: "→ შესრულდა: %{title}"
+# ხელსაწყოს კატეგორიის მუდმივი წარწერები, რომლებიც გამოჩნდება სტატუსის ნიშნულის შემდეგ და თემის წინ.
+chat.tool_kind.run: "გაშვება"
+chat.tool_kind.insert: "ჩასმა"
+chat.tool_kind.read: "წაკითხვა"
+chat.tool_kind.search: "ძიება"
+chat.tool_kind.edit: "რედაქტირება"
+chat.tool_kind.delete: "წაშლა"
+chat.tool_kind.move: "გადატანა"
+chat.tool_kind.fetch: "მიღება"
+chat.tool_kind.think: "ფიქრი"
+chat.tool_kind.mode: "რეჟიმი"
+chat.tool_kind.other: "ხელსაწყო"
 
 # ── შეყვანის ადგილმჩვენებლები (src/ui/input.rs) ────────────────────────────────────
 input.placeholder.connected: "იკითხეთ რაც გნებავთ, / ბრძანებებისთვის.."  # {Locked="/"}
 input.placeholder.connecting: "დაკავშირება..."
 input.placeholder.disconnected: "გათიშული"
+input.image_attachments: "📎 სურათები: %{items}"  # {Locked="📎","%{items}"}
 
 # ── ბრძანებების ამომხტარი (src/ui/command_popup.rs) ─────────────────────────────────
 # {Locked="/"} - სლეშ-ბრძანების პრეფიქსი, უნდა დარჩეს ASCII
@@ -74,9 +90,11 @@ commands.help_close_hint: "  Esc        ამ დახმარების �
 commands.help.summary: "ამ ბრძანებების სიის ჩვენება"
 commands.clear.summary: "ჩატის გადახვევის ისტორიის გასუფთავება (სესია შენარჩუნდება)"
 commands.new.summary: "ახალი ACP სესიის დაწყება (ისტორიის წაშლა)"  # {Locked="ACP"}
+commands.fix.summary: "Diagnose the active terminal and suggest a fix (/fix <hint>)"  # {Locked="/fix","<hint>"}
 commands.restart.summary: "გადატვირთეთ აგენტი"
 commands.stop.summary: "მიმდინარე მოთხოვნის გაუქმება"
 commands.sessions.summary: "ისტორიული სესიების ამრჩევის გახსნა (Ctrl+Shift+/)"  # {Locked="Ctrl+Shift+/"}
+commands.agent.summary: "აირჩიეთ აგენტი ამ ჩანართისთვის (/agent <id> პირდაპირ გადასართავად)"  # {Locked="/agent","<id>"}
 
 # ── რეკომენდაციების პანელი (src/ui/recommendations.rs) ───────────────────────────────
 # {Locked="Enter","Esc","↵","↑","↓","←","→"} - ღილაკების სახელები და Return ღილაკის გლიფი, არ ითარგმნება
@@ -104,9 +122,7 @@ permission.compact.prefix: "[!] "  # {Locked}
 permission.compact.hint: "[Y/N პასუხისთვის · ზომის შეცვლა სრული ბარათისთვის]"  # {Locked="Y/N"}
 
 # ── აგენტის სტატუსი (src/agent_check.rs) ───────────────────────────────────
-agent.status.not_installed_auto: "არ არის დაინსტალირებული — აირჩიეთ ავტომატური ინსტალაციისთვის"
 agent.status.not_found: "ვერ მოიძებნა"
-agent.status.detected: "აღმოჩენილია"
 # {Locked="winget","GitHub.Copilot","GitHub","Copilot"} - ხელსაწყოების სახელები და ბრძანება, უნდა შესრულდეს ზუსტად
 agent.install.running_winget: "გაშვება: winget install GitHub.Copilot"
 agent.install.launch_failed: "winget-ის გაშვება ვერ მოხერხდა: %{error}"
@@ -117,8 +133,8 @@ agent.custom.auth_hint: "დარწმუნდით, რომ %{name} დ�
 
 # ── აგენტების ხედი (src/ui/agents_view.rs) ─────────────────────────────────
 agents.loading: "იტვირთება..."
-# {Locked="Enter","Esc","↑","↓"} - ღილაკების კომბინაციები, არ ითარგმნება
-agents.footer_hint: "(↑ ↓ ნავიგაციისთვის • Enter სესიის გასახსნელად • Esc გასასვლელად)"
+# {Locked="Enter","Esc","F5","↑","↓","/"} - ღილაკების კომბინაციები, არ ითარგმნება
+agents.footer_hint: "(↑ ↓ ნავიგაციისთვის • Enter სესიის გასახსნელად • Esc გასასვლელად • F5 განახლებისთვის • / ძიებისთვის)"
 agents.status.active: "აქტიური"
 agents.status.waiting_for_input: "შეყვანის მოლოდინში"
 agents.status.error: "შეცდომა"
@@ -128,26 +144,47 @@ agents.status.idle: "უმოქმედო"
 layout.welcome_hint: "  (Ctrl+Shift+. აგენტის პანელის ჩვენება/დამალვა • Ctrl+Shift+/ აგენტის სესიის ჩვენება/დამალვა)"  # {Locked="Ctrl+Shift+.","Ctrl+Shift+/"}
 
 # ── კავშირის მდგომარეობა ────────────────────────────────────────────────────────
-connection.starting: "აგენტის გაშვება..."
+# Preparing the AI agent connection, including preflight and reuse of a cached agent.
+connection.starting: "აგენტთან კავშირის მომზადება..."
 connection.reconnecting: "ხელახლა დაკავშირება..."
+# Retiring old AI agent sessions for /restart, before the next connection phases.
+connection.restarting: "აგენტის ხელახლა გაშვება..."
+# Connecting the pane to WTA's local coordinator process, not to an AI model.
+connection.coordinator: "ლოკალურ კოორდინატორთან დაკავშირება..."
+# Initializing the helper/coordinator connection, including local preparation and AI agent initialization.
+connection.initializing: "აგენტთან კავშირის ინიციალიზაცია..."
+# Refreshing the user's authentication with the AI agent after login; not verifying the agent's identity.
+connection.authenticating: "მომხმარებლის ავთენტიფიკაცია აგენტთან..."
+# Reading the coordinator's registry snapshot, including existing history; not fetching history from the AI agent.
+connection.syncing_sessions: "სესიების სიის წაკითხვა..."
+# Creating the AI agent session, including local registration; internal agent progress is unknown.
+connection.creating_session: "აგენტის სესიის შექმნა..."
+# Applying the requested AI model before the connection is ready. Preserve %{model}.
+connection.selecting_model: "სესიის მოდელის დაყენება: %{model}..."  # {Locked="%{model}"}
+# Activity row while connecting to restore a conversation. Keep the actual stage first so narrow panes show it; session_id is shortened to eight characters.
+connection.resuming_stage: "%{stage} (%{session_id}-ის გაგრძელება)"  # {Locked="%{stage}","%{session_id}"}
 connection.connecting_activity: "აგენტთან დაკავშირება მიმდინარეობს…"
 connection.lost: "აგენტთან კავშირი დაიკარგა. ხელახლა დასაკავშირებლად აკრიფეთ /restart."  # {Locked="/restart"}
 
 # ── სისტემური შეტყობინებები (src/app.rs) ────────────────────────────────────
+system.close_pane_hint: "პანელის დასახურად კვლავ დააჭირეთ Ctrl+C"  # {Locked="Ctrl+C"}
+system.selection_copied: "კოპირებულია"  # Brief hint shown after selected terminal text is copied
 system.cancelled: "გაუქმებულია."
 system.no_prompt_in_flight: "მიმდინარე მოთხოვნა არ არის."
 system.authentication_failed: "ავთენტიფიკაცია ვერ მოხერხდა"
-system.command_copied_retry: "ბრძანება კოპირებულია — გაუშვით სხვა ტერმინალში, შემდეგ დააჭირეთ Enter ხელახლა საცდელად"  # {Locked="Enter"}
 system.stopped_max_tokens: "პასუხი შეწყდა მოდელის გამოსავლის ლიმიტის მიღწევის შემდეგ."
 system.stopped_max_turn_requests: "აგენტი გაჩერდა ამ რაუნდის მოთხოვნების ლიმიტის მიღწევის შემდეგ."
 system.stopped_refusal: "აგენტმა უარი თქვა ამ მოთხოვნის გაგრძელებაზე."
 system.agent_busy: "Agent ამ ჩანართზე დაკავებულია — დაელოდეთ მიმდინარე მოთხოვნის დასრულებას."
+system.image_clipboard_empty: "ჩასასმელად ბუფერში სურათი არ არის."
+system.image_not_supported: "ეს აგენტი სურათის შეყვანას არ უჭერს მხარს."
+system.image_pasted: "სურათი მიმაგრებულია (%{label}). გასაგზავნად დააჭირეთ Enter ღილაკს."  # {Locked="%{label}","Enter"}
 system.resuming_session: "სესიის %{session_id} გაგრძელება..."
 system.unknown_command: "უცნობი ბრძანება \"%{command}\" — გაიგზავნა მოთხოვნად. სიისთვის აკრიფეთ /help."  # {Locked="/help"} — slash-command name.
 system.busy_use_stop: "დაელოდეთ მიმდინარე მოთხოვნის დასრულებას, ან ჯერ გამოიყენეთ /stop."  # {Locked="/stop"} — slash-command name.
 system.cannot_focus_session: "სესიაზე %{session_id} ფოკუსირება შეუძლებელია: ჩანს, რომ live არის, მაგრამ pane GUID ჯერ მიბმული არ არის. სცადეთ ცოტა ხანში."
-system.cannot_resume_no_load_session: "agent pane-ში გაგრძელება შეუძლებელია: %{agent}-მა ACP `loadSession` შესაძლებლობა არ გამოაცხადა. ამის ნაცვლად ახალ terminal pane-ში გასაგრძელებლად დააჭირეთ Enter-ს (Shift-ის გარეშე)."  # {Locked="ACP","loadSession","Enter","Shift"} — protocol/UI terms.
-system.cannot_resume_no_resume_flag: "%{agent} სესიის გაგრძელება შეუძლებელია: ამ agent-ს `--resume` სტილის flag არ აქვს. ამის ნაცვლად ACP-ის საშუალებით agent pane-ში გაგრძელების საცდელად დააჭირეთ Shift+Enter-ს."  # {Locked="--resume","Shift","Enter","ACP"} — flag and UI terms.
+system.cannot_resume_no_load_session: "agent pane-ში გაგრძელება შეუძლებელია: %{agent}-მა ACP `loadSession` შესაძლებლობა არ გამოაცხადა."  # {Locked="ACP","loadSession"} — protocol/UI terms.
+system.cannot_resume_no_resume_flag: "%{agent} სესიის გაგრძელება შეუძლებელია: ამ agent-ს `--resume` სტილის flag არ აქვს."  # {Locked="--resume"} — flag and UI terms.
 system.cannot_resume_unknown_agent: "სესიის %{session_id} გაგრძელება შეუძლებელია: მისი წყარო agent უცნობია WTA-ის ამ build-ისთვის."
 system.cannot_resume_phantom_via_flag: "%{agent} სესიის %{session_id} გაგრძელება შეუძლებელია: ის დაიწყო, მაგრამ არცერთი საუბარი არ დაუგროვებია, ამიტომ %{agent} თვითონ უარყოფს გაგრძელებას. მწკრივის წაშლა."
 system.cannot_resume_phantom_via_load: "%{agent} სესიის %{session_id} გაგრძელება შეუძლებელია: ის დაიწყო, მაგრამ არცერთი საუბარი არ დაუგროვებია, ამიტომ %{agent} უარყოფს ჩატვირთვას. მწკრივის წაშლა."
@@ -189,7 +226,7 @@ hooks.marketplace_path_stale: "⚠ მარკეტის ბილიკი �
 hooks.installed_but_disabled: "⚠ დაინსტალირებული, მაგრამ გათიშული"
 hooks.not_installed: "✗ არ არის დაინსტალირებული"
 hooks.uninstall_skipped: "გამოტოვებული (CLI არ არის PATH-ზე)"
-hooks.install_attempted: "wt-agent-hooks ინსტალაცია სცადეს (იდემპოტენტური). გაუშვით `wta hooks status` შედეგის სანახავად. თრეის ლოგი: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
+hooks.install_succeeded: "✓ wt-agent-hooks დაინსტალირებულია %{clis}-სთვის"
 # ── Relative time and date formatting ───────────────────────────────────────
 time.just_now: "ახლახან"
 time.minute_singular: "1 წუთის წინ"
@@ -201,3 +238,32 @@ time.days_other: "%{count} დღის წინ"
 
 # ── რეკომენდაციის შესრულება (src/coordinator.rs) ───────────────────────────
 system.choice_execution_failed: "არჩევანი %{choice} ვერ შესრულდა: %{error}"
+
+# ── Agent picker (src/ui/agent_popup.rs) ────────────────────────────────────
+# {Locked="↑","↓","Enter","Esc"} - key names, do not translate
+agent_picker.title: "აირჩიეთ აგენტი (↑ ↓ • Enter • Esc)"  # Agent means an AI coding agent
+# Shown when no policy-allowed AI agent CLI is installed on the machine.
+system.no_agents: "ამ კომპიუტერზე ხელმისაწვდომი აგენტის CLI ვერ მოიძებნა."  # {Locked="CLI"}
+# {agent} is the unrecognized text the user typed after /agent.
+system.agent_unknown: "უცნობი ან მიუწვდომელი აგენტი %{agent} — აკრიფეთ /agent ხელმისაწვდომი სიის სანახავად."  # {Locked="/agent"}
+# Shown only when /agent is used outside a Windows Terminal-owned agent pane.
+system.agent_switch_unavailable: "აგენტის გადართვა მიუწვდომელია Windows Terminal-ის ჩანართის გარეთ."
+
+# ── Model picker (/model) ───────────────────────────────────────────────────
+commands.model.summary: "აირჩიეთ მოდელი ამ პანელისთვის (/model <id> პირდაპირ გადასართავად)"  # {Locked="/model","<id>"}
+commands.config.summary: "აგენტის ამ სესიის კონფიგურაცია"  # Agent means an AI coding agent; shown for the /config command. {Locked="/config"}
+commands.move.summary: "ამ ჩანართის აგენტის პანელის გადატანა (/move <position>)"  # {Locked="/move","<position>"}
+model_picker.title: "აირჩიეთ მოდელი (↑ ↓ • Enter • Esc)"  # {Locked="↑","↓","Enter","Esc"}
+system.no_models: "დაკავშირებულმა აგენტმა არცერთი ასარჩევი მოდელი არ გამოაცხადა."
+system.model_set: "ამ პანელის მოდელად დაყენდა %{model}."  # {Locked="%{model}"}
+
+# ── Session configuration picker (src/ui/config_popup.rs) ───────────────────
+# {Locked="↑","↓","Enter","Esc","ACP"} - key names and protocol name
+config_picker.title: "სესიის კონფიგურაცია (↑ ↓ • Enter • Esc)"
+# Shown when /config is used but the AI agent exposed no ACP select options.
+system.no_config_options: "დაკავშირებულ აგენტს არ გამოუცხადებია სესიის კონფიგურირებადი პარამეტრები."
+# {option} is an Agent-provided option name; {error} is the ACP error.
+system.config_update_failed: "%{option}-ის განახლება ვერ შესრულდა: %{error}"
+system.yolo_disable_pending: "აგენტის პროვაიდერს არ დაუდასტურებია, რომ სესია მოთხოვნილ არაპრივილეგირებულ მდგომარეობაშია"  # Shown after the localized failure prefix while prompts remain blocked until the AI agent provider confirms that its privileged session mode is off. Provider means an AI agent provider, not a network provider.
+system.provider_command_blocked_by_policy: "%{command}: ავტომატური დადასტურება გამორთულია თქვენი ორგანიზაციის პოლიტიკით."  # {Locked="%{command}"} Shown when AllowAutomaticApproval blocks a provider-advertised privileged command.
+system.model_unknown: "უცნობი მოდელი %{model} — აკრიფეთ /model ხელმისაწვდომი სიის სანახავად."  # {Locked="%{model}","/model"}

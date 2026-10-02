@@ -1,8 +1,8 @@
 # Multi-Window Behavior of the Agent Pane
 
 Author: kaitao@microsoft.com
-Date: 2026-05-26 (post-Z follow-ups: per-tab + per-window event routing
-hardening B12–B20; agent-pane stash/restore B4–B11)
+Date: 2026-08-14 (post-Z follow-ups: per-tab + per-window event routing,
+agent-pane stash/restore, and per-tab independent agent pooling)
 Branch: `dev/vanzue/window-management`
 Status: Helper + master architecture (Z-M1 through Z-M6) is shipped and
 default. Post-Z work tightened the multi-tab + multi-window event
@@ -14,19 +14,20 @@ See "Design history" for the rationale of the original pivot.
 - **Each agent pane runs as its own `wta-helper` process** spawned by
   Windows Terminal as a normal conpty child (same Win32 pattern as today's
   legacy mode and any other conpty-backed pane).
-- **One `wta-master` process per Terminal process** owns the single agent
-  CLI subprocess (claude / copilot / gemini).
+- **One `wta-master` process per Terminal process** lazily owns a pool of
+  agent CLI subprocesses keyed by agent identity, execution source, and
+  command line.
 - Helpers connect to the master via a **named pipe** and speak **ACP
-  JSON-RPC** — the master multiplexes per-tab `sessionId`s onto its single
-  ACP connection to the agent CLI.
+  JSON-RPC** — helpers with the same agent key share one ACP connection, and
+  the master routes every `sessionId` to its owning helper and agent instance.
 - TermControl ↔ helper communication is plain conpty (no custom protocol);
   helper ↔ master is plain ACP JSON-RPC over a pipe; master ↔ agent CLI is
   plain ACP JSON-RPC over stdio. **No bespoke wire format is invented.**
 
 ```
 WT (one process, N windows)
- └─ SharedWta singleton spawns ─► wta-master ◄──── ACP JSON-RPC ───► agent CLI
-                                       ▲                              (one child)
+ └─ SharedWta singleton spawns ─► wta-master ◄──── ACP JSON-RPC ───► agent CLI pool
+                                       ▲                         (one per active key)
                                        │ ACP JSON-RPC over named pipe
                                        │
  (per agent pane:)                     │
@@ -37,6 +38,22 @@ WT (one process, N windows)
 
 Per agent pane: 1 conpty + 1 helper process. Per Terminal: 1 master + 1
 agent CLI. **N panes ⇒ N helpers + 1 master + 1 agent CLI.**
+
+### Non-activating hook delivery
+
+Terminal publishes its existing COM class factory in the Running Object Table
+under the same fixed per-brand CLSID used by `WT_COM_CLSID`. Native `agent-hook`
+and cached `send-event` notifications with an `agent.` topic obtain that factory
+through `GetActiveObject`, then create the protocol object with the same
+non-aggregating `CreateInstance` call and compatibility handshake as ordinary
+activation. They never fall back to `CoCreateInstance`, even if shutdown races
+lookup or object creation.
+
+Shutdown revokes the active-object registration before posting quit. Failure to
+publish the hook endpoint is logged without disabling ordinary COM registration.
+No dynamic CLSID, new environment variable, hook-script rewrite, or headless
+timeout is required. Fixed-CLSID discovery prevents hooks from starting Terminal;
+it does not bind a delayed hook to a particular process across a later restart.
 
 ## Design history
 
@@ -171,8 +188,10 @@ listed under "What changes."
   - Pre-pivot: that child is `wta.exe --headless` (the original M3
     singleton).
   - Post-pivot: that child will be `wta.exe --master <pipe>`.
-- Refcount via `AcquirePane` / `ReleasePane`. Spawn lazily on first
-  acquire; tear down on last release.
+- `AcquirePane` returns a move-only `SharedWtaLease`. `AgentPaneContent`
+  owns it through `AgentPaneLifetime`, which follows content rather than
+  pane-tree nodes. Creation rollback releases immediately; normal close
+  retires the lease for the bounded session-close grace period.
 - Job Object with `KILL_ON_JOB_CLOSE` binds the child's lifetime to
   Terminal.
 - `RegisterWaitForSingleObject` for crash detection; child exit
@@ -246,16 +265,16 @@ WindowsTerminal.exe (one process)
 ```
 
 - **`wta-master`**: singleton per Terminal process, spawned by
-  `SharedWta` on first agent-pane request. Headless (no UI). Owns the
-  single ACP connection to the agent CLI subprocess. Listens on a
-  named pipe for helper connections.
+  `SharedWta` on first agent-pane request. Headless (no UI). Lazily owns an
+  ACP connection per active agent key and listens on a named pipe for helper
+  connections.
 - **`wta-helper`**: one per agent pane. Conpty child of its
   TerminalControl. Runs the full Ratatui chat UI for one tab.
   Connects to master via named pipe; speaks ACP JSON-RPC as a
   client.
-- **`agent CLI`**: existing claude/copilot/gemini ACP-protocol
-  subprocess. One per master (= one per Terminal process). Owns N
-  ACP sessions internally, one per attached helper.
+- **`agent CLI`**: an ACP-protocol subprocess such as Copilot, Claude, Codex,
+  Gemini, or OpenCode. One warm process per distinct agent key owns the ACP
+  sessions for helpers sharing that key.
 
 ### 2. Per-pane attachment model
 
@@ -404,14 +423,63 @@ User closes the pane (Ctrl+W, tab close, window close):
  │   └─ master cleans up SessionId → helper mapping
  │   └─ optionally informs agent CLI to release the session
  │
- └─ SharedWta::ReleasePane (in WT-side Closed handler)
-     └─ refcount -= 1
-     └─ if refcount == 0:
+ └─ AgentPaneContent::Close retires its AgentPaneLifetime
+     └─ active master demand decreases immediately
+     └─ the same lease retains the master through the session-close grace
+     └─ when the final lease releases:
          └─ KILL_ON_JOB_CLOSE on the Job Object closes master cleanly
          └─ master's shutdown drops the agent CLI subprocess
 ```
 
 #### Tab drag between windows
+
+Serialization has no lifetime side effects. Tab moves, native tab drags,
+and cross-window pane moves register a whole-batch `ContentTransfer`.
+`RequestMoveContentArgs.TransferId` identifies one request, including when
+forwarded through `WindowRequestedArgs` to a new window's first layout.
+Creating an AppHost is not an acknowledgement. Both first layout and
+registration in the window manager/COM fan-out must finish before the
+receiver can commit, even if layout runs before initialization returns.
+
+Pending requests retain only weak references to the source. The original
+tab, controls, pane tree, hidden state, helper, and `AgentPaneLifetime`
+remain owned by the source until a receiver is ready. Requests expire after
+two minutes without closing any content. A closed source cannot be revived;
+a source changed while the request was pending rejects the stale snapshot.
+
+All AppHosts currently share the main UI thread. A receiver claims its
+request once, checks that thread, and prepares the entire batch synchronously.
+Original controls are suspended but recoverable.
+Prepared controls borrow the existing content and cannot close its core.
+The receiver builds a separate tab and stops on the first rejected action;
+later splits and tab metadata cannot spill into an unrelated focused tab.
+A pane move merges the prepared subtree only after the batch succeeds.
+
+Prepared tabs have no external routing identity. Their selection, rekey,
+and close notifications are suppressed, and deferred tab initialization
+is queued only after commit. Borrowed receiver controls carry an atomic
+publication gate for background VT/connection callbacks; rollback never
+opens it. The original source remains the event owner during preparation.
+
+Commit transfers the move-only agent lifetimes and ordinary control
+ownership before removing the source. Session restore metadata and per-tab
+agent overrides survive immediately, without waiting for helper status replay.
+Whole-tab moves also preserve explicit agent-close prewarm suppression before
+deferred initialization runs. Moving a single pane does not overwrite the
+destination tab's own suppression state.
+Failure detaches all prepared
+controls and resumes the original controls, including their renderer,
+owning HWND, automation peer, focus state, and viewport scroll offset. Scrollbar
+initialization reads the core's current state without generating user scroll input.
+It does not create replacement
+sessions or start a master-lease drain. Hidden agent panes defer stashing until
+the entire pane tree is rebuilt, including nested splits that revisit the agent leaf.
+The receiver then restores hidden state before applying final focus and zoom;
+deferred stash focus cannot override the final focused pane.
+
+The request registry serializes claims and expiry, but normal core and XAML
+operations remain UI-thread-affine. Atomic core closure remains the final
+cleanup mechanism for an actual user close, not transfer rollback.
 
 The drag triggers existing WT mechanics: `ContentId` lookup,
 `AttachContent → _MakePane`, reparent of the existing TermControl into
@@ -435,30 +503,27 @@ rekeys its per-tab map and pointers under the new id:
   `rename_session_tx` channel (otherwise the next prompt on the dragged
   tab can't find its SessionId).
 
-The C++ side emits this event **synchronously** from
-`_MakeTerminalPane` on the destination page during drop-in (not from
-the deferred `_InitializeTab` walk), so the rename lands before the
-target window's own `tab_changed` for the new id and the helper's
-per-tab state isn't clobbered by a fresh default. See "Per-tab +
-per-window event routing" below for the full model.
+When attaching to an existing tab, C++ emits this event synchronously
+from `_MakeTerminalPane`. If the incoming pane is the first content of
+a new tab, the wrapper carries pending routing metadata until
+`_InitializeTab` can bind it to the new tab. See "Per-tab + per-window
+event routing" below for the full model.
 
-Master does nothing — the SessionId ↔ helper-connection mapping is
-unaffected by the drag (helper process identity stays the same).
+Master keeps the SessionId ↔ helper-connection mapping intact (the helper
+process identity does not change) while rekeying tab ownership, pending
+session ownership, orphan bookkeeping, and any ordered-retirement fences from
+the old StableId to the new one. This is migration bookkeeping, not recovery:
+no process restarts and no ACP `session/load` occurs.
 
 #### Master crash
 
-`SharedWta::_OnProcessExited` (existing wait-callback) fires. State is
-cleared so the next `AcquirePane` respawns the master. All existing
-helpers' pipe connections drop:
-- Helper detects pipe disconnect → surfaces a "disconnected from
-  master" banner in its TUI.
-- User can keep typing locally; submission fails until master
-  reconnects.
-- On next `AcquirePane`, a fresh master spawns. Helpers reconnect (via
-  retry loop in helper).
-
-(Auto-reconnect protocol is part of Phase 5 testing — see
-implementation plan.)
+`SharedWta::_OnProcessExited` claims the current process generation and
+permits one automatic replacement while active pane/transfer leases
+remain. Cleanup-only leases do not cause a respawn. Retained helpers
+with deferred bindings reconnect over the stable pipe after their old
+transport retires; this is not transparent recovery of an active
+conversation. Helper and ACP session recovery semantics are unchanged
+by lease ownership.
 
 #### Helper crash
 
@@ -483,7 +548,7 @@ discipline. The model the code now follows:
 | Field | Source | Updated by |
 |---|---|---|
 | `self.owner_tab_id` | `--owner-tab-id` cmdline (= dest tab StableId) | `tab_renamed` rekey |
-| `self.window_id` | `discover_pane_identity()` at startup | `tab_renamed` rekey (cross-window drag) |
+| `self.window_id` | `--owner-window-id` cmdline; PID discovery fallback | `tab_renamed` rekey (cross-window drag) |
 | `self.tab_id` | mirror of `owner_tab_id` while owner is set | `tab_renamed` rekey; `tab_changed` no-op for non-owner |
 
 The `--owner-tab-id` seed runs **before** the `--initial-view` block in
@@ -493,6 +558,11 @@ Without that ordering the seed defaults to `DEFAULT_TAB_ID` and the
 echo arrives at C++ with a tab_id no `TerminalPage` recognizes —
 `_FindTabByStableId` drops it and the just-spawned pane shows the
 wrong view.
+
+`--owner-window-id` is supplied by the same C++ spawn path. PID-based pane
+discovery remains useful for legacy/manual launches, but it can miss a newly
+spawned ConPTY helper; the explicit seed makes per-window events such as
+`switch_agent` routable immediately.
 
 **Inbound events carry the routing keys.** Every WT-side event that
 mutates per-tab or per-window state includes the relevant ids in its
@@ -516,7 +586,7 @@ in its `_tabs` collection. Affected events:
 - `agent_status` (model, state, available models)
 - `autofix_state` (bar snapshot)
 - `close_agent_pane` (Ctrl+C×2 in TUI)
-- `resume_in_new_agent_tab` (slash-command / Shift+Enter on session row)
+- `resume_in_new_agent_tab` (slash-command / Enter on an agent-pane session row)
 
 **The `switch_tab_session` owner-lock.** A `tab_changed` is broadcast
 to every helper subscribed to the COM event bus. Pre-B20, every helper
@@ -583,23 +653,26 @@ its stored view — which is whatever the pane was in when it got stashed
 sessions view would re-open in sessions view.
 
 The pane is only truly destroyed when:
-- The tab itself closes (Tab destructor releases the stash), or
+- The tab itself closes (`Tab::Shutdown` closes its content), or
 - The user presses Ctrl+C×2 inside the TUI (helper sends
   `close_agent_pane { tab_id }`, C++ calls `_TeardownAgentPane`).
+
+An explicit close suppresses queued prewarm work for that tab. A later
+explicit creation can enable normal prewarming/recreation again.
 
 `OnAgentStateChanged`'s `pane_open` path drives stash/restore: `false`
 calls `Tab::StashAgentPane()`, `true` calls `Tab::RestoreStashedAgentPane`
 if the pane is stashed; otherwise `_AutoCreateHiddenAgentPaneShared`
 (first-open).
 
-### 9. Per-tab independent agents (future)
+### 9. Per-tab independent agents
 
-`AttachPaneParams.agent_id` is currently metadata-only because the
-master holds a single agent CLI subprocess shared across helpers.
-Future: master could maintain a pool of agent CLI subprocesses keyed
-by `agent_id`. Each helper requests sessions from the agent CLI
-matching its `agent_id`. Wire format is already extensible (see Z-R4
-risk below). Not in v1.
+The master maintains a lazy agent CLI pool keyed by the master-resolved agent
+identity, execution source, and command line. Each helper declares its agent ID
+during `initialize`; policy filtering and command reconstruction remain
+master-owned. Helpers with the same key reuse one process, while different keys
+can spawn in parallel. Dead processes are reaped from the pool and restarted
+on demand.
 
 ## What needs to change
 
@@ -801,8 +874,9 @@ architecture:
   helper exits and master refcount decrements.
 - Last-pane close: close last agent pane, verify master exits via
   Job Object.
-- Master crash: kill master mid-conversation, verify helpers
-  surface error and reconnect on next prompt.
+- Master crash: kill master mid-conversation, verify helpers and panes
+  exit, no session is loaded automatically, and a later explicit pane
+  open creates a fresh session.
 - Helper crash: kill helper, verify only its pane is affected.
 - Resize: window resize → conpty resize → helper sees it via
   crossterm `Event::Resize` (no `_internal.resize_pane` needed).
@@ -855,11 +929,10 @@ v1 ships with the simple behavior; future extension is non-breaking.
 
 ### Z-R5. Agent CLI version skew across helpers
 
-A helper started under master version A may continue running when
-master is restarted at version B (e.g. user updates Terminal mid-
-session). The new master may speak a different ACP protocol version
-than the helper. Mitigation: helper performs `initialize` handshake
-on reconnect; on incompatible version, surfaces a clear error.
+A helper never survives a master restart: master pipe EOF terminates
+the helper and closes its pane. A later explicit pane open starts a
+new helper, whose normal `initialize` handshake detects any ACP
+protocol incompatibility before creating a fresh session.
 
 ### Z-R6. Master spawn race
 
@@ -900,6 +973,20 @@ work:
 - **Pre-warming**: not implemented. First user toggle creates the
   helper on demand.
 
+### Z-R9. Provider-native Yolo mode
+
+The canonical design and current behavior are documented in
+[`Yolo-mode.md`](./Yolo-mode.md). That document covers the global and
+policy state model, provider-native ACP session modes, built-in agent support,
+policy enforcement, and the exact terminal-action confirmation boundary.
+
+Implements GitHub issue #326 ("Allow agent pane to run with options such
+as `--allow-all`"). The implementation avoids agent-specific process flags
+and acts as an ACP UI: it invokes reviewed per-session capabilities for
+Copilot, Claude, Codex, and Gemini. OpenCode and custom ACP agents remain on
+the normal interactive permission path. WTA never answers an ordinary
+provider `session/request_permission` on the user's behalf.
+
 ## What this does NOT solve (out of scope)
 
 - **Cross-process Terminal instances**: if WT is configured for
@@ -913,11 +1000,12 @@ work:
 - **Restructuring agent pane UI to XAML**: Z keeps the Ratatui TUI
   model. Migration to native XAML chat UI is a separate larger spec.
 
-## Future work
+## Deferred future work (not current behavior)
 
-- **F1**: `TabSession` checkpoint + restore across master restarts.
-  Persists chat history to disk; helper reattach via ACP
-  `session/load`. Not blocked by Z but only useful after it.
+- **F1 (deferred proposal)**: `TabSession` checkpoint + restore across
+  master restarts. This would persist chat history to disk and reattach
+  via ACP `session/load`; current crash handling deliberately does
+  neither.
 - **F2**: Per-pane different agent CLI. Master spawns additional
   agent CLI processes keyed by `agent_id`; routes helpers to the
   matching child. Wire format already supports it via
@@ -926,6 +1014,7 @@ work:
   hostile or buggy callers. Deprioritized.
 - **F4**: Migration of agent pane UI from Ratatui TUI to native
   XAML chat surface. Separate, larger spec.
-- **F5**: Master high-availability — if master crashes, helpers
-  reconnect to a freshly-respawned master and resume via ACP
-  `session/load`. Builds on F1.
+- **F5 (deferred proposal)**: Master high-availability, in which helpers
+  reconnect to a freshly respawned master and resume via ACP
+  `session/load`. This is explicitly non-current and would require a
+  separate safety design before implementation. Builds on F1.

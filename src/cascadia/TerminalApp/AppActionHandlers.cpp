@@ -2,6 +2,8 @@
 // Licensed under the MIT license.
 
 #include "pch.h"
+#include "TabStrip.h"
+#include "../inc/AgentPaneRestore.h"
 #include "App.h"
 
 #include "TerminalPage.h"
@@ -9,6 +11,7 @@
 #include "AgentPaneLog.h"
 #include "ScratchpadContent.h"
 #include "../inc/ShellIntegration.h"
+#include "ShellIntegrationSweep.h"
 #include "../WinRTUtils/inc/WtExeUtils.h"
 #include "../../types/inc/utils.hpp"
 #include "../TerminalSettingsAppAdapterLib/TerminalSettings.h"
@@ -288,12 +291,24 @@ namespace winrt::TerminalApp::implementation
 
             const auto& activeTab{ _senderOrFocusedTab(sender) };
 
-            _SplitPane(activeTab,
-                       realArgs.SplitDirection(),
-                       // This is safe, we're already filtering so the value is (0, 1)
-                       realArgs.SplitSize(),
-                       _MakePane(realArgs.ContentArgs(), duplicateFromTab));
-            args.Handled(true);
+            // A persisted agent pane replays as an ordinary splitPane action,
+            // but it cannot be built by `_MakePane`: the helper needs this
+            // run's master pipe and owner ids, and its agent has to be
+            // re-checked against policy rather than taken from saved state.
+            // Hand it to the spawn path, which does its own split.
+            if (const auto& terminalArgs{ realArgs.ContentArgs().try_as<NewTerminalArgs>() };
+                terminalArgs && !terminalArgs.ContentId() && ::Microsoft::Terminal::AgentPaneRestore::IsPaneType(terminalArgs.Type()))
+            {
+                _RestoreAgentPaneFromLayout(activeTab, terminalArgs, realArgs.SplitDirection(), realArgs.SplitSize());
+                args.Handled(true);
+                return;
+            }
+
+            args.Handled(_SplitPane(activeTab,
+                                   realArgs.SplitDirection(),
+                                   // This is safe, we're already filtering so the value is (0, 1)
+                                   realArgs.SplitSize(),
+                                   _MakePane(realArgs.ContentArgs(), duplicateFromTab)));
         }
     }
 
@@ -489,7 +504,6 @@ namespace winrt::TerminalApp::implementation
         if (args == nullptr)
         {
             LOG_IF_FAILED(_OpenNewTab(nullptr));
-            args.Handled(true);
         }
         else if (const auto& realArgs = args.ActionArgs().try_as<NewTabArgs>())
         {
@@ -499,8 +513,18 @@ namespace winrt::TerminalApp::implementation
                 return;
             }
 
-            LOG_IF_FAILED(_OpenNewTab(realArgs.ContentArgs()));
-            args.Handled(true);
+            // Agent restore records are not executable command lines, including
+            // legacy layouts that place one in a newTab action.
+            if (const auto& terminalArgs{ realArgs.ContentArgs().try_as<NewTerminalArgs>() };
+                terminalArgs && !terminalArgs.ContentId() && ::Microsoft::Terminal::AgentPaneRestore::IsPaneType(terminalArgs.Type()))
+            {
+                terminalArgs.Commandline({});
+                terminalArgs.SetContentType({});
+            }
+
+            const auto result = _OpenNewTab(realArgs.ContentArgs());
+            LOG_IF_FAILED(result);
+            args.Handled(result == S_OK);
         }
     }
 
@@ -624,6 +648,20 @@ namespace winrt::TerminalApp::implementation
         args.Handled(res);
     }
 
+    void TerminalPage::_HandleToggleSidebar(const IInspectable& sender,
+                                            const ActionEventArgs& args)
+    {
+        if (sender.try_as<KeyChord>())
+        {
+            _ToggleSidebarHotkey();
+        }
+        else
+        {
+            _OnVerticalRailCollapseRequested(nullptr, nullptr);
+        }
+        args.Handled(true);
+    }
+
     void TerminalPage::_HandleToggleFocusMode(const IInspectable& /*sender*/,
                                               const ActionEventArgs& args)
     {
@@ -682,6 +720,8 @@ namespace winrt::TerminalApp::implementation
         {
             const auto p = LoadCommandPalette();
             const auto v = p.Visibility() == Visibility::Visible ? Visibility::Collapsed : Visibility::Visible;
+            // Prepare the next mode while hidden, including when this action closes the palette.
+            p.Visibility(Visibility::Collapsed);
             p.EnableCommandPaletteMode(realArgs.LaunchMode());
             p.Visibility(v);
             args.Handled(true);
@@ -735,6 +775,11 @@ namespace winrt::TerminalApp::implementation
     {
         if (const auto activeTab{ _senderOrFocusedTab(sender) })
         {
+            if (_IsTabListProjectionActive() && !_IsTabVisibleInProjection(activeTab))
+            {
+                args.Handled(false);
+                return;
+            }
             if (!_tabColorPicker)
             {
                 _tabColorPicker = winrt::make<ColorPickupFlyout>();
@@ -774,6 +819,11 @@ namespace winrt::TerminalApp::implementation
     {
         if (const auto activeTab{ _senderOrFocusedTab(sender) })
         {
+            if (_IsTabListProjectionActive() && !_IsTabVisibleInProjection(activeTab))
+            {
+                args.Handled(false);
+                return;
+            }
             activeTab->ActivateTabRenamer();
         }
         args.Handled(true);
@@ -796,6 +846,11 @@ namespace winrt::TerminalApp::implementation
     void TerminalPage::_HandleCloseOtherTabs(const IInspectable& /*sender*/,
                                              const ActionEventArgs& actionArgs)
     {
+        if (_IsTabListPositionOperationBlocked())
+        {
+            actionArgs.Handled(false);
+            return;
+        }
         if (const auto& realArgs = actionArgs.ActionArgs().try_as<CloseOtherTabsArgs>())
         {
             uint32_t index;
@@ -835,6 +890,11 @@ namespace winrt::TerminalApp::implementation
     void TerminalPage::_HandleCloseTabsAfter(const IInspectable& /*sender*/,
                                              const ActionEventArgs& actionArgs)
     {
+        if (_IsTabListPositionOperationBlocked())
+        {
+            actionArgs.Handled(false);
+            return;
+        }
         if (const auto& realArgs = actionArgs.ActionArgs().try_as<CloseTabsAfterArgs>())
         {
             uint32_t index;
@@ -884,6 +944,11 @@ namespace winrt::TerminalApp::implementation
     {
         if (const auto& realArgs = actionArgs.ActionArgs().try_as<MoveTabArgs>())
         {
+            if (_IsTabListPositionOperationBlocked() && realArgs.Window().empty())
+            {
+                actionArgs.Handled(false);
+                return;
+            }
             const auto moved = _MoveTab(_senderOrFocusedTab(sender), realArgs);
             actionArgs.Handled(moved);
         }
@@ -899,70 +964,37 @@ namespace winrt::TerminalApp::implementation
         }
     }
 
-    // Function Description:
-    // - Helper to launch a new WT instance. It can either launch the instance
-    //   elevated or unelevated.
-    // - To launch elevated, it will as the shell to elevate the process for us.
-    //   This might cause a UAC prompt. The elevation is performed on a
-    //   background thread, as to not block the UI thread.
-    // Arguments:
-    // - newTerminalArgs: A NewTerminalArgs describing the terminal instance
-    //   that should be spawned. The Profile should be filled in with the GUID
-    //   of the profile we want to launch.
-    // Return Value:
-    // - <none>
-    // Important: Don't take the param by reference, since we'll be doing work
-    // on another thread.
-    safe_void_coroutine TerminalPage::_OpenNewWindow(const INewContentArgs newContentArgs)
+    // Ask the WindowEmperor (in-process) to create a brand-new window whose
+    // first tab is described by `contentArgs`. This will bubble up to AppHost,
+    // who will call WindowEmperor::CreateNewWindow.
+    void TerminalPage::_OpenNewWindow(const INewContentArgs& contentArgs)
     {
-        auto terminalArgs{ newContentArgs.try_as<NewTerminalArgs>() };
-
-        // Do nothing for non-terminal panes.
-        //
-        // Theoretically, we could define a `IHasCommandline` interface, and
-        // stick `ToCommandline` on that interface, for any kind of pane that
-        // wants to be convertable to a wt commandline.
-        //
-        // Another idea we're thinking about is just `wt do {literal json for an
-        // action}`, which might be less leaky
-        if (terminalArgs == nullptr)
+        if (!contentArgs)
         {
-            co_return;
+            return;
         }
 
-        // ShellExecuteExW may block, so do it on a background thread.
-        //
-        // NOTE: All remaining code of this function doesn't touch `this`, so we don't need weak/strong_ref.
-        // NOTE NOTE: Don't touch `this` when you make changes here.
-        co_await winrt::resume_background();
+        ActionAndArgs newTabAction{};
+        newTabAction.Action(ShortcutAction::NewTab);
+        newTabAction.Args(NewTabArgs{ contentArgs });
 
-        // This will get us the correct exe for dev/preview/release. If you
-        // don't stick this in a local, it'll get mangled by ShellExecute. I
-        // have no idea why.
-        const auto exePath{ GetWtExePath() };
+        auto actions = winrt::single_threaded_vector<ActionAndArgs>({ std::move(newTabAction) });
 
-        // Build the commandline to pass to wt for this set of NewTerminalArgs
-        // `-w -1` will ensure a new window is created.
-        const auto commandline = terminalArgs.ToCommandline();
-        const auto cmdline = fmt::format(FMT_COMPILE(L"-w -1 new-tab {}"), commandline);
+        // It's fine to pass `0` as the window ID, since this event path will
+        // always land in CreateNewWindow, which will just ignore it.
+        winrt::TerminalApp::WindowRequestedArgs request{ 0, winrt::TerminalApp::CommandlineArgs{} };
+        request.StartupActions(std::move(actions));
+        RequestNewWindow.raise(*this, request);
+    }
 
-        // Build the args to ShellExecuteEx. We need to use ShellExecuteEx so we
-        // can pass the SEE_MASK_NOASYNC flag. That flag allows us to safely
-        // call this on the background thread, and have ShellExecute _not_ call
-        // back to us on the main thread. Without this, if you close the
-        // Terminal quickly after the UAC prompt, the elevated WT will never
-        // actually spawn.
-        SHELLEXECUTEINFOW seInfo{ 0 };
-        seInfo.cbSize = sizeof(seInfo);
-        seInfo.fMask = SEE_MASK_NOASYNC;
-        // `open` will just run the executable normally.
-        seInfo.lpVerb = L"open";
-        seInfo.lpFile = exePath.c_str();
-        seInfo.lpParameters = cmdline.c_str();
-        seInfo.nShow = SW_SHOWNORMAL;
-        LOG_IF_WIN32_BOOL_FALSE(ShellExecuteExW(&seInfo));
-
-        co_return;
+    // Ask the WindowEmperor (in-process) to open or summon a named window,
+    // restoring its persisted workspace if one exists. The event bubbles up
+    // through TerminalWindow to AppHost, which calls into the WindowEmperor
+    // directly — no second wt.exe process is launched.
+    void TerminalPage::_OpenWorkspaceWindow(const winrt::hstring name)
+    {
+        const auto args = winrt::make<implementation::OpenWindowRequestedArgs>(name);
+        RequestOpenWindow.raise(*this, args);
     }
 
     void TerminalPage::_HandleNewWindow(const IInspectable& /*sender*/,
@@ -986,13 +1018,16 @@ namespace winrt::TerminalApp::implementation
             newContentArgs = NewTerminalArgs{};
         }
 
-        if (const auto& terminalArgs{ newContentArgs.try_as<NewTerminalArgs>() })
+        // If this is a NewTerminalArgs, resolve its profile up-front so the
+        // spawned window doesn't need to re-resolve it. Other content types
+        // (e.g. scratchpad) don't have profiles to evaluate — they get passed
+        // through as-is.
+        if (const auto terminalArgs{ newContentArgs.try_as<NewTerminalArgs>() })
         {
             const auto profile{ _settings.GetProfileForArgs(terminalArgs) };
             terminalArgs.Profile(::Microsoft::Console::Utils::GuidToString(profile.Guid()));
         }
 
-        // Manually fill in the evaluated profile.
         _OpenNewWindow(newContentArgs);
         actionArgs.Handled(true);
     }
@@ -1085,6 +1120,7 @@ namespace winrt::TerminalApp::implementation
         // Fun!
         // WindowRenamerTextBox().Focus(FocusState::Programmatic);
         _renamerLayoutUpdatedRevoker.revoke();
+        _renamerLayoutCount = 0;
         _renamerLayoutUpdatedRevoker = WindowRenamerTextBox().LayoutUpdated(winrt::auto_revoke, [weakThis = get_weak()](auto&&, auto&&) {
             if (auto self{ weakThis.get() })
             {
@@ -1718,6 +1754,32 @@ namespace winrt::TerminalApp::implementation
     void TerminalPage::_HandleOpenAgentSessions(const IInspectable& /*sender*/,
                                                 const ActionEventArgs& args)
     {
+        if (_isVerticalLayout)
+        {
+            if (_tabStrip && _isVerticalRailVisible)
+            {
+                if (_tabStrip.HistoryActive())
+                {
+                    _CloseSidebarHistory(true);
+                }
+                else
+                {
+                    _CaptureSidebarHistoryEntry();
+                    if (_isVerticalRailCollapsed)
+                    {
+                        _OnVerticalRailCollapseRequested(nullptr, nullptr);
+                    }
+                    winrt::get_self<implementation::TabStrip>(_tabStrip)->OpenHistory();
+                    if (!_tabStrip.HistoryActive())
+                    {
+                        _historyEntryState.reset();
+                    }
+                }
+            }
+            args.Handled(true);
+            return;
+        }
+
         OutputDebugStringW(L"[AgentPane] _HandleOpenAgentSessions called\n");
         const auto activeTabPre = _GetFocusedTabImpl();
         const auto agentPanePre = activeTabPre ? activeTabPre->FindAgentPane() : nullptr;
@@ -1754,7 +1816,7 @@ namespace winrt::TerminalApp::implementation
     }
 
     void TerminalPage::_HandleTriggerAutofix(const IInspectable& /*sender*/,
-                                              const ActionEventArgs& args)
+                                             const ActionEventArgs& args)
     {
         // Per-tab: read autofix state from the active tab's AgentPaneContent.
         const auto activeTab = _GetFocusedTabImpl();
@@ -1832,8 +1894,8 @@ namespace winrt::TerminalApp::implementation
         }
         const std::filesystem::path desktop{ desktopRaw.get() };
         // Archive the WTA log *root* (`...\logs`), not the per-version subdir,
-        // so the bug report captures every version's logs plus the flat
-        // hook-trace.log — the whole `logs\` tree is tarred recursively below.
+        // so the bug report captures every version's logs — the whole `logs\`
+        // tree is tarred recursively below.
         const std::filesystem::path logsDir = ::IntelligentTerminal::LogDir();
         if (logsDir.empty())
         {
@@ -1849,7 +1911,12 @@ namespace winrt::TerminalApp::implementation
         SYSTEMTIME st{};
         GetLocalTime(&st);
         const auto zipName = fmt::format(L"intelligent-terminal-logs-{:04d}{:02d}{:02d}-{:02d}{:02d}{:02d}.zip",
-                                          st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+                                         st.wYear,
+                                         st.wMonth,
+                                         st.wDay,
+                                         st.wHour,
+                                         st.wMinute,
+                                         st.wSecond);
         const auto zipPath = desktop / zipName;
 
         // Resolve absolute paths to tar.exe and explorer.exe up-front so we
@@ -1871,15 +1938,16 @@ namespace winrt::TerminalApp::implementation
         // leaking an absolute path. argv[0] must still be present in lpCommandLine
         // even though lpApplicationName provides the executable.
         auto cmdline = fmt::format(LR"("{}" -a -c -f "{}" -C "{}" logs)",
-                                    tarExe.wstring(), zipPath.wstring(), logsDir.parent_path().wstring());
+                                   tarExe.wstring(),
+                                   zipPath.wstring(),
+                                   logsDir.parent_path().wstring());
 
         STARTUPINFOW si{};
         si.cb = sizeof(si);
         si.dwFlags = STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_HIDE;
         PROCESS_INFORMATION pi{};
-        if (!CreateProcessW(tarExe.c_str(), cmdline.data(), nullptr, nullptr, FALSE,
-                            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+        if (!CreateProcessW(tarExe.c_str(), cmdline.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
         {
             co_return;
         }
@@ -1955,7 +2023,7 @@ namespace winrt::TerminalApp::implementation
         args.Handled(true);
     }
 
-    safe_void_coroutine TerminalPage::_InitShellIntegration(const ShellIntegrationTarget target)
+    safe_void_coroutine TerminalPage::_InitShellIntegration([[maybe_unused]] const ShellIntegrationTarget target)
     {
         // Publish "user clicked Install -> desired = true" SYNCHRONOUSLY,
         // before the first suspension. If we deferred this until after the
@@ -1971,6 +2039,10 @@ namespace winrt::TerminalApp::implementation
         const auto weak = get_weak();
         const auto dispatcher = Dispatcher();
 
+        const auto installShellIntegration = ShellIntegrationSweep::PrepareInstall(
+            _settings,
+            ShellIntegrationSweep::InstallTargets::All);
+
         co_await winrt::resume_background();
 
         // Acquire a strong reference *before* touching any more member
@@ -1983,14 +2055,16 @@ namespace winrt::TerminalApp::implementation
             co_return;
         }
 
-        namespace SI = ::Microsoft::Terminal::ShellIntegration;
-
         bool desiredAtRun = true;
-        bool pwshAlready = false;
-        bool wpAlready = false;
-        bool pwshOk = false;
-        bool wpOk = false;
+        bool allAlreadyInstalled = false;
+        bool anyFailure = false;
         bool epBlocked = false;
+        // Collected failure details from EVERY failing flavor (pwsh, WinPS,
+        // bash, each WSL distro). Surfaced verbatim in the error dialog so
+        // the user sees the real reason ("Profile directory not writable",
+        // "Failed to write backup", etc.) instead of a guess. Empty when
+        // every flavor succeeded.
+        std::wstring failureDetails;
         {
             std::lock_guard<std::mutex> guard{ _shellIntegrationReconcileMutex };
             // Re-check after acquiring the lock. If a settings reload (toggle
@@ -2001,18 +2075,79 @@ namespace winrt::TerminalApp::implementation
             desiredAtRun = _shellIntegrationDesiredEnabled.load(std::memory_order_acquire);
             if (desiredAtRun)
             {
-                const auto pwshResult = SI::InstallForTarget(SI::Target::Pwsh);
-                const auto wpResult = SI::InstallForTarget(SI::Target::WindowsPowerShell);
-                pwshAlready = pwshResult.alreadyInstalled;
-                wpAlready = wpResult.alreadyInstalled;
-                pwshOk = pwshResult.success;
-                wpOk = wpResult.success;
-                epBlocked = pwshResult.executionPolicyBlocked || wpResult.executionPolicyBlocked;
+                // Profile-gated install: RunInstall only touches shells
+                // the user actually has a profile for. A user with only
+                // "Developer PowerShell for VS" (Windows PowerShell) and
+                // no pwsh profile should not get a pwsh block written.
+                // Skipped shells are reported as success-already-installed
+                // so the all-installed / any-failure UI verdict below
+                // doesn't flag a missing shell as a failure.
+                const auto results = installShellIntegration(ShellIntegrationSweep::PowerShellPolicyCheck::Probe);
+
+                // Aggregate verdict across ALL four flavors (pwsh, WinPS,
+                // bash, every WSL distro). The earlier two-flavor version
+                // silently dropped bash/WSL failures on the floor.
+                auto fold = [&](const auto& r, std::wstring_view label) {
+                    if (r.executionPolicyBlocked)
+                    {
+                        epBlocked = true;
+                    }
+                    if (!r.success)
+                    {
+                        anyFailure = true;
+                        if (!r.errorMessage.empty())
+                        {
+                            if (!failureDetails.empty())
+                            {
+                                failureDetails += L"\n";
+                            }
+                            failureDetails += L"• ";
+                            failureDetails += label;
+                            failureDetails += L": ";
+                            failureDetails += r.errorMessage;
+                        }
+                    }
+                };
+
+                bool sawAny = false;
+                auto consider = [&](const auto& r, std::wstring_view label) {
+                    sawAny = true;
+                    fold(r, label);
+                    if (!r.alreadyInstalled)
+                    {
+                        allAlreadyInstalled = false;
+                    }
+                };
+
+                allAlreadyInstalled = true; // becomes false on first non-alreadyInstalled below
+
+                if (results.shellPresence.pwsh)
+                {
+                    consider(results.pwsh, L"PowerShell");
+                }
+                if (results.shellPresence.windowsPowerShell)
+                {
+                    consider(results.windowsPowerShell, L"Windows PowerShell");
+                }
+                if (results.shellPresence.bash)
+                {
+                    consider(results.bash, L"bash");
+                }
+                for (const auto& [distName, wslRes] : results.wsl)
+                {
+                    consider(wslRes, L"WSL bash (" + distName + L")");
+                }
+
+                if (!sawAny)
+                {
+                    // No profiles matched any supported shell. Treat as
+                    // "already installed" (nothing to do) so no dialog
+                    // fires — matches the prior single-flavor behavior
+                    // when both pwsh AND WinPS were absent.
+                    allAlreadyInstalled = true;
+                }
             }
         }
-
-        const bool allAlreadyInstalled = pwshAlready && wpAlready;
-        const bool anyFailure = !pwshOk || !wpOk;
 
         co_await wil::resume_foreground(dispatcher);
         if (auto strong = weak.get())
@@ -2050,7 +2185,7 @@ namespace winrt::TerminalApp::implementation
                     body.Inlines().Append(Documents::LineBreak{});
 
                     Documents::Hyperlink link;
-                    link.NavigateUri(winrt::Windows::Foundation::Uri{ L"https://aka.ms/intelligent-terminal-dependency#4-powershell-shell-integration" });
+                    link.NavigateUri(winrt::Windows::Foundation::Uri{ L"https://aka.ms/intelligent-terminal-dependency#41-powershell" });
                     Documents::Run linkRun;
                     linkRun.Text(RS_(L"FreOverlay_ErrorHelpLink"));
                     link.Inlines().Append(linkRun);
@@ -2064,9 +2199,20 @@ namespace winrt::TerminalApp::implementation
             }
             else if (anyFailure)
             {
+                // Append per-flavor failure details (collected above) so the
+                // user sees the actual reason — "Profile directory not
+                // writable", a WSL distro that isn't running, etc. — instead
+                // of a guess. Body intentionally not localized: orchestrator
+                // error strings are English-only diagnostics.
+                std::wstring body{ RS_(L"InitShellIntegrationErrorMessage") };
+                if (!failureDetails.empty())
+                {
+                    body += L"\n\n";
+                    body += failureDetails;
+                }
                 strong->_ShowShellIntegrationDialog(
                     RS_(L"InitShellIntegrationErrorTitle"),
-                    RS_(L"InitShellIntegrationErrorMessage"));
+                    winrt::hstring{ body });
             }
             else
             {
@@ -2092,6 +2238,14 @@ namespace winrt::TerminalApp::implementation
     safe_void_coroutine TerminalPage::_ReconcileShellIntegration()
     {
         auto weak = get_weak();
+
+        // Snapshot WSL profile commandlines AND non-WSL shell presence on the UI
+        // thread BEFORE going background. _settings.AllProfiles() is
+        // an observable vector and must not be iterated concurrently
+        // with a settings reload.
+        const auto wslCommandlines = ShellIntegrationSweep::SnapshotWslCommandlines(_settings);
+        const auto shellPresence = ShellIntegrationSweep::SnapshotShellPresence(_settings);
+
         co_await winrt::resume_background();
         auto self = weak.get();
         if (!self)
@@ -2109,16 +2263,33 @@ namespace winrt::TerminalApp::implementation
         std::lock_guard<std::mutex> guard{ _shellIntegrationReconcileMutex };
         const bool enabled = _shellIntegrationDesiredEnabled.load(std::memory_order_acquire);
 
-        namespace SI = ::Microsoft::Terminal::ShellIntegration;
         if (enabled)
         {
-            SI::InstallForTarget(SI::Target::Pwsh);
-            SI::InstallForTarget(SI::Target::WindowsPowerShell);
+            // Profile-gated install: only touch shells the user has a
+            // profile for. A user keeping only "Developer PowerShell
+            // for VS" (which uses Windows PowerShell) and no pwsh
+            // profile must not get pwsh integration written.
+            // GH#613: startup/settings reloads leave WSL to the lazy new-tab path.
+            (void)ShellIntegrationSweep::RunInstall(shellPresence, {}, ShellIntegrationSweep::InstallTargets::WindowsShells);
         }
         else
         {
-            SI::UninstallForTarget(SI::Target::Pwsh);
-            SI::UninstallForTarget(SI::Target::WindowsPowerShell);
+            // Profile-gated uninstall: symmetric with install — we
+            // only clean up shells the user currently has a profile
+            // for. Trade-off: if the user installed for shell X,
+            // deleted the X profile, then toggled off, the X block
+            // in their HOME survives. This matches install-time
+            // policy and avoids touching shells the user does not
+            // use (which would write `.bak.*` for nothing). The
+            // next reconcile after re-adding the X profile sweeps
+            // it.
+            //
+            // WSL is similarly bounded by `wslCommandlines`: WT profile
+            // deletion != WSL distro removal (the user may still
+            // use the distro via `wsl.exe` directly), and tracking
+            // previously-installed distros across settings reloads
+            // would add complexity for a rare edge case.
+            ShellIntegrationSweep::RunUninstall(shellPresence, wslCommandlines);
         }
     }
 
@@ -2134,4 +2305,35 @@ namespace winrt::TerminalApp::implementation
             presenter.ShowDialog(dialog);
         }
     }
+
+    void TerminalPage::_HandleOpenWorkspace(const IInspectable& /*sender*/,
+                                            const ActionEventArgs& args)
+    {
+        // Open (or summon) a named window.  We launch a new `wt -w <name>`
+        // process which the monarch will route to the correct live window or
+        // restore from a persisted workspace.
+        if (args)
+        {
+            if (const auto& realArgs = args.ActionArgs().try_as<OpenWorkspaceArgs>())
+            {
+                const auto name = realArgs.Name();
+                if (!name.empty())
+                {
+                    _OpenWorkspaceWindow(name);
+                }
+                args.Handled(true);
+            }
+        }
+    }
+
+    void TerminalPage::_HandleWorkspaces(const IInspectable& /*sender*/,
+                                         const ActionEventArgs& args)
+    {
+        if (_workspaceFlyout && _workspaceDropdown)
+        {
+            _workspaceFlyout.ShowAt(_workspaceDropdown);
+        }
+        args.Handled(true);
+    }
+
 }

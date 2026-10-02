@@ -1,9 +1,7 @@
 # Setup screen titles
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.title.first_run: "እንኳን ወደ ብልህ ተርሚናል በደህና መጡ!"
 setup.title.agent_missing: "ኤጅንት አልተገኙም"
 setup.title.agent_error: "ኤጅንት ግንኙነት አልተሳካም"
-setup.title.switch_agent: "ኤጅንትን ቀይር"
 setup.title.not_available: "ኤጅንት አይገኙም"
 setup.title.sign_in: "መግባት ያስፈልጋል"
 
@@ -12,21 +10,24 @@ setup.subtitle.copilot_missing: "ኤጅንትዎ \"%{agent}\" አልተጠቀመ
 setup.subtitle.agent_missing: "ኤጅንትዎ \"%{agent}\" አልተጠቀመም። እባክዎን በእጥ ይጠቅሙት እና እንደገና ይሞክሩ። ኤጅንትን ለመቀየር ብልህ ተርሚናል Settings > Agent ይሂዱ።"
 setup.subtitle.copilot_auth: "ኤጅንትዎ \"%{agent}\" ማረጋገጥ ያስፈልገወል። ለመግባት ከታች ያሉትን ደረጃዎች ይተግበሩ። ኤጅንትን ለመቀየር ብልህ ተርሚናል Settings > Agent ይሂዱ።"
 setup.subtitle.agent_auth: "ኤጅንትዎ \"%{agent}\" ማረጋገጥ ያስፈልገዋል። እባክዎን በኤጅንቱ በኩል ይግቡ እና ከዚያ በታች \"ገብቻለሁ\" ን ይምረጡ። ኤጅንትን ለመቀየር ብልህ ተርሚናል Settings > Agent ይሂዱ።"
+setup.subtitle.connection_failed: "%{agent} ማስጀመር አልቻልንም።"
 
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.description.fre_line1: "በ ብልህ ተርሚናል ውስጥ ሊጠቀሙት የሚፈልጉትን ነባሪ ኤጅንት ይምረጡ። ወደ"
-setup.description.fre_line2: "Settings ሂደው የስራ ቀጠርዎን ላያያዙ ይችላሉ።"
 
 setup.option.install: "%{agent} ጠቅም"
 setup.option.install_hint: "(በራሱ ይጠቀማል)"
 setup.option.signin: "ወደ %{agent} ይግቡ"
 setup.option.retry_detection: "እንደገና ሞክር"
 setup.option.retry_auth: "ገብቻለሁ — እንደገና ማገናኘት ሞክር"
-setup.option.retry_connection: "እንደገና ማገናኘት ሞክር"
-setup.option.switch_to: "ወደ %{agent} ቀይር"
+setup.option.retry_connection: "እንደገና ለመገናኘት ይሞክሩ"
 setup.status.installing: "በመጠቀም ላይ..."
+setup.status.installing_copilot_cli: "GitHub Copilot CLI በመጫን ላይ"
+setup.status.connecting_agent: "ከ%{agent} ጋር በመገናኘት ላይ"
 setup.status.install_failed: "መጠቀም አልተሳካም፡ "
 setup.status.installing_winget: " በ winget በኩል በመጠቀም ላይ..."
+setup.error.install_start_failed: "ጫኚውን ማስጀመር አልተቻለም። እንደገና ለመሞከር \"እንደገና ሞክር\" የሚለውን ይምረጡ።"
+setup.error.install_timed_out: "የመጫን ጊዜው አልፏል። ሌላ ጭነት ከመጀመርዎ በፊት \"እንደገና ሞክር\" የሚለውን ይምረጡ።"
+setup.error.install_detection_timed_out: "መጫኑ ተጠናቋል፣ ነገር ግን Copilot እስካሁን አይታይም። እንደገና ለመፈተሽ \"እንደገና ሞክር\" የሚለውን ይምረጡ።"
 
 # ── Auth flow (src/ui/auth.rs) ──────────────────────────────────────────────
 # {Locked="CLI"} - acronym, common usage across Microsoft localizations
@@ -35,17 +36,19 @@ auth.agent_selected_with_status: "ኤጅንት %{name} — "
 auth.checking_authentication: "  %{spinner} ማረጋገጥ በመፈተሽ..."
 auth.waiting_for_authorization: "  %{spinner} ፍቃድ በመጠበቅ..."
 auth.code_copied_hint: "ኮዱ ተቀድቷል — በአስሳሽዎ ላይ ይለጥፉት።"
-auth.sign_in_prompt: "ኤጅንትዎን ለመጠቀም ይግቡ፡"
+auth.device_code_prompt: "ወደ %{url} ይሂዱ እና ኮዱን ያስገቡ፦ %{code}"  # Copilot device-flow sign-in progress; %{url} is the verification URL, %{code} is the device code
 auth.card_connect: "የኤጅንት ባህሪያትን ለማንቃት %{name} ይጋኙ"
-auth.button_sign_in_github: "[ በ GitHub ይግቡ ]"
-auth.button_sign_in_with: "[ በ %{name} ይግቡ ]"
-auth.hint_footer: "ለመግባት Enter ይጫኑ, ለመመለስ Esc ይጫኑ"
+auth.enterprise_prompt: "  ለመግባት Enter · GitHub Enterprise ለመጠቀም E · ለመመለስ Esc"  # {Locked="Enter","E","Esc"}
+auth.enterprise_domain_label: "  Enterprise ጎራ: "
+auth.enterprise_hint_footer: "  ለመግባት Enter · github.com ለመጠቀም Esc"  # {Locked="Enter","Esc","github.com"}
+auth.login_failed_help_enterprise: "  እንደገና ለመሞከር Enter ይጫኑ፣ ወይም github.com ለመጠቀም Esc. የተለመዱ ምክንያቶች፦ በስህተት የተጻፈ ወይም ሊደረስበት የማይችል ጎራ፣ ጊዜው ያለፈ ኮድ፣ ወይም በዚያ አስተናጋጅ ላይ የCopilot መዳረሻ አለመኖር።"  # {Locked="Enter","Esc","github.com","Copilot"}
+auth.login_failed_help_default: "  እንደገና ለመሞከር Enter ይጫኑ፣ ወይም ለመመለስ Esc."  # {Locked="Enter","Esc"}
 
 # ── Chat view (src/ui/chat.rs) ──────────────────────────────────────────────
 chat.activity_thinking: "በማሰብ…"
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
 chat.welcome_title: "እንኳን ወደ ብልህ ተርሚናል በደህና መጡ!"
-chat.welcome_disclaimer: "ብልህ ተርሚናል AI ይጠቀማል። ስህተቶችን ያረጋግጡ።"
+chat.welcome_disclaimer: "ብልህ ተርሚናል AI ይጠቀማል።"
 chat.plan_header: "እቅድ፡"
 chat.plan_marker_completed: "[x]"  # {Locked}
 chat.plan_marker_in_progress: "[>]"  # {Locked}
@@ -53,11 +56,25 @@ chat.plan_marker_pending: "[ ]"  # {Locked}
 chat.autofix_prompt_label: "የቅርብ ጊዜ ትዕዛዝ ብልሽት በራስ-ሰር ተመርምሯል"
 chat.turn_canceled: "(ተሰርዟል)"
 chat.turn_executed: "→ ተፈጽሟል: %{title}"
+# Persistent tool-category labels shown after a status marker and before a subject.
+chat.tool_kind.run: "አሂድ"
+chat.tool_kind.insert: "አስገባ"
+chat.tool_kind.read: "አንብብ"
+chat.tool_kind.search: "ፈልግ"
+chat.tool_kind.edit: "አርትዕ"
+chat.tool_kind.delete: "ሰርዝ"
+chat.tool_kind.move: "አንቀሳቅስ"
+chat.tool_kind.fetch: "አምጣ"
+chat.tool_kind.think: "አስብ"
+chat.tool_kind.mode: "ሁነታ"
+chat.tool_kind.other: "መሣሪያ"
 
 # ── Input placeholders (src/ui/input.rs) ────────────────────────────────────
 input.placeholder.connected: "Ask anything, / for commands.."  # {Locked="/"}
 input.placeholder.connecting: "connecting..."
 input.placeholder.disconnected: "disconnected"
+# Summary of attached images; keep 📎 and %{items} verbatim.
+input.image_attachments: "📎 ምስሎች: %{items}"  # {Locked="📎","%{items}"}
 
 # ── Command popup (src/ui/command_popup.rs) ─────────────────────────────────
 # {Locked="/"} - slash-command prefix, must remain ASCII
@@ -93,9 +110,7 @@ permission.compact.prefix: "[!] "  # {Locked}
 permission.compact.hint: "[Y/N to answer · resize for full card]"  # {Locked="Y/N"}
 
 # ── Agent status (src/agent_check.rs) ───────────────────────────────────────
-agent.status.not_installed_auto: "አልተጠቀመም — በራስ-ሰር ለመጠቀም ይምረጡ"
 agent.status.not_found: "አልተገኙም"
-agent.status.detected: "ተገኙቷል"
 # {Locked="winget","GitHub.Copilot","GitHub","Copilot"} - tool names and command, must run verbatim
 agent.install.running_winget: "Running: winget install GitHub.Copilot"
 agent.install.launch_failed: "Failed to launch winget: %{error}"
@@ -106,8 +121,8 @@ agent.custom.auth_hint: "Make sure %{name} is installed and on your PATH."  # {L
 
 # ── Agents view (src/ui/agents_view.rs) ─────────────────────────────────────
 agents.loading: "Loading..."
-# {Locked="Enter","Esc","↑","↓"} - key combinations, do not translate
-agents.footer_hint: "(↑ ↓ to navigate • Enter to launch session • Esc to exit)"
+# {Locked="Enter","Esc","F5","↑","↓","/"} - key combinations, do not translate
+agents.footer_hint: "(↑ ↓ to navigate • Enter to launch session • Esc to exit • F5 to refresh • / to search)"
 agents.status.active: "Active"
 agents.status.waiting_for_input: "Waiting for input"
 agents.status.error: "Error"
@@ -117,26 +132,48 @@ agents.status.idle: "Idle"
 layout.welcome_hint: "(Ctrl+Shift+. የኤጅንት ገጽታ ማሳየት/መደበቅ • Ctrl+Shift+/ የኤጅንት ክፍለጥ ማሳየት/መደበቅ)"  # {Locked="Ctrl+Shift+.","Ctrl+Shift+/"}
 
 # ── Connection state ────────────────────────────────────────────────────────
-connection.starting: "ኤጅንት በመጀመር..."
+# Preparing the AI agent connection, including preflight and reuse of a cached agent.
+connection.starting: "የኤጅንት ግንኙነትን በማዘጋጀት ላይ..."
 connection.reconnecting: "እንደገና በመጋኘት..."
+# Retiring old AI agent sessions for /restart, before the next connection phases.
+connection.restarting: "ኤጅንቱን እንደገና በማስጀመር ላይ..."
+# Connecting the pane to WTA's local coordinator process, not to an AI model.
+connection.coordinator: "ከአካባቢያዊ አስተባባሪ ጋር በመገናኘት ላይ..."
+# Initializing the helper/coordinator connection, including local preparation and AI agent initialization.
+connection.initializing: "የኤጅንት ግንኙነትን በማስጀመር ላይ..."
+# Refreshing the user's authentication with the AI agent after login; not verifying the agent's identity.
+connection.authenticating: "የተጠቃሚውን ማንነት ከኤጅንቱ ጋር በማረጋገጥ ላይ..."
+# Reading the coordinator's registry snapshot, including existing history; not fetching history from the AI agent.
+connection.syncing_sessions: "የክፍለ ጊዜ ዝርዝርን በማንበብ ላይ..."
+# Creating the AI agent session, including local registration; internal agent progress is unknown.
+connection.creating_session: "የኤጅንት ክፍለ ጊዜ በመፍጠር ላይ..."
+# Applying the requested AI model before the connection is ready. Preserve %{model}.
+connection.selecting_model: "የክፍለ ጊዜ ሞዴል በማቀናበር ላይ፦ %{model}..."  # {Locked="%{model}"}
+# Activity row while connecting to restore a conversation. Keep the actual stage first so narrow panes show it; session_id is shortened to eight characters.
+connection.resuming_stage: "%{stage} (%{session_id} እንደገና በመቀጠል ላይ)"  # {Locked="%{stage}","%{session_id}"}
 connection.connecting_activity: "ከኤጅንት ጋር በመገናኘት ላይ…"
 connection.lost: "ከኤጅንት ጋር ያለው ግንኙነት ጠፍቷል። እንደገና ለመገናኘት /restart ብለው ይተይቡ።"  # {Locked="/restart"}
 
 # ── System messages (src/app.rs) ────────────────────────────────────────────
+system.close_pane_hint: "pane ለመዝጋት Ctrl+C እንደገና ይጫኑ"  # {Locked="Ctrl+C"}
+system.selection_copied: "ተቀድቷል"  # Brief hint shown after selected terminal text is copied
 system.cancelled: "Cancelled."
 system.no_prompt_in_flight: "No prompt in flight."
 system.authentication_failed: "Authentication failed"
-system.command_copied_retry: "Command copied — run it in another terminal, then press Enter to retry"  # {Locked="Enter"}
 system.stopped_max_tokens: "ምላሹ የሞዴሉ የውፅዓት ገደብ ላይ ከደረሰ በኋላ ተቆርጧል።"
 system.stopped_max_turn_requests: "ወኪሉ ለዚህ ዙር የጥያቄ ገደቡ ላይ ከደረሰ በኋላ ቆሟል።"
 system.stopped_refusal: "ወኪሉ በዚህ ጥያቄ መቀጠል አልፈለገም።"
 system.agent_busy: "Agent በዚህ ትር ላይ በስራ ላይ ነው — የአሁኑ ጥያቄ እስኪያልቅ ይጠብቁ።"
+# Image paste messages; "agent" refers to an AI agent. Keep Enter and %{label} verbatim.
+system.image_clipboard_empty: "በቅንጥብ ሰሌዳው ላይ ለመለጠፍ ምስል የለም።"
+system.image_not_supported: "ይህ agent የምስል ግቤትን አይደግፍም።"
+system.image_pasted: "ምስል ተያይዟል (%{label})። ለመላክ Enter ይጫኑ።"  # {Locked="%{label}","Enter"}
 system.resuming_session: "ክፍለ ጊዜ %{session_id} እንደገና በመቀጠል ላይ..."
 system.unknown_command: "ያልታወቀ ትዕዛዝ \"%{command}\" — እንደ ጥያቄ ተልኳል። ዝርዝሩን ለማየት /help ይተይቡ።"  # {Locked="/help"} — slash-command name.
 system.busy_use_stop: "የአሁኑ ጥያቄ እስኪያልቅ ይጠብቁ፣ ወይም መጀመሪያ /stop ያድርጉ።"  # {Locked="/stop"} — slash-command name.
 system.cannot_focus_session: "ክፍለ ጊዜ %{session_id} ላይ ትኩረት ማድረግ አይቻልም፦ በቀጥታ ያለ ይመስላል ግን ገና የpane GUID የለም። ከጥቂት ጊዜ በኋላ እንደገና ይሞክሩ።"
-system.cannot_resume_no_load_session: "በagent pane ውስጥ መቀጠል አይቻልም፦ %{agent} የACP `loadSession` ችሎታን አላስታወቀም። በምትኩ በአዲስ terminal pane ውስጥ ለመቀጠል Enter (Shift ያለ) ይጫኑ።"  # {Locked="ACP","loadSession","Enter","Shift"} — protocol/UI terms.
-system.cannot_resume_no_resume_flag: "የ%{agent} ክፍለ ጊዜን መቀጠል አይቻልም፦ ይህ agent የ`--resume` አይነት ሰንደቅ የለውም። በምትኩ በagent pane ውስጥ በACP ለመቀጠል Shift+Enter ይጫኑ።"  # {Locked="--resume","Shift","Enter","ACP"} — flag and UI terms.
+system.cannot_resume_no_load_session: "በagent pane ውስጥ መቀጠል አይቻልም፦ %{agent} የACP `loadSession` ችሎታን አላስታወቀም።"  # {Locked="ACP","loadSession"} — protocol/UI terms.
+system.cannot_resume_no_resume_flag: "የ%{agent} ክፍለ ጊዜን መቀጠል አይቻልም፦ ይህ agent የ`--resume` አይነት ሰንደቅ የለውም።"  # {Locked="--resume"} — flag and UI terms.
 system.cannot_resume_unknown_agent: "ክፍለ ጊዜ %{session_id} መቀጠል አይቻልም፦ የምንጩ agent በዚህ WTA ግንባታ አይታወቅም።"
 system.cannot_resume_phantom_via_flag: "የ%{agent} ክፍለ ጊዜ %{session_id} መቀጠል አይቻልም፦ ተጀምሯል ግን ምንም ውይይት አልተከማቸበትም፣ ስለዚህ %{agent} ራሱ መቀጠሉን ይከለክላል። ረድፉን በማስወገድ ላይ።"
 system.cannot_resume_phantom_via_load: "የ%{agent} ክፍለ ጊዜ %{session_id} መቀጠል አይቻልም፦ ተጀምሯል ግን ምንም ውይይት አልተከማቸበትም፣ ስለዚህ %{agent} መጫኑን ይከለክላል። ረድፉን በማስወገድ ላይ።"
@@ -178,7 +215,7 @@ hooks.marketplace_path_stale: "⚠ marketplace path stale"
 hooks.installed_but_disabled: "⚠ installed but disabled"
 hooks.not_installed: "✗ not installed"
 hooks.uninstall_skipped: "skipped (CLI not on PATH)"
-hooks.install_attempted: "wt-agent-hooks install attempted (idempotent). Run `wta hooks status` to inspect the result. Trace log: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
+hooks.install_succeeded: "✓ wt-agent-hooks ለ%{clis} ተጠቅሟል"
 # ── Relative time + date formatting (src/ui/agents_view.rs) ─────────────────
 time.just_now: "አሁን"
 time.minute_singular: "%{count} ደቂቃ በፊት"
@@ -188,5 +225,46 @@ time.hours_other: "%{count} ሰዓታት በፊት"
 time.day_singular: "%{count} ቀን በፊት"
 time.days_other: "%{count} ቀናት በፊት"
 
+# ── Slash-command summaries (src/commands.rs) ─────────────────────────────
+# Command names (/help, /clear, etc.) stay English; descriptions translate.
+# {Locked="ACP","Ctrl+Shift+/"} - protocol name and shortcut, do not translate
+commands.help.summary: "Show this command list"
+commands.clear.summary: "Clear the chat scrollback (keeps session)"
+commands.new.summary: "Start a fresh ACP session (drops history)"  # {Locked="ACP"}
+commands.fix.summary: "Diagnose the active terminal and suggest a fix (/fix <hint>)"  # {Locked="/fix","<hint>"}
+commands.restart.summary: "Restart agent"
+commands.stop.summary: "Cancel the in-flight prompt"
+commands.sessions.summary: "Open the historical sessions picker (Ctrl+Shift+/)"  # {Locked="Ctrl+Shift+/"}
+commands.agent.summary: "ለዚህ ትር ሞዴሉን ይምረጡ (በቀጥታ ለመቀየር /agent <id>)"  # {Locked="/agent","<id>"}
+
 # ── የምክር አፈጻጸም (src/coordinator.rs) ───────────────────────────
 system.choice_execution_failed: "ምርጫ %{choice} አልተሳካም፦ %{error}"
+
+# ── Agent picker (src/ui/agent_popup.rs) ────────────────────────────────────
+# {Locked="↑","↓","Enter","Esc"} - key names, do not translate
+agent_picker.title: "ኤጅንት ይምረጡ (↑ ↓ • Enter • Esc)"  # Agent means an AI coding agent
+# Shown when no policy-allowed AI agent CLI is installed on the machine.
+system.no_agents: "ምንም የሚገኝ የኤጅንት CLI በዚህ ማሽን ላይ አልተገኘም።"  # {Locked="CLI"}
+# {agent} is the unrecognized text the user typed after /agent.
+system.agent_unknown: "ያልታወቀ ወይም የማይገኝ ኤጅንት %{agent} — የሚገኘውን ዝርዝር ለማየት /agent ይተይቡ።"  # {Locked="/agent"}
+# Shown only when /agent is used outside a Windows Terminal-owned agent pane.
+system.agent_switch_unavailable: "የኤጅንት መቀያየር ከWindows Terminal ትር ውጭ አይገኝም።"
+
+# ── Model picker (/model) ───────────────────────────────────────────────────
+commands.model.summary: "ለዚህ ፓነል ሞዴሉን ይምረጡ (በቀጥታ ለመቀየር /model <id>)"  # {Locked="/model","<id>"}
+commands.config.summary: "የዚህን ኤጀንት ክፍለ-ጊዜ ያዋቅሩ"  # Agent means an AI coding agent; shown for the /config command. {Locked="/config"}
+commands.move.summary: "የዚህን ትር ኤጅንት ገጽታ ያንቀሳቅሱ (/move <position>)"  # {Locked="/move","<position>"}
+model_picker.title: "ሞዴል ይምረጡ (↑ ↓ • Enter • Esc)"  # {Locked="↑","↓","Enter","Esc"}
+system.no_models: "የተገናኘው ኤጅንት ምንም ሊመረጥ የሚችል ሞዴል አላስታወቀም።"
+system.model_set: "የዚህ ፓነል ሞዴል ወደ %{model} ተቀናብሯል።"  # {Locked="%{model}"}
+
+# ── Session configuration picker (src/ui/config_popup.rs) ───────────────────
+# {Locked="↑","↓","Enter","Esc","ACP"} - key names and protocol name
+config_picker.title: "የክፍለ-ጊዜ ውቅር (↑ ↓ • Enter • Esc)"
+# Shown when /config is used but the AI agent exposed no ACP select options.
+system.no_config_options: "የተገናኘው ኤጀንት ምንም የሚዋቀሩ የክፍለ-ጊዜ አማራጮችን አላስተዋወቀም።"
+# {option} is an Agent-provided option name; {error} is the ACP error.
+system.config_update_failed: "%{option} ማዘመን አልተሳካም፦ %{error}"
+system.yolo_disable_pending: "የኤጅንት አቅራቢው ክፍለ ጊዜው በሚፈለገው ልዩ መብት በሌለው ሁኔታ መሆኑን አላረጋገጠም"  # Shown after the localized failure prefix while prompts remain blocked until the AI agent provider confirms that its privileged session mode is off. Provider means an AI agent provider, not a network provider.
+system.provider_command_blocked_by_policy: "%{command}: ራስ-ሰር ማጽደቅ በድርጅትዎ መመሪያ ተሰናክሏል።"  # {Locked="%{command}"} Shown when AllowAutomaticApproval blocks a provider-advertised privileged command.
+system.model_unknown: "ያልታወቀ ሞዴል %{model} — የሚገኘውን ዝርዝር ለማየት /model ይተይቡ።"  # {Locked="%{model}","/model"}

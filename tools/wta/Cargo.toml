@@ -2,7 +2,7 @@
 name = "wta"
 version = "0.1.0"
 edition = "2021"
-description = "Windows Terminal Agent — ACP TUI client / MCP tool server"
+description = "Windows Terminal ACP agent bridge and control CLI"
 build = "build.rs"
 
 [[bin]]
@@ -10,15 +10,16 @@ name = "wta"
 path = "src/main.rs"
 
 [dependencies]
-agent-client-protocol = { version = "0.10", features = ["unstable_session_model", "unstable_session_list"] }
+agent-client-protocol = { version = "1.3.0" }
 tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["compat"] }
+tokio-util = { version = "0.7", features = ["compat", "rt"] }
 async-trait = "0.1"
 anyhow = "1"
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
-ratatui = "0.30"
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
+notify = "6"
 futures = "0.3"
 unicode-width = "0.2"
 textwrap = "0.16"
@@ -26,11 +27,23 @@ serde = { version = "1", features = ["derive"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Globalization",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Credentials",
     "Win32_Storage_Packaging_Appx",
+    "Win32_System_Console",
+    "Win32_System_DataExchange",
     "Win32_System_Environment",
+    "Win32_System_JobObjects",
+    "Win32_System_Memory",
     "Win32_System_Registry",
     "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }
+# Image decode/encode for clipboard-paste (Alt+V). Minimal feature set: decode
+# the clipboard DIB (BMP) and re-encode to PNG for ACP `ContentBlock::Image`.
+image = { version = "0.25", default-features = false, features = ["bmp", "png"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"
@@ -40,14 +53,28 @@ tracing-appender = "0.2"
 # for the event-emission style we mirror here.
 tracelogging = "1"
 which = "7"
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
 rust-i18n = "3"
 sys-locale = "0.3"
+# Damerau-Levenshtein string distance for autofix "did you mean" near-matches
+# (issue #287). Already in the lockfile as a transitive dep of clap, so
+# promoting it to a direct dep does not change the resolved graph.
+strsim = "0.11"
+# RFC 3339 parsing for ACP `SessionInfo::updated_at`. Already in the lockfile
+# as a transitive dep of ratatui and tracing-appender, so promoting it to a
+# direct dep does not change the resolved graph; only the `parsing` feature
+# is added on top of what those crates already enable.
+time = { version = "0.3", features = ["parsing"] }
+
+# ── SuperInstance ensign additions (fork; see INTEGRATION.md) ───────────────
 nalgebra = { version = "0.33", optional = true }
 chrono = { version = "0.4", features = ["serde"], optional = true }
 reqwest = { version = "0.12", features = ["json"], optional = true }
 tempfile = { version = "3", optional = true }
 
-# SuperInstance metal library fleet — the terminal is their harness
+# SuperInstance metal library fleet — the terminal is their harness.
+# Optional: only pulled when the `metal-libs` feature is enabled.
 spectral-graph-agent = { git = "https://github.com/SuperInstance/spectral-graph-agent-rs", optional = true }
 conservation-spectral-topology = { git = "https://github.com/SuperInstance/conservation-spectral-topology-rs", optional = true }
 sheaf-agents = { git = "https://github.com/SuperInstance/sheaf-agents-rs", optional = true }
@@ -55,6 +82,10 @@ hodge-belief = { git = "https://github.com/SuperInstance/hodge-belief-rs", optio
 ergodic-transport = { git = "https://github.com/SuperInstance/ergodic-transport-rs", optional = true }
 evolving-sheaf = { git = "https://github.com/SuperInstance/evolving-sheaf-rs", optional = true }
 
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+
+# ── SuperInstance ensign features (fork; additive, default = no-op) ────────
 [features]
 default = []
 trending = ["dep:chrono", "dep:reqwest", "dep:tempfile"]
@@ -62,8 +93,4 @@ griot-history = []
 math-tools = ["dep:nalgebra"]
 module-system = []
 context-triggers = ["griot-history", "math-tools"]
-
 metal-libs = ["spectral-graph-agent", "conservation-spectral-topology", "sheaf-agents", "hodge-belief", "ergodic-transport", "evolving-sheaf"]
-
-# Compile the context trigger engine with all detectors.
-# Enables all feature-dependent modules: griot-history, math-tools.

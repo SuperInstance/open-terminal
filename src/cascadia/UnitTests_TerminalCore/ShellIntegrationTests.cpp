@@ -10,12 +10,16 @@
 
 #include "pch.h"
 #include <WexTestClass.h>
-
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <vector>
 
 #include "../inc/ShellIntegration.h"
 
@@ -30,6 +34,60 @@ namespace TerminalCoreUnitTests
     class ShellIntegrationTests;
 };
 using namespace TerminalCoreUnitTests;
+
+namespace
+{
+    struct WslInstallObserverEvent
+    {
+        std::wstring commandline;
+        std::string event;
+    };
+
+    std::mutex g_wslInstallObserverMutex;
+    std::vector<WslInstallObserverEvent> g_wslInstallObserverEvents;
+
+    void ObserveWslInstall(std::wstring_view commandline, std::string_view event) noexcept
+    {
+        std::lock_guard lock{ g_wslInstallObserverMutex };
+        g_wslInstallObserverEvents.emplace_back(WslInstallObserverEvent{
+            std::wstring{ commandline },
+            std::string{ event },
+        });
+    }
+
+    size_t WslInstallObserverEventCount()
+    {
+        std::lock_guard lock{ g_wslInstallObserverMutex };
+        return g_wslInstallObserverEvents.size();
+    }
+
+    std::vector<std::string> WslInstallObserverEventsSince(std::wstring_view commandline, size_t startIndex)
+    {
+        std::vector<std::string> events;
+        std::lock_guard lock{ g_wslInstallObserverMutex };
+        for (size_t i = startIndex; i < g_wslInstallObserverEvents.size(); ++i)
+        {
+            const auto& observed = g_wslInstallObserverEvents[i];
+            if (observed.commandline == commandline)
+            {
+                events.emplace_back(observed.event);
+            }
+        }
+        return events;
+    }
+
+    void VerifyWslInstallObserverEvents(std::wstring_view commandline,
+                                        size_t startIndex,
+                                        const std::vector<std::string>& expected)
+    {
+        const auto actual = WslInstallObserverEventsSince(commandline, startIndex);
+        VERIFY_ARE_EQUAL(expected.size(), actual.size());
+        for (size_t i = 0; i < expected.size(); ++i)
+        {
+            VERIFY_ARE_EQUAL(expected[i], actual[i]);
+        }
+    }
+}
 
 class TerminalCoreUnitTests::ShellIntegrationTests final
 {
@@ -49,6 +107,14 @@ class TerminalCoreUnitTests::ShellIntegrationTests final
     // BuildShellIntegrationBlock — pure generator.
     TEST_METHOD(BuildBlock_ContainsMarkersAndScriptFilename);
     TEST_METHOD(BuildBlock_HonoursEolParameter);
+    TEST_METHOD(PowerShell_ScriptContent_HandlesNullLastExitCode);
+    TEST_METHOD(PowerShell_ScriptContent_TracksUnhistoriedErrors);
+    TEST_METHOD(PowerShell_ScriptContent_GatesRestrictedLanguageFeatures);
+    TEST_METHOD(PowerShell_ScriptContent_ReArmsFromReadLineBoundary);
+    TEST_METHOD(PowerShell_ScriptContent_ReArmIsBestEffortAndSkipsWithoutWrapper);
+    TEST_METHOD(PowerShell_ScriptContent_RestoresStatusSignalBeforeDelegating);
+    TEST_METHOD(PowerShell_ScriptContent_GuardsAgainstChainingPromptModules);
+    TEST_METHOD(PowerShell_ScriptContent_RendersFailSafe);
 
     // Install scenarios.
     TEST_METHOD(Install_EmptyPath_Fails);
@@ -58,8 +124,10 @@ class TerminalCoreUnitTests::ShellIntegrationTests final
     TEST_METHOD(Install_PreservesLfFromExistingProfile);
     TEST_METHOD(Install_AppendsEolWhenProfileMissingTrailingNewline);
     TEST_METHOD(Install_IdempotentWhenAlreadyInstalled);
+    TEST_METHOD(Install_RelocatesExistingBlockAfterPromptRenderer);
     TEST_METHOD(Install_ReinstallsWhenScriptMissingButBlockMatches);
-    TEST_METHOD(Install_RewritesLegacyDotSourceLineInPlace);
+    TEST_METHOD(Install_RewritesLegacyDotSourceLineAtEnd);
+    TEST_METHOD(Install_UpgradesWhenBlockReferencesOlderScriptVersion);
     TEST_METHOD(Install_OverwritesOrphanOpenMarker);
     TEST_METHOD(Install_CreatesBackupForNonEmptyProfile);
     TEST_METHOD(Install_DoesNotCreateBackupForEmptyProfile);
@@ -88,6 +156,96 @@ class TerminalCoreUnitTests::ShellIntegrationTests final
     TEST_METHOD(QueryExecutionPolicy_NonexistentExe_ReturnsEmpty);
     TEST_METHOD(QueryExecutionPolicy_ParsesStdoutAndLowercases);
     TEST_METHOD(QueryExecutionPolicy_TrimsWhitespaceAndStopsAtFirstLine);
+    TEST_METHOD(ResolvePwshPath_UsesFirstAbsoluteEntry);
+    TEST_METHOD(ResolvePwshPath_SkipsEmptyRelativeAndCurrentDirectoryEntries);
+    TEST_METHOD(ResolvePwshPath_AcceptsQuotedAndExpandedEntries);
+    TEST_METHOD(ResolvePwshPath_MissingReturnsFileNotFound);
+    TEST_METHOD(ExecutionPolicyStatus_ClassifiesBlockedAllowedAndUnknown);
+    TEST_METHOD(ExecutionPolicyRemediation_PreflightRejectsUnknown);
+    TEST_METHOD(ExecutionPolicyRemediation_SucceedsOnlyWhenEveryHostAllowedOrAbsent);
+    TEST_METHOD(ExecutionPolicyRemediation_ReusesOnlyConclusiveProbeResults);
+    TEST_METHOD(ExecutionPolicyProbe_BootstrapsWithoutMaskingEffectivePolicy);
+    TEST_METHOD(ExecutionPolicyRemediation_UsesCurrentUserRemoteSignedCommand);
+    TEST_METHOD(EnableRemoteSigned_RejectsNonBlockedProbeWithoutLaunching);
+
+    // ResolvePowerShellHostInstall — pure install/EP verdict for one PS host.
+    // Guards the regression where profile-gating silently skipped the
+    // execution-policy block (FRE no longer stopped on a Restricted host).
+    TEST_METHOD(ResolveHost_NoProfile_PolicyBlocked_StopsWithEpFlagWithoutWriting);
+    TEST_METHOD(ResolveHost_NoProfile_PolicyOk_SucceedsWithoutWriting);
+    TEST_METHOD(ResolveHost_Profile_PolicyOk_PerformsWrite);
+    TEST_METHOD(ResolveHost_Profile_PolicyBlocked_StopsWithEpFlagWithoutWriting);
+
+    // ─── Bash flavor ──────────────────────────────────────────────────────
+    // FindShellIntegrationBashBlock — pure parser.
+    TEST_METHOD(Bash_FindBlock_EmptyContent_ReturnsNpos);
+    TEST_METHOD(Bash_FindBlock_UnrelatedContent_ReturnsNpos);
+    TEST_METHOD(Bash_FindBlock_ModernBlock_ReturnsRange);
+    TEST_METHOD(Bash_FindBlock_OrphanOpenMarker_ConsumesRecognizableBodyLines);
+    TEST_METHOD(Bash_FindBlock_OrphanOpenMarker_StopsAtUnrelatedUserContent);
+
+    // BuildShellIntegrationBashBlock + ShellIntegrationBashScriptContent — generators.
+    TEST_METHOD(Bash_BuildBlock_ContainsMarkersAndScriptFilename);
+    TEST_METHOD(Bash_BuildBlock_IsLfOnly);
+    TEST_METHOD(Bash_BuildBlock_UsesHomeAndGuardsOnBashVersion);
+    TEST_METHOD(Bash_ScriptContent_HasIdempotencyGuardAndOscSequences);
+    TEST_METHOD(Bash_ScriptContent_GatesAndRepairsPromptMarks);
+
+    // InstallBash / UninstallBash scenarios.
+    TEST_METHOD(Bash_Install_EmptyProfilePath_Fails);
+    TEST_METHOD(Bash_Install_EmptyScriptDir_Fails);
+    TEST_METHOD(Bash_Install_ProfileMissing_CreatesProfileAndScript);
+    TEST_METHOD(Bash_Install_ProfileWithoutBlock_AppendsBlockPreservesOriginalContent);
+    TEST_METHOD(Bash_Install_IsLfOnly);
+    TEST_METHOD(Bash_Install_IdempotentWhenAlreadyInstalled);
+    TEST_METHOD(Bash_Install_ReinstallsWhenScriptMissingButBlockMatches);
+    TEST_METHOD(Bash_Install_UpgradesWhenBlockReferencesOlderScriptVersion);
+    TEST_METHOD(Bash_Install_OverwritesOrphanOpenMarker);
+    TEST_METHOD(Bash_Install_CreatesBackupForNonEmptyProfile);
+    TEST_METHOD(Bash_Install_DoesNotCreateBackupForEmptyProfile);
+
+    TEST_METHOD(Bash_Uninstall_EmptyPath_Fails);
+    TEST_METHOD(Bash_Uninstall_ProfileMissing_NoOp);
+    TEST_METHOD(Bash_Uninstall_ProfileWithoutBlock_NoOp);
+    TEST_METHOD(Bash_Uninstall_StripsBlockCleanly);
+    TEST_METHOD(Bash_Uninstall_AfterInstall_RestoresOriginalContent);
+    TEST_METHOD(Bash_Uninstall_TwoConsecutiveCalls_AreIdempotent);
+
+    TEST_METHOD(Bash_InstallUninstallInstall_RoundTrip);
+
+    // ─── WSL flavor (helpers only — InstallWslBash requires real WSL) ──
+    TEST_METHOD(Wsl_IsSafeDistroName_AcceptsCommonNames);
+    TEST_METHOD(Wsl_IsSafeDistroName_RejectsInjection);
+    TEST_METHOD(Wsl_IsSafeDistroName_RejectsEmptyAndOverlong);
+    TEST_METHOD(Wsl_IsSafeWslHome_AcceptsCommonHomes);
+    TEST_METHOD(Wsl_IsSafeWslHome_RejectsRelativeAndTraversal);
+    TEST_METHOD(Wsl_IsSafeWslHome_RejectsBadChars);
+    TEST_METHOD(Wsl_UncPath_BuildsExpectedFormat);
+    TEST_METHOD(Wsl_StripExecTail_StripsExistingExecCommand);
+    TEST_METHOD(Wsl_QualifyBareLauncher_QualifiesBareWslBash);
+
+    TEST_METHOD(Wsl_Install_DuplicateCommandlineSkipsAfterCompletion);
+    TEST_METHOD(Wsl_Install_DuplicateCommandlineSkipsWhileInFlight);
+    TEST_METHOD(Wsl_Install_DistinctCommandlinesInstallIndependently);
+    TEST_METHOD(Wsl_Install_FailureAndExceptionConsumeAttempt);
+    TEST_METHOD(Wsl_Install_DiagnosticObserver_TracksDecision);
+
+    // Profile-presence gate (ShellIntegrationProfileGate.h)
+    TEST_METHOD(ProfileGate_PwshSourceMatches);
+    TEST_METHOD(ProfileGate_PwshCommandlineLeafExeMatches);
+    TEST_METHOD(ProfileGate_WindowsPowerShellOnlyWhenNotPwsh);
+    TEST_METHOD(ProfileGate_WindowsPowerShellWithDeveloperVsProfile);
+    TEST_METHOD(ProfileGate_BashOnlyForGitBashNotWsl);
+    TEST_METHOD(ProfileGate_BashRejectsSystem32WslLauncher);
+    TEST_METHOD(ProfileGate_AnyProfileEmptyCollection);
+    TEST_METHOD(ProfileGate_AnyProfileFindsOne);
+    TEST_METHOD(ProfileGate_AnyProfileMissingShellReturnsFalse);
+
+    // IsWslProfile — pure, Source-independent WSL recognizer (no parsing;
+    // the installer reuses the commandline + probes $WSL_DISTRO_NAME).
+    TEST_METHOD(IsWslProfile_WslLauncherForms_True);
+    TEST_METHOD(IsWslProfile_System32BashLauncher_True);
+    TEST_METHOD(IsWslProfile_GitBashAndOthers_False);
 
     TEST_CLASS_SETUP(ClassSetup)
     {
@@ -138,6 +296,18 @@ private:
         return _scratchDir / subdir / L"Microsoft.PowerShell_profile.ps1";
     }
 
+    // Bash equivalents: .bashrc lives at the scratch root, and the
+    // versioned .sh lives under a sibling "bash-script-dir" so tests
+    // never touch the real %USERPROFILE%\.intelligent-terminal\.
+    std::filesystem::path _BashProfilePath() const
+    {
+        return _scratchDir / L".bashrc";
+    }
+    std::filesystem::path _BashScriptDir() const
+    {
+        return _scratchDir / L"bash-script-dir";
+    }
+
     static std::string _ReadFile(const std::filesystem::path& p)
     {
         std::ifstream in{ p, std::ios::binary };
@@ -171,6 +341,28 @@ private:
             }
         }
         return n;
+    }
+
+    static std::wstring _UniqueWslInstallCommandline()
+    {
+        static std::atomic<uint64_t> counter{ 0 };
+        return L"wsl.exe -d shell-integration-test-" + std::to_wstring(counter.fetch_add(1, std::memory_order_relaxed));
+    }
+
+    static InstallResult _SuccessfulWslInstall(const bool alreadyInstalled = false)
+    {
+        InstallResult result;
+        result.success = true;
+        result.alreadyInstalled = alreadyInstalled;
+        return result;
+    }
+
+    static InstallResult _FailedWslInstall(std::wstring_view message)
+    {
+        InstallResult result;
+        result.success = false;
+        result.errorMessage = std::wstring{ message };
+        return result;
     }
 };
 
@@ -321,8 +513,269 @@ void ShellIntegrationTests::BuildBlock_HonoursEolParameter()
     VERIFY_IS_TRUE(_Contains(crlf, "\r\n"), L"CRLF block must contain CRLF separators");
 }
 
-// ─── Install ──────────────────────────────────────────────────────────────────
+void ShellIntegrationTests::PowerShell_ScriptContent_HandlesNullLastExitCode()
+{
+    const auto script = ShellIntegrationScriptContent();
+    const auto functionStart = script.find("function Global:__ShellInteg_GetLastExitCode");
+    const auto guard = script.find("$null -ne $LastExitCode -and $LastExitCode -ne 0", functionStart);
+    const auto nativeReturn = script.find("return $LastExitCode", functionStart);
+    const auto sentinelReturn = script.find("return -1", functionStart);
+    const auto functionEnd = script.find("function prompt", functionStart);
 
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, functionStart);
+    VERIFY_IS_TRUE(functionStart < guard &&
+                       guard < nativeReturn &&
+                       nativeReturn < sentinelReturn &&
+                       sentinelReturn < functionEnd,
+                   L"The exit-code helper must guard null/zero before returning a native code, then fall back to a numeric non-zero sentinel");
+}
+
+void ShellIntegrationTests::PowerShell_ScriptContent_TracksUnhistoriedErrors()
+{
+    const auto script = ShellIntegrationScriptContent();
+    const auto readLineWrapper = script.find("function Global:PSConsoleHostReadLine");
+    const auto lineStored = script.find("$Global:__ShellInteg_LastSubmittedLine =", readLineWrapper);
+    const auto resumeCommandMatch = script.find("copilot|claude|gemini", lineStored);
+    const auto resumeEqualsMatch = script.find("(?:\\s+|=)", resumeCommandMatch);
+    const auto resumeCommandMark = script.find("]9001;Resume;", resumeCommandMatch);
+    const auto promptStart = script.find("function prompt");
+    const auto lineCaptured = script.find("$submittedLine = $Global:__ShellInteg_LastSubmittedLine", promptStart);
+    const auto capture = script.find("$errorRecord", lineCaptured);
+    const auto historyCheck = script.find("$historyAdvanced =", capture);
+    const auto errorCheck = script.find("$newErrorRecord =", historyCheck);
+    const auto referenceCheck = script.find("[object]::ReferenceEquals", errorCheck);
+    const auto lazyParseGuard = script.find("($newErrorRecord -or -not $historyAdvanced)", referenceCheck);
+    const auto parseInput = script.find("Language.Parser]::ParseInput", lazyParseGuard);
+    const auto parserFlagSet = script.find("$inputHadParserError = $parseErrors.Count -gt 0", parseInput);
+    const auto staleZeroCheck = script.find("if ($inputHadParserError -and $gle -eq 0)", parserFlagSet);
+    const auto sentinelAssignment = script.find("$gle = -1", staleZeroCheck);
+    const auto untrackedErrorCheck = script.find("$newUntrackedError = -not $historyAdvanced -and $gle -ne 0 -and $newErrorRecord", sentinelAssignment);
+    const auto combinedCheck = script.find("if ($historyAdvanced -or $newUntrackedError -or $inputHadParserError)", untrackedErrorCheck);
+    const auto originalPrompt = script.find("$originalOutput = & $Global:__ShellInteg_OriginalPrompt", combinedCheck);
+    const auto consumeError = script.find("$Global:__ShellInteg_LastErrorRecord = $Error[0]", originalPrompt);
+    const auto consumeLine = script.find("$Global:__ShellInteg_LastSubmittedLine = $null", consumeError);
+
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, consumeLine);
+    VERIFY_IS_TRUE(readLineWrapper < lineStored &&
+                       lineStored < resumeCommandMatch &&
+                       resumeCommandMatch < resumeEqualsMatch &&
+                       resumeEqualsMatch < resumeCommandMark &&
+                       resumeCommandMark < promptStart &&
+                       promptStart < lineCaptured &&
+                       lineCaptured < capture &&
+                       capture < historyCheck &&
+                       historyCheck < errorCheck &&
+                       errorCheck < referenceCheck &&
+                       referenceCheck < lazyParseGuard &&
+                       lazyParseGuard < parseInput &&
+                       parseInput < parserFlagSet &&
+                       parserFlagSet < staleZeroCheck &&
+                       staleZeroCheck < sentinelAssignment &&
+                       sentinelAssignment < untrackedErrorCheck &&
+                       untrackedErrorCheck < combinedCheck &&
+                       combinedCheck < originalPrompt &&
+                       originalPrompt < consumeError &&
+                       consumeError < consumeLine,
+                   L"Submitted input must be retained at the PSReadLine boundary, parsed only after normal completion signals are absent, and consumed after prompt rendering");
+}
+
+void ShellIntegrationTests::PowerShell_ScriptContent_GatesRestrictedLanguageFeatures()
+{
+    const auto script = ShellIntegrationScriptContent();
+    const auto languageMode = script.find("$ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage'");
+    const auto readLineGuard = script.find("if ($Global:__ShellInteg_CanInspectErrors -and (Test-Path Function:\\PSConsoleHostReadLine))", languageMode);
+    const auto errorRecordGuard = script.find("$newErrorRecord = $Global:__ShellInteg_CanInspectErrors", readLineGuard);
+    const auto referenceCheck = script.find("[object]::ReferenceEquals", errorRecordGuard);
+    const auto lazyParseGuard = script.find("if ($Global:__ShellInteg_CanInspectErrors -and", referenceCheck);
+    const auto parseInput = script.find("Language.Parser]::ParseInput", lazyParseGuard);
+
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, parseInput);
+    VERIFY_IS_TRUE(languageMode < readLineGuard &&
+                       readLineGuard < errorRecordGuard &&
+                       errorRecordGuard < referenceCheck &&
+                       referenceCheck < lazyParseGuard &&
+                       lazyParseGuard < parseInput,
+                   L"Constrained Language Mode must bypass static parser and reference-identity method calls");
+}
+
+void ShellIntegrationTests::PowerShell_ScriptContent_ReArmsFromReadLineBoundary()
+{
+    const auto script = ShellIntegrationScriptContent();
+
+    // The re-arm must be driven from the PSReadLine boundary, NOT from prompt.
+    // That boundary runs once per command and BEFORE the user's command, so it
+    // cannot disturb the $? the next prompt reads. Calling it from prompt would
+    // silently corrupt every OSC 133;D exit code.
+    //
+    // innerReadLine is anchored to readLineWrapper, NOT to rearmCall: if the
+    // call were dropped from the wrapper, searching from rearmCall would match
+    // the later function DEFINITION and npos would then compare as maximum,
+    // letting a broken script pass.
+    const auto readLineWrapper = script.find("function Global:PSConsoleHostReadLine");
+    const auto innerReadLine = script.find("$Global:__ShellInteg_OriginalPSConsoleHostReadLine @args", readLineWrapper);
+    const auto rearmCall = script.find("__ShellInteg_Rearm", readLineWrapper);
+    const auto promptStart = script.find("function prompt");
+
+    // Detection is by object identity against our own scriptblock — never by
+    // text matching, which a renderer could accidentally satisfy.
+    const auto rearmFunc = script.find("function Global:__ShellInteg_Rearm");
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, rearmFunc,
+                         L"__ShellInteg_Rearm must exist");
+    // -eq, NOT a static reference-equality method: re-arm runs at script load and
+    // from the readline boundary, and a static method call under Constrained
+    // Language Mode aborts the enclosing script even from inside try/catch.
+    const auto identityCheck = script.find("if ($current -eq $Global:__ShellInteg_Wrapper) { return }", rearmFunc);
+    const auto noStaticCall = script.substr(rearmFunc).find("[object]::ReferenceEquals");
+    const auto adopt = script.find("$Global:__ShellInteg_OriginalPrompt = $current", identityCheck);
+    const auto reinstall = script.find("Set-Item Function:\\global:prompt $Global:__ShellInteg_Wrapper", adopt);
+
+    // The wrapper identity is captured once, after prompt is defined.
+    const auto wrapperCapture = script.find("$Global:__ShellInteg_Wrapper = $function:prompt");
+
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, reinstall);
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, wrapperCapture);
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, innerReadLine);
+    VERIFY_IS_TRUE(readLineWrapper < rearmCall && rearmCall < innerReadLine,
+                   L"Re-arm must run at the PSReadLine boundary before delegating to the real reader");
+    VERIFY_IS_TRUE(promptStart < wrapperCapture,
+                   L"The wrapper scriptblock must be captured after prompt is defined");
+    VERIFY_IS_TRUE(rearmFunc < identityCheck && identityCheck < adopt && adopt < reinstall,
+                   L"Re-arm must detect replacement by object identity, adopt the newcomer, then reinstall the wrapper");
+    VERIFY_ARE_EQUAL(std::string::npos, noStaticCall,
+                     L"Re-arm must not invoke static methods - blocked in Constrained Language Mode, and the failure aborts the script even from inside try/catch");
+}
+
+void ShellIntegrationTests::PowerShell_ScriptContent_ReArmIsBestEffortAndSkipsWithoutWrapper()
+{
+    const auto script = ShellIntegrationScriptContent();
+    const auto rearmFunc = script.find("function Global:__ShellInteg_Rearm");
+
+    // Guard 1: when an OLDER version of this script already owns the session,
+    // __ShellInteg_Installed is set, so our wrapper was never created. Re-arming
+    // then would install $null over prompt AND adopt the older wrapper as the
+    // prompt to wrap, making it delegate to itself (call depth overflow).
+    const auto nullWrapperGuard = script.find("if ($null -eq $Global:__ShellInteg_Wrapper) { return }", rearmFunc);
+
+    // Guard 2: re-arm runs from PSConsoleHostReadLine and at script load, so it
+    // must never throw. `prompt` can be ReadOnly/Constant in a hardened profile,
+    // which makes Set-Item raise SessionStateUnauthorizedAccessException.
+    const auto tryStart = script.find("try {", nullWrapperGuard);
+    const auto guardedSetItem = script.find("Set-Item Function:\\global:prompt $Global:__ShellInteg_Wrapper -ErrorAction Stop", tryStart);
+    const auto catchAll = script.find("catch {", guardedSetItem);
+
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, catchAll);
+    VERIFY_IS_TRUE(rearmFunc < nullWrapperGuard,
+                   L"Re-arm must no-op when no wrapper of our own exists");
+    VERIFY_IS_TRUE(nullWrapperGuard < tryStart &&
+                       tryStart < guardedSetItem &&
+                       guardedSetItem < catchAll,
+                   L"Re-arm must reinstall inside try/catch with -ErrorAction Stop so a read-only prompt cannot break the input path");
+}
+
+void ShellIntegrationTests::PowerShell_ScriptContent_RestoresStatusSignalBeforeDelegating()
+{
+    const auto script = ShellIntegrationScriptContent();
+    const auto promptStart = script.find("function prompt");
+
+    // The wrapper reads $? first, and its own work then overwrites it. A wrapped
+    // prompt that reads $? (Oh My Posh's status segment, starship, posh-git)
+    // would otherwise always see success. $? cannot be assigned, so it is
+    // reproduced — and the reproduction MUST be the statement immediately before
+    // the delegation, or the intervening statements clobber it again.
+    const auto successCase = script.find("if ($gle -eq 0) { $null = $true }", promptStart);
+    const auto failureCase = script.find("Get-Variable '__ShellInteg_NoSuchVariable__' -ErrorAction Ignore", successCase);
+    const auto delegation = script.find("$originalOutput = & $Global:__ShellInteg_OriginalPrompt", failureCase);
+
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, delegation);
+    VERIFY_IS_TRUE(successCase < failureCase && failureCase < delegation,
+                   L"The success/failure signal must be restored immediately before delegating to the wrapped prompt");
+
+    // -ErrorAction Ignore is load-bearing: SilentlyContinue and Write-Error both
+    // set $? but ALSO append to $Error, so the wrapped prompt would see a
+    // fabricated error record every failed command.
+    VERIFY_IS_TRUE(script.find("Get-Variable '__ShellInteg_NoSuchVariable__' -ErrorAction SilentlyContinue") == std::string::npos,
+                   L"Forcing $? false must not pollute $Error");
+}
+
+void ShellIntegrationTests::PowerShell_ScriptContent_GuardsAgainstChainingPromptModules()
+{
+    const auto script = ShellIntegrationScriptContent();
+    const auto promptStart = script.find("function prompt");
+
+    // A module may CHAIN rather than replace: capture the current prompt (ours)
+    // and call it from inside its own. Once adopted, delegating calls back into
+    // us — an unbounded mutual-delegation cycle without this guard.
+    const auto reentryGuard = script.find("if ($Global:__ShellInteg_Rendering)", promptStart);
+    const auto servePrev = script.find("return (& $Global:__ShellInteg_PrevPrompt)", reentryGuard);
+    // With nothing displaced left to serve, contribute an empty string — never
+    // fabricated prompt text. The chaining module renders its own text around
+    // whatever we return.
+    const auto emptyWhenExhausted = script.find("return ''", servePrev);
+    const auto setFlag = script.find("$Global:__ShellInteg_Rendering = $true", emptyWhenExhausted);
+    const auto delegation = script.find("$originalOutput = & $Global:__ShellInteg_OriginalPrompt", setFlag);
+    const auto clearFlag = script.find("finally { $Global:__ShellInteg_Rendering = $false }", delegation);
+
+    // The displaced renderer is retained so the chained module still has real
+    // prompt text to wrap.
+    const auto retainPrev = script.find("$Global:__ShellInteg_PrevPrompt = $Global:__ShellInteg_OriginalPrompt");
+
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, clearFlag);
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, retainPrev);
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, emptyWhenExhausted);
+    VERIFY_IS_TRUE(promptStart < reentryGuard && reentryGuard < servePrev && servePrev < emptyWhenExhausted,
+                   L"reentry must be detected before any rendering work, serve the displaced prompt, then contribute nothing rather than fabricating text");
+    VERIFY_IS_TRUE(setFlag < delegation && delegation < clearFlag,
+                   L"The reentrancy flag must be set around the delegation and cleared in finally");
+}
+
+void ShellIntegrationTests::PowerShell_ScriptContent_RendersFailSafe()
+{
+    const auto script = ShellIntegrationScriptContent();
+    const auto promptStart = script.find("function prompt");
+
+    // Shell integration is a convenience; a broken prompt is not. Any exception
+    // in the render path — ours or the wrapped prompt's — must degrade to the
+    // wrapped prompt without marks rather than throwing on EVERY prompt.
+    const auto renderTry = script.find("try {", promptStart);
+    const auto normalReturn = script.find("return \"${prefix}${originalOutput}${suffix}\"", renderTry);
+    const auto renderCatch = script.find("catch {", normalReturn);
+    const auto failSafeFlag = script.find("$Global:__ShellInteg_Rendering = $true", renderCatch);
+    const auto degradeToPrompt = script.find("try { return (& $Global:__ShellInteg_OriginalPrompt) }", failSafeFlag);
+    const auto lastResort = script.find("return ''", degradeToPrompt);
+    const auto failSafeClear = script.find("finally { $Global:__ShellInteg_Rendering = $false }", lastResort);
+
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, failSafeClear);
+    VERIFY_IS_TRUE(renderTry < normalReturn &&
+                       normalReturn < renderCatch &&
+                       renderCatch < failSafeFlag &&
+                       failSafeFlag < degradeToPrompt &&
+                       degradeToPrompt < lastResort &&
+                       lastResort < failSafeClear,
+                   L"The fail-safe must hold the reentrancy flag while degrading, or an adopted chaining prompt recurses to the call-depth limit");
+
+    // This wrapper must never invent visible prompt text. When the wrapped
+    // prompt itself throws there is nothing to show, so it returns an empty
+    // string and the HOST supplies its own default. Fabricating an imitation
+    // "PS <cwd>> " would alter the visible prompt, which is exactly what this
+    // component promises not to do.
+    VERIFY_ARE_EQUAL(std::string::npos,
+                     script.find("return \"PS $($executionContext.SessionState.Path.CurrentLocation)> \""),
+                     L"The prompt path must not fabricate prompt text");
+
+    // The wrapped prompt must be invoked at most ONCE per render. Its failure is
+    // caught at the delegation itself, so it cannot escape to the outer catch
+    // and be run a second time — which would duplicate any side effects the
+    // user's prompt has (git calls, logging, its own error reporting).
+    const auto delegation = script.find("try     { $originalOutput = & $Global:__ShellInteg_OriginalPrompt }", promptStart);
+    const auto delegationCatch = script.find("catch   { $originalOutput = '' }", delegation);
+
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, delegationCatch,
+                         L"The delegation must catch its own failure so the wrapped prompt runs at most once per render");
+    VERIFY_IS_TRUE(delegation < delegationCatch && delegationCatch < normalReturn,
+                   L"The delegation's catch must precede the normal return");
+}
+
+// ─── Install ──────────────────────────────────────────────────────────────────
 void ShellIntegrationTests::Install_EmptyPath_Fails()
 {
     const auto r = Install(L"");
@@ -423,6 +876,35 @@ void ShellIntegrationTests::Install_IdempotentWhenAlreadyInstalled()
     VERIFY_ARE_EQUAL(firstContents, _ReadFile(profile));
 }
 
+void ShellIntegrationTests::Install_RelocatesExistingBlockAfterPromptRenderer()
+{
+    const auto profile = _ProfilePath();
+    VERIFY_IS_TRUE(Install(profile.wstring()).success);
+
+    auto contents = _ReadFile(profile);
+    contents += "oh-my-posh init pwsh | Invoke-Expression\n";
+    _WriteFile(profile, contents);
+
+    const auto result = Install(profile.wstring());
+    VERIFY_IS_TRUE(result.success);
+    VERIFY_IS_FALSE(result.alreadyInstalled);
+
+    const auto relocated = _ReadFile(profile);
+    const auto promptRenderer = relocated.find("oh-my-posh init pwsh | Invoke-Expression");
+    const auto block = relocated.find(kShellIntegrationBlockOpenMarker);
+    const auto close = relocated.find(kShellIntegrationBlockCloseMarker, block);
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, promptRenderer);
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, block);
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, close);
+    VERIFY_IS_TRUE(promptRenderer < block, L"PowerShell integration must load after prompt renderers");
+    VERIFY_IS_TRUE(std::all_of(
+        relocated.begin() + close + kShellIntegrationBlockCloseMarker.size(),
+        relocated.end(),
+        [](const char ch) {
+            return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
+        }));
+}
+
 void ShellIntegrationTests::Install_ReinstallsWhenScriptMissingButBlockMatches()
 {
     const auto profile = _ProfilePath();
@@ -439,7 +921,7 @@ void ShellIntegrationTests::Install_ReinstallsWhenScriptMissingButBlockMatches()
     VERIFY_IS_TRUE(std::filesystem::exists(scriptPath));
 }
 
-void ShellIntegrationTests::Install_RewritesLegacyDotSourceLineInPlace()
+void ShellIntegrationTests::Install_RewritesLegacyDotSourceLineAtEnd()
 {
     const auto profile = _ProfilePath();
     const std::string original =
@@ -457,10 +939,46 @@ void ShellIntegrationTests::Install_RewritesLegacyDotSourceLineInPlace()
     VERIFY_IS_TRUE(_Contains(contents, kShellIntegrationBlockOpenMarker));
     VERIFY_IS_TRUE(_Contains(contents, "Set-Alias ll"), L"Surrounding user content preserved");
     VERIFY_IS_TRUE(_Contains(contents, "Write-Host 'tail'"), L"Trailing user content preserved");
-    // The block should be in the middle, not at the end of the file.
     const auto blockPos = contents.find(kShellIntegrationBlockOpenMarker);
     const auto tailPos = contents.find("Write-Host 'tail'");
-    VERIFY_IS_TRUE(blockPos < tailPos, L"In-place rewrite — block stays where legacy line was");
+    VERIFY_IS_TRUE(tailPos < blockPos, L"PowerShell integration must load after all user profile content");
+}
+
+void ShellIntegrationTests::Install_UpgradesWhenBlockReferencesOlderScriptVersion()
+{
+    // Regression: bumping the script version (e.g. v1 -> v2 when OSC
+    // 9001;ShellType emission was added) must actually reach existing
+    // users. Their $PROFILE already has a well-formed managed block, but it
+    // references the OLDER versioned script filename and the stale old
+    // script sits on disk. The block-match early-out must NOT fire (the
+    // block no longer equals the desired, current-version block), so the
+    // current script is written and the block is rewritten to point at it.
+    const auto profile = _ProfilePath();
+    const auto currentName = til::u16u8(ShellIntegrationScriptFileName());
+
+    // Simulate a prior install: take the current block and point it at an
+    // older script version. v0 is always older than any shipped vN, so this
+    // stays valid across future bumps.
+    const std::string oldName = "shell-integration_v0.ps1";
+    auto oldBlock = BuildShellIntegrationBlock(L"PowerShell", "\n");
+    const auto namePos = oldBlock.find(currentName);
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, namePos, L"Block must embed the current script filename");
+    oldBlock.replace(namePos, currentName.size(), oldName);
+    _WriteFile(profile, oldBlock + "\n");
+    // Stale old script on disk, without the ShellType emission.
+    _WriteFile(profile.parent_path() / L"shell-integration_v0.ps1", "# stale old script, no ShellType\n");
+
+    const auto r = Install(profile.wstring());
+    VERIFY_IS_TRUE(r.success);
+    VERIFY_IS_FALSE(r.alreadyInstalled, L"Block referenced an older script version → must upgrade, not no-op");
+
+    const auto contents = _ReadFile(profile);
+    VERIFY_IS_TRUE(_Contains(contents, currentName), L"Block must be rewritten to the current script version");
+    VERIFY_IS_FALSE(_Contains(contents, oldName), L"Old version reference must be replaced");
+
+    const auto scriptPath = profile.parent_path() / ShellIntegrationScriptFileName();
+    VERIFY_IS_TRUE(std::filesystem::exists(scriptPath), L"Current-version script must be written on upgrade");
+    VERIFY_IS_TRUE(_Contains(_ReadFile(scriptPath), "9001"), L"Upgraded script must emit OSC 9001;ShellType");
 }
 
 void ShellIntegrationTests::Install_OverwritesOrphanOpenMarker()
@@ -769,7 +1287,7 @@ void ShellIntegrationTests::QueryExecutionPolicy_ParsesStdoutAndLowercases()
     // Smoke test against real powershell.exe (always present on Windows).
     // We don't care WHICH policy the runner returns — we care that the
     // QueryExecutionPolicy contract holds:
-    //   * the call completes within the 5s timeout (no hang on the pipe),
+    //   * the call completes within the 20s timeout (no hang on the pipe),
     //   * stdout is captured (non-empty), and
     //   * the result is lowercase ASCII letters only — the parser strips
     //     newlines / spaces / tabs, lowercases A-Z, but a stray BOM byte or
@@ -796,4 +1314,1477 @@ void ShellIntegrationTests::QueryExecutionPolicy_TrimsWhitespaceAndStopsAtFirstL
     const auto first = details::QueryExecutionPolicy(L"powershell.exe");
     const auto second = details::QueryExecutionPolicy(L"powershell.exe");
     VERIFY_ARE_EQUAL(first, second, L"QueryExecutionPolicy must be deterministic for the same host");
+}
+
+void ShellIntegrationTests::ResolvePwshPath_UsesFirstAbsoluteEntry()
+{
+    const auto first = _scratchDir / L"first";
+    const auto second = _scratchDir / L"second";
+    _WriteFile(first / L"pwsh.exe", "");
+    _WriteFile(second / L"pwsh.exe", "");
+
+    DWORD error = ERROR_SUCCESS;
+    const auto resolved = Powershell::details::ResolvePwshExecutableFromExplicitPath(
+        first.wstring() + L";" + second.wstring(),
+        (_scratchDir / L"current").wstring(),
+        &error);
+
+    VERIFY_ARE_EQUAL(static_cast<DWORD>(ERROR_SUCCESS), error);
+    VERIFY_ARE_EQUAL((first / L"pwsh.exe").lexically_normal().wstring(), resolved);
+}
+
+void ShellIntegrationTests::ResolvePwshPath_SkipsEmptyRelativeAndCurrentDirectoryEntries()
+{
+    const auto current = _scratchDir / L"current";
+    const auto safe = _scratchDir / L"safe";
+    _WriteFile(current / L"pwsh.exe", "");
+    _WriteFile(safe / L"pwsh.exe", "");
+
+    DWORD error = ERROR_SUCCESS;
+    const auto resolved = Powershell::details::ResolvePwshExecutableFromExplicitPath(
+        L";.;relative;" + current.wstring() + L";" + safe.wstring(),
+        current.wstring(),
+        &error);
+
+    VERIFY_ARE_EQUAL(static_cast<DWORD>(ERROR_SUCCESS), error);
+    VERIFY_ARE_EQUAL((safe / L"pwsh.exe").lexically_normal().wstring(), resolved);
+}
+
+void ShellIntegrationTests::ResolvePwshPath_AcceptsQuotedAndExpandedEntries()
+{
+    const auto safe = _scratchDir / L"safe";
+    _WriteFile(safe / L"pwsh.exe", "");
+
+    const auto variableName = L"IT_SHELL_INTEGRATION_TEST_PATH";
+    VERIFY_WIN32_BOOL_SUCCEEDED(SetEnvironmentVariableW(variableName, safe.c_str()));
+    const auto clearVariable = wil::scope_exit([&]() noexcept {
+        SetEnvironmentVariableW(variableName, nullptr);
+    });
+
+    DWORD error = ERROR_SUCCESS;
+    const auto resolved = Powershell::details::ResolvePwshExecutableFromExplicitPath(
+        L"\"%IT_SHELL_INTEGRATION_TEST_PATH%\"",
+        (_scratchDir / L"current").wstring(),
+        &error);
+
+    VERIFY_ARE_EQUAL(static_cast<DWORD>(ERROR_SUCCESS), error);
+    VERIFY_ARE_EQUAL((safe / L"pwsh.exe").lexically_normal().wstring(), resolved);
+}
+
+void ShellIntegrationTests::ResolvePwshPath_MissingReturnsFileNotFound()
+{
+    DWORD error = ERROR_SUCCESS;
+    const auto resolved = Powershell::details::ResolvePwshExecutableFromExplicitPath(
+        (_scratchDir / L"missing").wstring(),
+        (_scratchDir / L"current").wstring(),
+        &error);
+
+    VERIFY_IS_TRUE(resolved.empty());
+    VERIFY_ARE_EQUAL(static_cast<DWORD>(ERROR_FILE_NOT_FOUND), error);
+}
+
+void ShellIntegrationTests::ExecutionPolicyStatus_ClassifiesBlockedAllowedAndUnknown()
+{
+    using namespace Powershell;
+
+    VERIFY_ARE_EQUAL(ExecutionPolicyStatus::Blocked, Powershell::details::ClassifyExecutionPolicy(L"restricted"));
+    VERIFY_ARE_EQUAL(ExecutionPolicyStatus::Blocked, Powershell::details::ClassifyExecutionPolicy(L"allsigned"));
+    VERIFY_ARE_EQUAL(ExecutionPolicyStatus::Allowed, Powershell::details::ClassifyExecutionPolicy(L"remotesigned"));
+    VERIFY_ARE_EQUAL(ExecutionPolicyStatus::Allowed, Powershell::details::ClassifyExecutionPolicy(L"undefined"));
+    VERIFY_ARE_EQUAL(ExecutionPolicyStatus::Unknown, Powershell::details::ClassifyExecutionPolicy(L""));
+    VERIFY_ARE_EQUAL(ExecutionPolicyStatus::Unknown, Powershell::details::ClassifyExecutionPolicy(L"unexpected"));
+}
+
+void ShellIntegrationTests::ExecutionPolicyRemediation_PreflightRejectsUnknown()
+{
+    using namespace Powershell;
+
+    ExecutionPolicyProbeResult pwsh;
+    pwsh.status = ExecutionPolicyStatus::Blocked;
+    ExecutionPolicyProbeResult windowsPowerShell;
+    windowsPowerShell.status = ExecutionPolicyStatus::Unknown;
+
+    VERIFY_IS_FALSE(CanAttemptExecutionPolicyRemediation(pwsh, windowsPowerShell));
+
+    windowsPowerShell.status = ExecutionPolicyStatus::Absent;
+    VERIFY_IS_TRUE(CanAttemptExecutionPolicyRemediation(pwsh, windowsPowerShell));
+}
+
+void ShellIntegrationTests::ExecutionPolicyRemediation_SucceedsOnlyWhenEveryHostAllowedOrAbsent()
+{
+    using namespace Powershell;
+
+    ExecutionPolicyProbeResult pwsh;
+    pwsh.status = ExecutionPolicyStatus::Allowed;
+    ExecutionPolicyProbeResult windowsPowerShell;
+    windowsPowerShell.status = ExecutionPolicyStatus::Absent;
+    VERIFY_IS_TRUE(ExecutionPolicyRemediationSucceeded(pwsh, windowsPowerShell));
+
+    windowsPowerShell.status = ExecutionPolicyStatus::Blocked;
+    VERIFY_IS_FALSE(ExecutionPolicyRemediationSucceeded(pwsh, windowsPowerShell));
+
+    windowsPowerShell.status = ExecutionPolicyStatus::Unknown;
+    VERIFY_IS_FALSE(ExecutionPolicyRemediationSucceeded(pwsh, windowsPowerShell));
+}
+
+void ShellIntegrationTests::ExecutionPolicyRemediation_ReusesOnlyConclusiveProbeResults()
+{
+    using namespace Powershell;
+
+    ExecutionPolicyRemediationResult remediation;
+    remediation.pwshBefore.status = ExecutionPolicyStatus::Allowed;
+    remediation.windowsPowerShellBefore.status = ExecutionPolicyStatus::Absent;
+    VERIFY_IS_TRUE(ExecutionPoliciesVerifiedForInstall(remediation));
+
+    remediation.pwshBefore.status = ExecutionPolicyStatus::Unknown;
+    VERIFY_IS_FALSE(ExecutionPoliciesVerifiedForInstall(remediation));
+
+    remediation.verificationAttempted = true;
+    remediation.pwshAfter.status = ExecutionPolicyStatus::Allowed;
+    remediation.windowsPowerShellAfter.status = ExecutionPolicyStatus::Allowed;
+    VERIFY_IS_TRUE(ExecutionPoliciesVerifiedForInstall(remediation));
+
+    remediation.windowsPowerShellAfter.status = ExecutionPolicyStatus::Unknown;
+    VERIFY_IS_FALSE(ExecutionPoliciesVerifiedForInstall(remediation));
+}
+
+void ShellIntegrationTests::ExecutionPolicyProbe_BootstrapsWithoutMaskingEffectivePolicy()
+{
+    VERIFY_ARE_EQUAL(
+        std::wstring_view{
+            L"-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "
+            L"Import-Module Microsoft.PowerShell.Security;"
+            L"Remove-Item Env:PSExecutionPolicyPreference -ErrorAction SilentlyContinue;"
+            L"Get-ExecutionPolicy" },
+        Powershell::details::QueryExecutionPolicyArguments);
+}
+
+void ShellIntegrationTests::ExecutionPolicyRemediation_UsesCurrentUserRemoteSignedCommand()
+{
+    VERIFY_ARE_EQUAL(
+        std::wstring_view{
+            L"-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "
+            L"Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force -ErrorAction SilentlyContinue;"
+            L"if((Get-ExecutionPolicy -Scope CurrentUser) -eq 'RemoteSigned'){exit 0}else{exit 1}" },
+        Powershell::details::EnableRemoteSignedArguments);
+}
+
+void ShellIntegrationTests::EnableRemoteSigned_RejectsNonBlockedProbeWithoutLaunching()
+{
+    using namespace Powershell;
+
+    ExecutionPolicyProbeResult probe;
+    probe.status = ExecutionPolicyStatus::Allowed;
+    probe.executablePath = L"definitely-not-a-real-binary-zzzzz.exe";
+
+    const auto result = EnableRemoteSignedForCurrentUser(probe);
+    VERIFY_IS_FALSE(result.launched);
+    VERIFY_ARE_EQUAL(static_cast<DWORD>(ERROR_INVALID_STATE), result.error);
+}
+
+// ─── ResolvePowerShellHostInstall ─────────────────────────────────────────────
+// These cover the seam that the string-only PolicyName_* tests above cannot:
+// the verdict that decides whether FRE / Save stops. The regression (PR #222)
+// profile-gated this verdict so a Restricted host with no matching Windows
+// Terminal profile silently reported success and FRE never stopped. The
+// no-profile + blocked case below fails on that exact bug.
+
+void ShellIntegrationTests::ResolveHost_NoProfile_PolicyBlocked_StopsWithEpFlagWithoutWriting()
+{
+    // The host has NO Windows Terminal profile, but its execution policy
+    // blocks unsigned scripts. The verdict MUST still be a failure carrying
+    // executionPolicyBlocked=true (so FRE shows the policy error + turns auto
+    // detection off), and the $PROFILE write must NOT be attempted.
+    int writeCalls = 0;
+    const auto result = ResolvePowerShellHostInstall(
+        /*profilePresent*/ false,
+        /*executionPolicyBlocked*/ true,
+        [&] { ++writeCalls; return InstallResult{ true, false, {}, false }; });
+
+    VERIFY_IS_FALSE(result.success, L"A blocking policy must fail the verdict even with no profile");
+    VERIFY_IS_TRUE(result.executionPolicyBlocked, L"executionPolicyBlocked must propagate so FRE shows the policy error");
+    VERIFY_ARE_EQUAL(0, writeCalls, L"No $PROFILE write may be attempted when the policy blocks");
+}
+
+void ShellIntegrationTests::ResolveHost_NoProfile_PolicyOk_SucceedsWithoutWriting()
+{
+    // No profile and a permissive policy: nothing to do. Report
+    // success-already-satisfied (so the sweep's all-installed verdict isn't
+    // tripped) without writing.
+    int writeCalls = 0;
+    const auto result = ResolvePowerShellHostInstall(
+        /*profilePresent*/ false,
+        /*executionPolicyBlocked*/ false,
+        [&] { ++writeCalls; return InstallResult{ true, false, {}, false }; });
+
+    VERIFY_IS_TRUE(result.success);
+    VERIFY_IS_FALSE(result.executionPolicyBlocked);
+    VERIFY_ARE_EQUAL(0, writeCalls, L"No write when the user has no profile for this host");
+}
+
+void ShellIntegrationTests::ResolveHost_Profile_PolicyOk_PerformsWrite()
+{
+    // Profile present and policy OK: delegate to the write, returning exactly
+    // what it reports.
+    int writeCalls = 0;
+    const auto result = ResolvePowerShellHostInstall(
+        /*profilePresent*/ true,
+        /*executionPolicyBlocked*/ false,
+        [&] { ++writeCalls; return InstallResult{ true, false, L"sentinel", false }; });
+
+    VERIFY_ARE_EQUAL(1, writeCalls, L"The write must run when a profile is present and the policy is fine");
+    VERIFY_IS_TRUE(result.success);
+    VERIFY_ARE_EQUAL(std::wstring{ L"sentinel" }, result.errorMessage, L"The write's own result must be returned verbatim");
+}
+
+void ShellIntegrationTests::ResolveHost_Profile_PolicyBlocked_StopsWithEpFlagWithoutWriting()
+{
+    // Profile present but policy blocks: short-circuit before writing (the
+    // block would only throw PSSecurityException on every shell start anyway)
+    // and surface the policy verdict.
+    int writeCalls = 0;
+    const auto result = ResolvePowerShellHostInstall(
+        /*profilePresent*/ true,
+        /*executionPolicyBlocked*/ true,
+        [&] { ++writeCalls; return InstallResult{ true, false, {}, false }; });
+
+    VERIFY_IS_FALSE(result.success);
+    VERIFY_IS_TRUE(result.executionPolicyBlocked);
+    VERIFY_ARE_EQUAL(0, writeCalls, L"A blocking policy must short-circuit before the write");
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Bash flavor
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ─── FindShellIntegrationBashBlock ────────────────────────────────────────────
+
+void ShellIntegrationTests::Bash_FindBlock_EmptyContent_ReturnsNpos()
+{
+    const auto [s, e] = FindShellIntegrationBashBlock("");
+    VERIFY_ARE_EQUAL(std::string::npos, s);
+    VERIFY_ARE_EQUAL(std::string::npos, e);
+}
+
+void ShellIntegrationTests::Bash_FindBlock_UnrelatedContent_ReturnsNpos()
+{
+    const auto [s, e] = FindShellIntegrationBashBlock("export PATH=$PATH:/usr/local/bin\nalias ll='ls -la'\n");
+    VERIFY_ARE_EQUAL(std::string::npos, s);
+    VERIFY_ARE_EQUAL(std::string::npos, e);
+}
+
+void ShellIntegrationTests::Bash_FindBlock_ModernBlock_ReturnsRange()
+{
+    std::string content = "alias ll='ls -la'\n";
+    const auto blockStart = content.size();
+    content += std::string{ kShellIntegrationBlockOpenMarker };
+    content += "\nbody\n";
+    content += std::string{ kShellIntegrationBlockCloseMarker };
+    const auto blockEnd = content.size();
+    content += "\nexport FOO=bar\n";
+
+    const auto [s, e] = FindShellIntegrationBashBlock(content);
+    VERIFY_ARE_EQUAL(blockStart, s);
+    VERIFY_ARE_EQUAL(blockEnd, e);
+}
+
+void ShellIntegrationTests::Bash_FindBlock_OrphanOpenMarker_ConsumesRecognizableBodyLines()
+{
+    // Open marker present, no close marker, but recognizable body lines.
+    // Find must extend past the marker line through the recognized body.
+    std::string content = "alias ll='ls -la'\n";
+    const auto start = content.size();
+    content += std::string{ kShellIntegrationBlockOpenMarker };
+    content += "\n# Auto-generated by Intelligent Terminal. Do not edit between markers.";
+    content += "\nif [ -n \"${BASH_VERSION:-}\" ]; then";
+    content += "\n    __it_si=\"${HOME:-}/.intelligent-terminal/shell-integration_v1.sh\"";
+    content += "\n    [ -f \"$__it_si\" ] && . \"$__it_si\"";
+    content += "\n    unset __it_si";
+    content += "\nfi";
+
+    const auto [s, e] = FindShellIntegrationBashBlock(content);
+    VERIFY_ARE_EQUAL(start, s);
+    VERIFY_ARE_EQUAL(content.size(), e);
+}
+
+void ShellIntegrationTests::Bash_FindBlock_OrphanOpenMarker_StopsAtUnrelatedUserContent()
+{
+    // Stop at first non-recognized line so user content below the
+    // corruption is preserved.
+    std::string content;
+    content += std::string{ kShellIntegrationBlockOpenMarker };
+    content += "\n# Auto-generated by Intelligent Terminal. Do not edit between markers.";
+    const auto expectedEnd = content.size();
+    content += "\necho 'this is user content, must survive'";
+    content += "\nexport USER_THING=1";
+
+    const auto [s, e] = FindShellIntegrationBashBlock(content);
+    VERIFY_ARE_EQUAL(static_cast<size_t>(0), s);
+    VERIFY_ARE_EQUAL(expectedEnd, e);
+}
+
+// ─── BuildShellIntegrationBashBlock + script content ──────────────────────────
+
+void ShellIntegrationTests::Bash_BuildBlock_ContainsMarkersAndScriptFilename()
+{
+    const auto block = BuildShellIntegrationBashBlock();
+    VERIFY_IS_TRUE(_Contains(block, kShellIntegrationBlockOpenMarker));
+    VERIFY_IS_TRUE(_Contains(block, kShellIntegrationBlockCloseMarker));
+    VERIFY_IS_TRUE(_Contains(block,
+                             "shell-integration_v" + std::to_string(kShellIntegrationBashVersion) + ".sh"));
+}
+
+void ShellIntegrationTests::Bash_BuildBlock_IsLfOnly()
+{
+    const auto block = BuildShellIntegrationBashBlock();
+    VERIFY_IS_FALSE(_Contains(block, "\r\n"),
+                    L"Bash block must be LF-only — bash files are never CRLF");
+    VERIFY_IS_FALSE(_Contains(block, "\r"),
+                    L"Bash block must not contain bare CR either");
+}
+
+void ShellIntegrationTests::Bash_BuildBlock_UsesHomeAndGuardsOnBashVersion()
+{
+    const auto block = BuildShellIntegrationBashBlock();
+    // Machine-portable: references $HOME, not a hardcoded path. This is
+    // the bash analogue of the PS block's runtime Documents resolution
+    // and is the property that lets .bashrc roam across machines safely.
+    VERIFY_IS_TRUE(_Contains(block, "${HOME:-}/"));
+    VERIFY_IS_FALSE(_Contains(block, "C:\\"),
+                    L"Block must NOT contain a hardcoded Windows path");
+    // Bash-only guard so the block is a silent no-op when .bashrc is
+    // sourced by sh / dash / zsh.
+    VERIFY_IS_TRUE(_Contains(block, "${BASH_VERSION:-}"));
+    // set -u safety: never use bare $BASH_VERSION/$HOME — sourcing under
+    // `set -u` enabled earlier in .bashrc would raise "unbound variable"
+    // before our guard runs.
+    VERIFY_IS_FALSE(_Contains(block, "\"$BASH_VERSION\""),
+                    L"Block must use ${BASH_VERSION:-} not bare $BASH_VERSION");
+    VERIFY_IS_FALSE(_Contains(block, "\"$HOME/"),
+                    L"Block must use ${HOME:-} not bare $HOME");
+    // Missing-script guard so roaming to a machine without IT installed
+    // is a silent no-op rather than an error per shell start.
+    VERIFY_IS_TRUE(_Contains(block, "[ -f \"$__it_si\" ]"));
+}
+
+void ShellIntegrationTests::Bash_ScriptContent_HasIdempotencyGuardAndOscSequences()
+{
+    const auto& script = ShellIntegrationBashScriptContent();
+
+    // Idempotency: must guard against double-sourcing.
+    VERIFY_IS_TRUE(_Contains(script, "__IT_SHELLINTEG_INSTALLED"));
+    // Bash-only + interactive-only guards.
+    VERIFY_IS_TRUE(_Contains(script, "BASH_VERSION"));
+    VERIFY_IS_TRUE(_Contains(script, "case \"${-:-}\" in *i*"));
+    // The three OSC sequences the autofix pipeline downstream depends on.
+    VERIFY_IS_TRUE(_Contains(script, "133;D;%s"));
+    VERIFY_IS_TRUE(_Contains(script, "133;A"));
+    VERIFY_IS_TRUE(_Contains(script, "133;B"));
+    // CWD reporting — unquoted form (the Terminal's 9;9 parser
+    // rejects payloads with embedded quotes, and Linux paths can
+    // contain `"`; the unquoted form parses cleanly regardless).
+    VERIFY_IS_TRUE(_Contains(script, "9;9;%s\\007"));
+    VERIFY_IS_FALSE(_Contains(script, "9;9;\"%s\""),
+                    L"Script must NOT wrap the CWD payload in quotes");
+    // Preserves the user's existing PROMPT_COMMAND.
+    VERIFY_IS_TRUE(_Contains(script, "__IT_SHELLINTEG_USER_PC"));
+    // Preserves $? for that user hook so its `local ec=$?` still works.
+    VERIFY_IS_TRUE(_Contains(script, "(exit \"$__ec\")"));
+    // `set -u` safety: every variable that might be unset
+    // BEFORE we touch it must use ${VAR:-} defaulting. A user with
+    // `set -u` earlier in .bashrc must not see "unbound variable" noise
+    // from sourcing our script.
+    VERIFY_IS_TRUE(_Contains(script, "${BASH_VERSION:-}"));
+    VERIFY_IS_TRUE(_Contains(script, "${-:-}"));
+    VERIFY_IS_TRUE(_Contains(script, "${__IT_SHELLINTEG_INSTALLED:-}"));
+    // PROMPT_COMMAND can be an array (bash 5.1+) so scalar ${VAR:-}
+    // defaulting is wrong for it — it would only see element [0]. The
+    // set -u-safe form for the array read is the ${ARR[@]+...}
+    // alternate-value guard, which collapses to nothing when unset.
+    VERIFY_IS_TRUE(_Contains(script, "${PROMPT_COMMAND[@]+\"${PROMPT_COMMAND[@]}\"}"));
+    VERIFY_IS_TRUE(_Contains(script, "${PS1:-}"));
+    // PWD too — printf reads it for the OSC 9;9 CWD report.
+    VERIFY_IS_TRUE(_Contains(script, "${PWD:-}"));
+    VERIFY_IS_FALSE(_Contains(script, "\"$PWD\""),
+                    L"Script must use ${PWD:-} not bare $PWD (set -u safety)");
+}
+
+void ShellIntegrationTests::Bash_ScriptContent_GatesAndRepairsPromptMarks()
+{
+    const auto& script = ShellIntegrationBashScriptContent();
+
+    const auto gate = script.find("[ \"${INTELLIGENT_TERMINAL:-}\" = \"1\" ]");
+    const auto installed = script.find("__IT_SHELLINTEG_INSTALLED=1");
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, gate);
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, installed);
+    VERIFY_IS_TRUE(gate < installed, L"The host gate must run before installing shell hooks");
+
+    const auto stripMark = script.find("PS1=\"${PS1%\"$__it_suffix\"}\"");
+    const auto userPrompt = script.find("eval \"$__IT_SHELLINTEG_USER_PC\"");
+    const auto appendMark = script.find("PS1=\"${PS1:-}${__it_suffix}\"");
+    const auto promptStart = script.find("printf '\\033]133;A\\007'");
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, stripMark);
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, userPrompt);
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, appendMark);
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, promptStart);
+    VERIFY_IS_TRUE(stripMark < userPrompt,
+                   L"The previous OSC 133;B suffix must be removed before the user's prompt hook runs");
+    VERIFY_IS_TRUE(userPrompt < appendMark,
+                   L"The user's PROMPT_COMMAND must finish rebuilding PS1 before OSC 133;B is appended");
+    VERIFY_IS_TRUE(appendMark < promptStart,
+                   L"OSC 133;A must not be emitted until PS1 contains the matching OSC 133;B");
+
+    VERIFY_IS_TRUE(_Contains(script, "*\"$__it_suffix\") printf '\\033]133;A\\007'"),
+                   L"OSC 133;A must be guarded by a check for the matching PS1 suffix");
+}
+
+// ─── InstallBash ──────────────────────────────────────────────────────────────
+
+void ShellIntegrationTests::Bash_Install_EmptyProfilePath_Fails()
+{
+    const auto r = InstallBash(L"", _BashScriptDir().wstring());
+    VERIFY_IS_FALSE(r.success);
+    VERIFY_IS_FALSE(r.alreadyInstalled);
+    VERIFY_IS_FALSE(r.errorMessage.empty());
+}
+
+void ShellIntegrationTests::Bash_Install_EmptyScriptDir_Fails()
+{
+    const auto r = InstallBash(_BashProfilePath().wstring(), L"");
+    VERIFY_IS_FALSE(r.success);
+    VERIFY_IS_FALSE(r.alreadyInstalled);
+    VERIFY_IS_FALSE(r.errorMessage.empty());
+}
+
+void ShellIntegrationTests::Bash_Install_ProfileMissing_CreatesProfileAndScript()
+{
+    const auto profile = _BashProfilePath();
+    const auto scriptDir = _BashScriptDir();
+    VERIFY_IS_FALSE(std::filesystem::exists(profile));
+
+    const auto r = InstallBash(profile.wstring(), scriptDir.wstring());
+    VERIFY_IS_TRUE(r.success);
+    VERIFY_IS_FALSE(r.alreadyInstalled);
+    VERIFY_IS_TRUE(std::filesystem::exists(profile));
+    VERIFY_IS_TRUE(std::filesystem::exists(scriptDir / ShellIntegrationBashScriptFileName()));
+
+    const auto contents = _ReadFile(profile);
+    VERIFY_IS_TRUE(_Contains(contents, kShellIntegrationBlockOpenMarker));
+    VERIFY_IS_TRUE(_Contains(contents, kShellIntegrationBlockCloseMarker));
+}
+
+void ShellIntegrationTests::Bash_Install_ProfileWithoutBlock_AppendsBlockPreservesOriginalContent()
+{
+    const auto profile = _BashProfilePath();
+    const std::string original = "export PATH=$PATH:/usr/local/bin\nalias ll='ls -la'\n";
+    _WriteFile(profile, original);
+
+    const auto r = InstallBash(profile.wstring(), _BashScriptDir().wstring());
+    VERIFY_IS_TRUE(r.success);
+    VERIFY_IS_FALSE(r.alreadyInstalled);
+
+    const auto contents = _ReadFile(profile);
+    VERIFY_IS_TRUE(contents.rfind(original, 0) == 0, L"Original content must remain at start of .bashrc");
+    VERIFY_IS_TRUE(_Contains(contents, kShellIntegrationBlockOpenMarker));
+}
+
+void ShellIntegrationTests::Bash_Install_IsLfOnly()
+{
+    const auto profile = _BashProfilePath();
+    // Even if a user (or a buggy editor) introduced CRLF, our install
+    // must not emit CRLF inside its own block — bash tolerates both,
+    // but our block style stays consistent with the bash convention.
+    _WriteFile(profile, "alias ll='ls -la'\r\n");
+
+    VERIFY_IS_TRUE(InstallBash(profile.wstring(), _BashScriptDir().wstring()).success);
+
+    const auto contents = _ReadFile(profile);
+    const auto openPos = contents.find(kShellIntegrationBlockOpenMarker);
+    const auto closePos = contents.find(kShellIntegrationBlockCloseMarker, openPos);
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, openPos);
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, closePos);
+    for (size_t i = openPos; i < closePos; ++i)
+    {
+        VERIFY_ARE_NOT_EQUAL('\r', contents[i],
+                             L"Bash block must contain no CR characters");
+    }
+}
+
+void ShellIntegrationTests::Bash_Install_IdempotentWhenAlreadyInstalled()
+{
+    const auto profile = _BashProfilePath();
+    const auto scriptDir = _BashScriptDir();
+    VERIFY_IS_TRUE(InstallBash(profile.wstring(), scriptDir.wstring()).success);
+
+    const auto firstContents = _ReadFile(profile);
+    const auto r2 = InstallBash(profile.wstring(), scriptDir.wstring());
+    VERIFY_IS_TRUE(r2.success);
+    VERIFY_IS_TRUE(r2.alreadyInstalled);
+    VERIFY_ARE_EQUAL(firstContents, _ReadFile(profile));
+}
+
+void ShellIntegrationTests::Bash_Install_ReinstallsWhenScriptMissingButBlockMatches()
+{
+    const auto profile = _BashProfilePath();
+    const auto scriptDir = _BashScriptDir();
+    VERIFY_IS_TRUE(InstallBash(profile.wstring(), scriptDir.wstring()).success);
+
+    const auto scriptPath = scriptDir / ShellIntegrationBashScriptFileName();
+    std::error_code ec;
+    std::filesystem::remove(scriptPath, ec);
+    VERIFY_IS_FALSE(std::filesystem::exists(scriptPath));
+
+    const auto r = InstallBash(profile.wstring(), scriptDir.wstring());
+    VERIFY_IS_TRUE(r.success);
+    VERIFY_IS_FALSE(r.alreadyInstalled, L"Script file went missing → must re-install, not no-op");
+    VERIFY_IS_TRUE(std::filesystem::exists(scriptPath));
+}
+
+void ShellIntegrationTests::Bash_Install_UpgradesWhenBlockReferencesOlderScriptVersion()
+{
+    // Bash/WSL counterpart of the PowerShell upgrade regression: an existing
+    // ~/.bashrc managed block that references an OLDER versioned script must
+    // be rewritten to the current version (so the OSC 9001;ShellType emission
+    // added in v2 actually reaches users who already had v1 installed).
+    const auto profile = _BashProfilePath();
+    const auto scriptDir = _BashScriptDir();
+    const auto currentName = til::u16u8(ShellIntegrationBashScriptFileName());
+
+    const std::string oldName = "shell-integration_v0.sh";
+    auto oldBlock = BuildShellIntegrationBashBlock();
+    const auto namePos = oldBlock.find(currentName);
+    VERIFY_ARE_NOT_EQUAL(std::string::npos, namePos, L"Block must embed the current script filename");
+    oldBlock.replace(namePos, currentName.size(), oldName);
+    _WriteFile(profile, oldBlock + "\n");
+    // Stale old script on disk, without the ShellType emission.
+    _WriteFile(scriptDir / L"shell-integration_v0.sh", "# stale old script, no ShellType\n");
+
+    const auto r = InstallBash(profile.wstring(), scriptDir.wstring());
+    VERIFY_IS_TRUE(r.success);
+    VERIFY_IS_FALSE(r.alreadyInstalled, L"Block referenced an older script version → must upgrade, not no-op");
+
+    const auto contents = _ReadFile(profile);
+    VERIFY_IS_TRUE(_Contains(contents, currentName), L"Block must be rewritten to the current script version");
+    VERIFY_IS_FALSE(_Contains(contents, oldName), L"Old version reference must be replaced");
+
+    const auto scriptPath = scriptDir / ShellIntegrationBashScriptFileName();
+    VERIFY_IS_TRUE(std::filesystem::exists(scriptPath), L"Current-version script must be written on upgrade");
+    VERIFY_IS_TRUE(_Contains(_ReadFile(scriptPath), "9001"), L"Upgraded script must emit OSC 9001;ShellType");
+}
+
+void ShellIntegrationTests::Bash_Install_OverwritesOrphanOpenMarker()
+{
+    const auto profile = _BashProfilePath();
+    std::string original = "alias ll='ls -la'\n";
+    original += std::string{ kShellIntegrationBlockOpenMarker };
+    original += "\n# Auto-generated by Intelligent Terminal. Do not edit between markers.";
+    original += "\nif [ -n \"${BASH_VERSION:-}\" ]; then";
+    original += "\n    __it_si=\"/leaked/path\"";
+    original += "\n    [ -f \"$__it_si\" ] && . \"$__it_si\"";
+    original += "\n    unset __it_si";
+    original += "\nfi\n";
+    _WriteFile(profile, original);
+
+    const auto r = InstallBash(profile.wstring(), _BashScriptDir().wstring());
+    VERIFY_IS_TRUE(r.success);
+
+    const auto contents = _ReadFile(profile);
+    size_t openCount = 0, closeCount = 0, pos = 0;
+    while ((pos = contents.find(kShellIntegrationBlockOpenMarker, pos)) != std::string::npos)
+    {
+        ++openCount;
+        pos += kShellIntegrationBlockOpenMarker.size();
+    }
+    pos = 0;
+    while ((pos = contents.find(kShellIntegrationBlockCloseMarker, pos)) != std::string::npos)
+    {
+        ++closeCount;
+        pos += kShellIntegrationBlockCloseMarker.size();
+    }
+    VERIFY_ARE_EQUAL(static_cast<size_t>(1), openCount);
+    VERIFY_ARE_EQUAL(static_cast<size_t>(1), closeCount);
+    VERIFY_IS_FALSE(_Contains(contents, "/leaked/path"),
+                    L"Orphaned body line must be replaced by InstallBash");
+}
+
+void ShellIntegrationTests::Bash_Install_CreatesBackupForNonEmptyProfile()
+{
+    const auto profile = _BashProfilePath();
+    _WriteFile(profile, "alias ll='ls -la'\n");
+
+    VERIFY_IS_TRUE(InstallBash(profile.wstring(), _BashScriptDir().wstring()).success);
+    VERIFY_IS_GREATER_THAN_OR_EQUAL(_CountBackups(profile), static_cast<size_t>(1));
+}
+
+void ShellIntegrationTests::Bash_Install_DoesNotCreateBackupForEmptyProfile()
+{
+    const auto profile = _BashProfilePath();
+    VERIFY_IS_TRUE(InstallBash(profile.wstring(), _BashScriptDir().wstring()).success);
+    VERIFY_ARE_EQUAL(static_cast<size_t>(0), _CountBackups(profile));
+}
+
+// ─── UninstallBash ────────────────────────────────────────────────────────────
+
+void ShellIntegrationTests::Bash_Uninstall_EmptyPath_Fails()
+{
+    const auto r = UninstallBash(L"");
+    VERIFY_IS_FALSE(r.success);
+}
+
+void ShellIntegrationTests::Bash_Uninstall_ProfileMissing_NoOp()
+{
+    const auto profile = _BashProfilePath();
+    VERIFY_IS_FALSE(std::filesystem::exists(profile));
+
+    const auto r = UninstallBash(profile.wstring());
+    VERIFY_IS_TRUE(r.success);
+    VERIFY_IS_TRUE(r.alreadyInstalled);
+    VERIFY_IS_FALSE(std::filesystem::exists(profile), L"UninstallBash must NOT create .bashrc");
+}
+
+void ShellIntegrationTests::Bash_Uninstall_ProfileWithoutBlock_NoOp()
+{
+    const auto profile = _BashProfilePath();
+    const std::string original = "alias ll='ls -la'\n";
+    _WriteFile(profile, original);
+
+    const auto r = UninstallBash(profile.wstring());
+    VERIFY_IS_TRUE(r.success);
+    VERIFY_IS_TRUE(r.alreadyInstalled);
+    VERIFY_ARE_EQUAL(original, _ReadFile(profile));
+}
+
+void ShellIntegrationTests::Bash_Uninstall_StripsBlockCleanly()
+{
+    const auto profile = _BashProfilePath();
+    const auto scriptDir = _BashScriptDir();
+    _WriteFile(profile, "alias ll='ls -la'\nexport FOO=bar\n");
+
+    VERIFY_IS_TRUE(InstallBash(profile.wstring(), scriptDir.wstring()).success);
+
+    const auto r = UninstallBash(profile.wstring());
+    VERIFY_IS_TRUE(r.success);
+    VERIFY_IS_FALSE(r.alreadyInstalled);
+
+    const auto contents = _ReadFile(profile);
+    VERIFY_IS_FALSE(_Contains(contents, kShellIntegrationBlockOpenMarker));
+    VERIFY_IS_FALSE(_Contains(contents, kShellIntegrationBlockCloseMarker));
+    VERIFY_IS_TRUE(_Contains(contents, "alias ll='ls -la'"));
+    VERIFY_IS_TRUE(_Contains(contents, "export FOO=bar"));
+}
+
+void ShellIntegrationTests::Bash_Uninstall_AfterInstall_RestoresOriginalContent()
+{
+    const auto profile = _BashProfilePath();
+    const std::string original = "alias ll='ls -la'\nexport FOO=bar\n";
+    _WriteFile(profile, original);
+
+    VERIFY_IS_TRUE(InstallBash(profile.wstring(), _BashScriptDir().wstring()).success);
+    VERIFY_IS_TRUE(UninstallBash(profile.wstring()).success);
+
+    VERIFY_ARE_EQUAL(original, _ReadFile(profile));
+}
+
+void ShellIntegrationTests::Bash_Uninstall_TwoConsecutiveCalls_AreIdempotent()
+{
+    const auto profile = _BashProfilePath();
+    VERIFY_IS_TRUE(InstallBash(profile.wstring(), _BashScriptDir().wstring()).success);
+
+    const auto r1 = UninstallBash(profile.wstring());
+    VERIFY_IS_TRUE(r1.success);
+    VERIFY_IS_FALSE(r1.alreadyInstalled);
+
+    const auto r2 = UninstallBash(profile.wstring());
+    VERIFY_IS_TRUE(r2.success);
+    VERIFY_IS_TRUE(r2.alreadyInstalled, L"Second uninstall must be a no-op");
+}
+
+void ShellIntegrationTests::Bash_InstallUninstallInstall_RoundTrip()
+{
+    const auto profile = _BashProfilePath();
+    const auto scriptDir = _BashScriptDir();
+    _WriteFile(profile, "alias ll='ls -la'\n");
+
+    VERIFY_IS_TRUE(InstallBash(profile.wstring(), scriptDir.wstring()).success);
+    const auto afterFirstInstall = _ReadFile(profile);
+
+    VERIFY_IS_TRUE(UninstallBash(profile.wstring()).success);
+    VERIFY_IS_TRUE(InstallBash(profile.wstring(), scriptDir.wstring()).success);
+
+    VERIFY_ARE_EQUAL(afterFirstInstall, _ReadFile(profile),
+                     L"Round-trip: second Install must produce byte-identical output to first");
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WSL flavor
+//
+// InstallWslBash requires a real running WSL distro on the host —
+// we cover only the pure-function helpers here. The shared UNC-mediated
+// write path is already covered by the Bash_* tests; once
+// QueryWslIdentityRaw returns successfully the implementation IS
+// InstallBash / UninstallBash with a different profilePath / scriptDir.
+// ═════════════════════════════════════════════════════════════════════════════
+
+void ShellIntegrationTests::Wsl_IsSafeDistroName_AcceptsCommonNames()
+{
+    VERIFY_IS_TRUE(details::IsSafeWslDistroName(L"Ubuntu"));
+    VERIFY_IS_TRUE(details::IsSafeWslDistroName(L"Ubuntu-22.04"));
+    VERIFY_IS_TRUE(details::IsSafeWslDistroName(L"Ubuntu-18.04"));
+    VERIFY_IS_TRUE(details::IsSafeWslDistroName(L"Debian"));
+    VERIFY_IS_TRUE(details::IsSafeWslDistroName(L"kali-linux"));
+    VERIFY_IS_TRUE(details::IsSafeWslDistroName(L"openSUSE-Tumbleweed"));
+    VERIFY_IS_TRUE(details::IsSafeWslDistroName(L"Alpine"));
+    VERIFY_IS_TRUE(details::IsSafeWslDistroName(L"docker-desktop"));
+    VERIFY_IS_TRUE(details::IsSafeWslDistroName(L"my_custom_distro_42"));
+}
+
+void ShellIntegrationTests::Wsl_IsSafeDistroName_RejectsInjection()
+{
+    // Anything that could break out of the `wsl.exe -d <name>` argument
+    // boundary or pull in additional shell behavior must be rejected.
+    VERIFY_IS_FALSE(details::IsSafeWslDistroName(L"Ubuntu\""));
+    VERIFY_IS_FALSE(details::IsSafeWslDistroName(L"Ubuntu\\Debian"));
+    VERIFY_IS_FALSE(details::IsSafeWslDistroName(L"Ubuntu/Debian"));
+    VERIFY_IS_FALSE(details::IsSafeWslDistroName(L"Ubuntu Debian"));
+    VERIFY_IS_FALSE(details::IsSafeWslDistroName(L"Ubuntu;rm -rf ~"));
+    VERIFY_IS_FALSE(details::IsSafeWslDistroName(L"Ubuntu&calc"));
+    VERIFY_IS_FALSE(details::IsSafeWslDistroName(L"Ubuntu|cat"));
+    VERIFY_IS_FALSE(details::IsSafeWslDistroName(L"Ubuntu`whoami`"));
+    VERIFY_IS_FALSE(details::IsSafeWslDistroName(L"Ubuntu$HOME"));
+    VERIFY_IS_FALSE(details::IsSafeWslDistroName(L"Ubuntu\nDebian"));
+    VERIFY_IS_FALSE(details::IsSafeWslDistroName(L"Ubuntu\rDebian"));
+    // wstring_view of a literal with embedded NUL needs the size to
+    // include the NUL byte explicitly.
+    VERIFY_IS_FALSE(details::IsSafeWslDistroName(std::wstring_view{ L"Ubuntu\0Debian", 13 }));
+    VERIFY_IS_FALSE(details::IsSafeWslDistroName(L"\u65e5\u672c\u8a9e")); // non-ASCII
+}
+
+void ShellIntegrationTests::Wsl_IsSafeDistroName_RejectsEmptyAndOverlong()
+{
+    VERIFY_IS_FALSE(details::IsSafeWslDistroName(L""));
+    std::wstring overlong(257, L'a');
+    VERIFY_IS_FALSE(details::IsSafeWslDistroName(overlong));
+}
+
+void ShellIntegrationTests::Wsl_IsSafeWslHome_AcceptsCommonHomes()
+{
+    VERIFY_IS_TRUE(details::IsSafeWslHome("/home/yeelam"));
+    VERIFY_IS_TRUE(details::IsSafeWslHome("/root"));
+    VERIFY_IS_TRUE(details::IsSafeWslHome("/home/user.with.dots"));
+    VERIFY_IS_TRUE(details::IsSafeWslHome("/home/user-name_42"));
+    VERIFY_IS_TRUE(details::IsSafeWslHome("/var/lib/something/home/x"));
+}
+
+void ShellIntegrationTests::Wsl_IsSafeWslHome_RejectsRelativeAndTraversal()
+{
+    VERIFY_IS_FALSE(details::IsSafeWslHome(""));
+    VERIFY_IS_FALSE(details::IsSafeWslHome("home/yeelam"));
+    VERIFY_IS_FALSE(details::IsSafeWslHome("/home/yeelam/"));
+    VERIFY_IS_FALSE(details::IsSafeWslHome("/home//yeelam"));
+    // Dot-only segments (current dir / traversal) — any segment whose
+    // characters are entirely `.` must be rejected.
+    VERIFY_IS_FALSE(details::IsSafeWslHome("/home/."));
+    VERIFY_IS_FALSE(details::IsSafeWslHome("/./home"));
+    VERIFY_IS_FALSE(details::IsSafeWslHome("/home/./x"));
+    VERIFY_IS_FALSE(details::IsSafeWslHome("/home/.."));
+    VERIFY_IS_FALSE(details::IsSafeWslHome("/../etc"));
+    VERIFY_IS_FALSE(details::IsSafeWslHome("/home/../etc"));
+    VERIFY_IS_FALSE(details::IsSafeWslHome("/home/..."));
+    // But legitimate dot-containing segments (`.bashrc`, `user.name`)
+    // must still pass — they are NOT dot-only segments.
+    VERIFY_IS_TRUE(details::IsSafeWslHome("/home/user.name"));
+    VERIFY_IS_TRUE(details::IsSafeWslHome("/home/a.b.c"));
+}
+
+void ShellIntegrationTests::Wsl_IsSafeWslHome_RejectsBadChars()
+{
+    VERIFY_IS_FALSE(details::IsSafeWslHome("/home/yee lam"));
+    VERIFY_IS_FALSE(details::IsSafeWslHome("/home/yeelam\""));
+    VERIFY_IS_FALSE(details::IsSafeWslHome("/home/yeelam;rm"));
+    VERIFY_IS_FALSE(details::IsSafeWslHome("/home/yeelam\n"));
+    VERIFY_IS_FALSE(details::IsSafeWslHome("/home/\xc3\xa9")); // UTF-8 byte
+}
+
+void ShellIntegrationTests::Wsl_UncPath_BuildsExpectedFormat()
+{
+    // Canonical UNC form: backslash separator between distro and the
+    // in-distro path, and forward slashes in the posix portion are
+    // converted to backslashes. Both forms work with the Win32 file
+    // APIs but the canonical form is what other Windows tools display.
+    VERIFY_ARE_EQUAL(std::wstring{ LR"(\\wsl$\Ubuntu\home\yeelam\.bashrc)" },
+                     WslUncPath(L"Ubuntu", "/home/yeelam/.bashrc"));
+    VERIFY_ARE_EQUAL(std::wstring{ LR"(\\wsl$\Debian-12\root\.intelligent-terminal)" },
+                     WslUncPath(L"Debian-12", "/root/.intelligent-terminal"));
+    VERIFY_ARE_EQUAL(std::wstring{ LR"(\\wsl$\Alpine\home\x\y\z)" },
+                     WslUncPath(L"Alpine", "/home/x/y/z"));
+    // Path without a leading slash gets the single separator inserted
+    // (no double-backslash). Defensive — current callers always pass a
+    // leading slash.
+    VERIFY_ARE_EQUAL(std::wstring{ LR"(\\wsl$\Ubuntu\home\x)" },
+                     WslUncPath(L"Ubuntu", "home/x"));
+}
+
+void ShellIntegrationTests::Wsl_StripExecTail_StripsExistingExecCommand()
+{
+    using Microsoft::Terminal::ShellIntegration::Wsl::details::StripExecTail;
+    // No exec command -> returned unchanged.
+    VERIFY_ARE_EQUAL(std::wstring_view{ L"wsl.exe -d Ubuntu" },
+                     StripExecTail(L"wsl.exe -d Ubuntu", false));
+    // --distribution-id GUID must NOT be mistaken for an exec terminator
+    // (the ` -- ` needle is space-bounded; `--distribution-id` has no
+    // trailing space after the dashes).
+    VERIFY_ARE_EQUAL(std::wstring_view{ L"C:\\Windows\\system32\\wsl.exe --distribution-id {GUID}" },
+                     StripExecTail(L"C:\\Windows\\system32\\wsl.exe --distribution-id {GUID}", false));
+    // wsl.exe exec terminators (-e / --exec / --) are stripped so our probe
+    // doesn't collide with a shell the profile already requested.
+    VERIFY_ARE_EQUAL(std::wstring_view{ L"wsl.exe -d Ubuntu" },
+                     StripExecTail(L"wsl.exe -d Ubuntu -e fish", false));
+    VERIFY_ARE_EQUAL(std::wstring_view{ L"wsl.exe -d Ubuntu" },
+                     StripExecTail(L"wsl.exe -d Ubuntu --exec zsh", false));
+    VERIFY_ARE_EQUAL(std::wstring_view{ L"wsl.exe -d Ubuntu" },
+                     StripExecTail(L"wsl.exe -d Ubuntu -- fish -l", false));
+    // bash.exe: keep ONLY the launcher token; ALL its args are dropped (we
+    // replace them with our own `-c "probe"`). bash treats a leading operand
+    // like `~` as the script and would ignore a later `-c`, so the legacy
+    // `bash.exe ~` launcher form must strip the operand too.
+    VERIFY_ARE_EQUAL(std::wstring_view{ L"bash.exe" },
+                     StripExecTail(L"bash.exe", true));
+    VERIFY_ARE_EQUAL(std::wstring_view{ L"C:\\Windows\\System32\\bash.exe" },
+                     StripExecTail(L"C:\\Windows\\System32\\bash.exe -c \"ls -la\"", true));
+    VERIFY_ARE_EQUAL(std::wstring_view{ L"C:\\Windows\\System32\\bash.exe" },
+                     StripExecTail(L"C:\\Windows\\System32\\bash.exe ~", true));
+    VERIFY_ARE_EQUAL(std::wstring_view{ L"\"C:\\Windows\\System32\\bash.exe\"" },
+                     StripExecTail(L"\"C:\\Windows\\System32\\bash.exe\" ~ -l", true));
+    // Whitespace-robust: tabs / multiple spaces around the terminator, and a
+    // `--` at end-of-string, are all handled (hand-edited commandlines).
+    VERIFY_ARE_EQUAL(std::wstring_view{ L"wsl.exe  -d  Ubuntu" },
+                     StripExecTail(L"wsl.exe  -d  Ubuntu   -e bash", false));
+    VERIFY_ARE_EQUAL(std::wstring_view{ L"wsl.exe\t-d\tUbuntu" },
+                     StripExecTail(L"wsl.exe\t-d\tUbuntu\t-e bash", false));
+    VERIFY_ARE_EQUAL(std::wstring_view{ L"wsl.exe -d Ubuntu" },
+                     StripExecTail(L"wsl.exe -d Ubuntu --", false));
+    // A token that merely STARTS with a terminator string is NOT a terminator
+    // (only whole-token matches cut) — already covered by the
+    // `--distribution-id` case above, which starts with the `--` terminator
+    // but must not be stripped.
+}
+
+void ShellIntegrationTests::Wsl_QualifyBareLauncher_QualifiesBareWslBash()
+{
+    using Microsoft::Terminal::ShellIntegration::Wsl::details::QualifyBareLauncher;
+    // Build the expected prefix from the same OS-reported Windows dir the code
+    // uses, so this is machine-independent.
+    const std::wstring sys =
+        std::wstring{ Microsoft::Terminal::ShellIntegration::details::WindowsDir() } + L"\\System32\\";
+    // Bare wsl/bash launch tokens are qualified to the OS copy (option tail
+    // preserved); a bare `wsl` gets the `.exe` too.
+    VERIFY_ARE_EQUAL(sys + L"wsl.exe -d Ubuntu", QualifyBareLauncher(L"wsl.exe -d Ubuntu"));
+    VERIFY_ARE_EQUAL(sys + L"wsl.exe", QualifyBareLauncher(L"wsl"));
+    VERIFY_ARE_EQUAL(sys + L"bash.exe", QualifyBareLauncher(L"bash.exe"));
+    // Already path-qualified, quoted, or a non-wsl/bash leaf -> unchanged.
+    VERIFY_ARE_EQUAL(std::wstring{ L"C:\\Windows\\System32\\wsl.exe -d Ubuntu" },
+                     QualifyBareLauncher(L"C:\\Windows\\System32\\wsl.exe -d Ubuntu"));
+    VERIFY_ARE_EQUAL(std::wstring{ L"\"C:\\X\\wsl.exe\" -d Ubuntu" },
+                     QualifyBareLauncher(L"\"C:\\X\\wsl.exe\" -d Ubuntu"));
+    VERIFY_ARE_EQUAL(std::wstring{ L"cmd.exe /c wsl" }, QualifyBareLauncher(L"cmd.exe /c wsl"));
+}
+
+// ───────────────────────────────────────────────────────────────────
+// Wsl::Install (GH#613) — exact-commandline gate shared by explicit install
+// flows and the lazy new-tab reconcile. Non-WSL filtering stays at the
+// callers; IsWslProfile tests below cover that recognizer.
+// ───────────────────────────────────────────────────────────────────
+
+void ShellIntegrationTests::Wsl_Install_DuplicateCommandlineSkipsAfterCompletion()
+{
+    using Microsoft::Terminal::ShellIntegration::Wsl::Install;
+
+    const auto commandline = _UniqueWslInstallCommandline();
+    size_t installCalls = 0;
+
+    const auto firstResult = Install(
+        commandline,
+        [&](std::wstring_view actualCommandline) {
+            ++installCalls;
+            VERIFY_ARE_EQUAL(commandline, std::wstring{ actualCommandline });
+            return _SuccessfulWslInstall();
+        },
+        nullptr);
+
+    const auto secondResult = Install(
+        commandline,
+        [&](std::wstring_view) {
+            ++installCalls;
+            return _SuccessfulWslInstall();
+        },
+        nullptr);
+
+    VERIFY_IS_TRUE(firstResult.success);
+    VERIFY_IS_TRUE(secondResult.success);
+    VERIFY_ARE_EQUAL(static_cast<size_t>(1), installCalls);
+    VERIFY_IS_FALSE(firstResult.alreadyInstalled);
+    VERIFY_IS_TRUE(secondResult.alreadyInstalled);
+}
+
+void ShellIntegrationTests::Wsl_Install_DuplicateCommandlineSkipsWhileInFlight()
+{
+    using Microsoft::Terminal::ShellIntegration::Wsl::Install;
+
+    const auto commandline = _UniqueWslInstallCommandline();
+    std::mutex releaseMutex;
+    std::condition_variable releaseCv;
+    bool releaseFirst{ false };
+    std::atomic<size_t> firstCalls{ 0 };
+    std::atomic<size_t> secondCalls{ 0 };
+    std::promise<void> firstEnteredPromise;
+    auto firstEnteredFuture = firstEnteredPromise.get_future();
+    std::promise<InstallResult> firstResultPromise;
+    auto firstResultFuture = firstResultPromise.get_future();
+    std::promise<InstallResult> secondResultPromise;
+    auto secondResultFuture = secondResultPromise.get_future();
+
+    std::thread firstCaller{ [&]() {
+        try
+        {
+            firstResultPromise.set_value(Install(
+                commandline,
+                [&](std::wstring_view) {
+                    ++firstCalls;
+                    firstEnteredPromise.set_value();
+                    std::unique_lock lock{ releaseMutex };
+                    releaseCv.wait(lock, [&]() noexcept { return releaseFirst; });
+                    return _SuccessfulWslInstall();
+                },
+                nullptr));
+        }
+        catch (...)
+        {
+            firstResultPromise.set_exception(std::current_exception());
+        }
+    } };
+    std::thread secondCaller;
+    const auto joinThreads = wil::scope_exit([&]() noexcept {
+        {
+            std::lock_guard lock{ releaseMutex };
+            releaseFirst = true;
+        }
+        releaseCv.notify_all();
+        if (firstCaller.joinable())
+        {
+            firstCaller.join();
+        }
+        if (secondCaller.joinable())
+        {
+            secondCaller.join();
+        }
+    });
+
+    VERIFY_ARE_EQUAL(std::future_status::ready, firstEnteredFuture.wait_for(std::chrono::seconds{ 5 }));
+
+    secondCaller = std::thread{ [&]() {
+        try
+        {
+            secondResultPromise.set_value(Install(
+                commandline,
+                [&](std::wstring_view) {
+                    ++secondCalls;
+                    return _SuccessfulWslInstall();
+                },
+                nullptr));
+        }
+        catch (...)
+        {
+            secondResultPromise.set_exception(std::current_exception());
+        }
+    } };
+
+    VERIFY_ARE_EQUAL(std::future_status::ready, secondResultFuture.wait_for(std::chrono::seconds{ 5 }));
+    const auto secondResult = secondResultFuture.get();
+
+    {
+        std::lock_guard lock{ releaseMutex };
+        releaseFirst = true;
+    }
+    releaseCv.notify_all();
+
+    VERIFY_ARE_EQUAL(std::future_status::ready, firstResultFuture.wait_for(std::chrono::seconds{ 5 }));
+    const auto firstResult = firstResultFuture.get();
+
+    VERIFY_IS_TRUE(firstResult.success);
+    VERIFY_IS_TRUE(secondResult.success);
+    VERIFY_ARE_EQUAL(static_cast<size_t>(1), firstCalls.load());
+    VERIFY_ARE_EQUAL(static_cast<size_t>(0), secondCalls.load());
+    VERIFY_IS_TRUE(secondResult.alreadyInstalled);
+}
+
+void ShellIntegrationTests::Wsl_Install_DistinctCommandlinesInstallIndependently()
+{
+    using Microsoft::Terminal::ShellIntegration::Wsl::Install;
+
+    const auto baseCommandline = _UniqueWslInstallCommandline();
+    const auto alternateCommandline = baseCommandline + L" -e bash";
+    std::vector<std::wstring> invokedCommandlines;
+
+    const auto firstResult = Install(
+        baseCommandline,
+        [&](std::wstring_view commandline) {
+            invokedCommandlines.emplace_back(commandline);
+            return _SuccessfulWslInstall();
+        },
+        nullptr);
+
+    const auto secondResult = Install(
+        alternateCommandline,
+        [&](std::wstring_view commandline) {
+            invokedCommandlines.emplace_back(commandline);
+            return _SuccessfulWslInstall();
+        },
+        nullptr);
+
+    VERIFY_IS_TRUE(firstResult.success);
+    VERIFY_IS_TRUE(secondResult.success);
+    VERIFY_ARE_EQUAL(static_cast<size_t>(2), invokedCommandlines.size());
+    VERIFY_ARE_EQUAL(baseCommandline, invokedCommandlines[0]);
+    VERIFY_ARE_EQUAL(alternateCommandline, invokedCommandlines[1]);
+}
+
+void ShellIntegrationTests::Wsl_Install_FailureAndExceptionConsumeAttempt()
+{
+    using Microsoft::Terminal::ShellIntegration::Wsl::Install;
+
+    const auto failedCommandline = _UniqueWslInstallCommandline();
+    size_t failedCalls = 0;
+
+    const auto failedResult = Install(
+        failedCommandline,
+        [&](std::wstring_view) {
+            ++failedCalls;
+            return _FailedWslInstall(L"boom");
+        },
+        nullptr);
+
+    const auto failedRetryResult = Install(
+        failedCommandline,
+        [&](std::wstring_view) {
+            ++failedCalls;
+            return _SuccessfulWslInstall();
+        },
+        nullptr);
+
+    VERIFY_IS_FALSE(failedResult.success);
+    VERIFY_ARE_EQUAL(std::wstring{ L"boom" }, failedResult.errorMessage);
+    VERIFY_IS_TRUE(failedRetryResult.alreadyInstalled);
+    VERIFY_ARE_EQUAL(static_cast<size_t>(1), failedCalls);
+
+    const auto thrownCommandline = _UniqueWslInstallCommandline();
+    size_t thrownCalls = 0;
+    bool threw = false;
+
+    try
+    {
+        (void)Install(
+            thrownCommandline,
+            [&](std::wstring_view) -> InstallResult {
+                ++thrownCalls;
+                throw std::runtime_error{ "boom" };
+            },
+            nullptr);
+    }
+    catch (const std::exception&)
+    {
+        threw = true;
+    }
+
+    const auto thrownRetryResult = Install(
+        thrownCommandline,
+        [&](std::wstring_view) {
+            ++thrownCalls;
+            return _SuccessfulWslInstall();
+        },
+        nullptr);
+
+    VERIFY_IS_TRUE(threw);
+    VERIFY_IS_TRUE(thrownRetryResult.alreadyInstalled);
+    VERIFY_ARE_EQUAL(static_cast<size_t>(1), thrownCalls);
+}
+
+void ShellIntegrationTests::Wsl_Install_DiagnosticObserver_TracksDecision()
+{
+    using Microsoft::Terminal::ShellIntegration::Wsl::Install;
+
+    const auto completedCommandline = _UniqueWslInstallCommandline();
+    const auto noChangeCommandline = _UniqueWslInstallCommandline();
+    const auto failedCommandline = _UniqueWslInstallCommandline();
+    const auto thrownCommandline = _UniqueWslInstallCommandline();
+    const auto startIndex = WslInstallObserverEventCount();
+
+    const auto completedResult = Install(
+        completedCommandline,
+        [](std::wstring_view) {
+            return _SuccessfulWslInstall();
+        },
+        &ObserveWslInstall);
+    const auto skippedResult = Install(
+        completedCommandline,
+        [](std::wstring_view) {
+            return _SuccessfulWslInstall();
+        },
+        &ObserveWslInstall);
+    const auto noChangeResult = Install(
+        noChangeCommandline,
+        [](std::wstring_view) {
+            return _SuccessfulWslInstall(true);
+        },
+        &ObserveWslInstall);
+    const auto failedResult = Install(
+        failedCommandline,
+        [](std::wstring_view) {
+            return _FailedWslInstall(L"boom");
+        },
+        &ObserveWslInstall);
+
+    bool threw = false;
+    try
+    {
+        (void)Install(
+            thrownCommandline,
+            [](std::wstring_view) -> InstallResult {
+                throw std::runtime_error{ "boom" };
+            },
+            &ObserveWslInstall);
+    }
+    catch (const std::exception&)
+    {
+        threw = true;
+    }
+
+    VERIFY_IS_TRUE(completedResult.success);
+    VERIFY_IS_TRUE(skippedResult.alreadyInstalled);
+    VERIFY_IS_TRUE(noChangeResult.alreadyInstalled);
+    VERIFY_IS_FALSE(failedResult.success);
+    VERIFY_IS_TRUE(threw);
+    VerifyWslInstallObserverEvents(completedCommandline, startIndex, { "attempt-started", "completed", "skip-already-attempted" });
+    VerifyWslInstallObserverEvents(noChangeCommandline, startIndex, { "attempt-started", "no-change" });
+    VerifyWslInstallObserverEvents(failedCommandline, startIndex, { "attempt-started", "failed" });
+    VerifyWslInstallObserverEvents(thrownCommandline, startIndex, { "attempt-started", "thrown" });
+}
+
+// ───────────────────────────────────────────────────────────────────
+// Profile-presence gate (ShellIntegrationProfileGate.h)
+//
+// Verifies that we only install shell integration for shells the
+// user has at least one profile for. A user keeping ONLY a
+// "Developer PowerShell for VS" profile (which uses Windows
+// PowerShell) and no default pwsh / Windows-PowerShell profile must
+// still trigger Windows PowerShell install — and must NOT trigger
+// pwsh install. WSL is not part of this gate (caller already
+// iterates the WSL distro snapshot).
+// ───────────────────────────────────────────────────────────────────
+
+// Minimal profile double for AnyProfileUsesShell. The template only
+// requires .Source() and .Commandline(); we expose them as wstring.
+// AnyProfileUsesShell does `const auto src = profile.Source();` which
+// MOVES the rvalue into a named local, extending its lifetime through
+// the wstring_view{ src } construction below. The wstring_view itself
+// does NOT extend the temporary's lifetime — that's a common
+// misconception. The lifetime extension lives in the production
+// helper, not in wstring_view's constructor.
+namespace
+{
+    struct MockProfile
+    {
+        std::wstring src;
+        std::wstring cmd;
+        std::wstring Source() const { return src; }
+        std::wstring Commandline() const { return cmd; }
+    };
+}
+
+void ShellIntegrationTests::ProfileGate_PwshSourceMatches()
+{
+    // The dynamic generator's source is the strongest signal.
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Pwsh,
+                                        L"Windows.Terminal.PowershellCore",
+                                        L"C:\\Program Files\\PowerShell\\7\\pwsh.exe"));
+    // Source alone is enough — even with an unrelated commandline.
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Pwsh,
+                                        L"Windows.Terminal.PowershellCore",
+                                        L""));
+}
+
+void ShellIntegrationTests::ProfileGate_PwshCommandlineLeafExeMatches()
+{
+    // WT-emitted quoted full path (the realistic form — paths with
+    // spaces MUST be quoted in Windows commandlines).
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Pwsh,
+                                        L"",
+                                        L"\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoLogo"));
+    // Bare-leaf form: user with pwsh on PATH may write `pwsh -arg`.
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Pwsh,
+                                        L"",
+                                        L"pwsh -WorkingDirectory ~"));
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Pwsh, L"", L"pwsh.exe"));
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Pwsh, L"", L"pwsh"));
+    // Case-insensitive.
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Pwsh, L"", L"PWSH.EXE"));
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Pwsh, L"", L"Pwsh"));
+    // Launch exe is cmd.exe; `pwsh` is just an arg — MUST NOT match.
+    // This is the difference between any-token matching and launch-exe
+    // matching: the user is running cmd, not pwsh.
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::Pwsh,
+                                         L"",
+                                         L"cmd.exe /c echo pwsh"));
+    // Names whose leaf contains "pwsh" as a substring but doesn't
+    // equal "pwsh" or "pwsh.exe" must NOT match (the matcher anchors
+    // on the full leaf token, not any substring).
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::Pwsh, L"", L"pwshell.exe"));
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::Pwsh, L"", L"pwsh-preview.exe"));
+    // Unquoted path containing spaces (e.g. the default Git/PowerShell
+    // install under "C:\Program Files\…"). CreateProcessW still launches
+    // these by probing progressively longer space-split prefixes, so the
+    // profile DOES run — and we must recognize it. The matcher extends the
+    // launch-exe token across spaces to the first ".exe" boundary when the
+    // commandline begins at a filesystem root.
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Pwsh,
+                                        L"",
+                                        L"C:\\Program Files\\PowerShell\\7\\pwsh.exe"));
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Pwsh,
+                                        L"",
+                                        L"C:\\Program Files\\PowerShell\\7\\pwsh.exe -NoLogo"));
+    // Extensionless rooted pwsh path with spaces — resolved by .exe probing.
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Pwsh,
+                                        L"",
+                                        L"C:\\Program Files\\PowerShell\\7\\pwsh -NoLogo"));
+    // The "PowerShell" directory component must NOT be mistaken for a
+    // `powershell` launch leaf (the leaf scan requires a trailing
+    // whitespace/end after the segment, which "\PowerShell\" lacks).
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::WindowsPowerShell,
+                                         L"Windows.Terminal.PowershellCore",
+                                         L"C:\\Program Files\\PowerShell\\7\\pwsh -NoLogo"));
+    // Bare command whose launch exe is NOT a path-root MUST NOT absorb a
+    // later `.exe` arg: launch is cmd, not pwsh.
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::Pwsh,
+                                         L"",
+                                         L"cmd /c C:\\Program Files\\PowerShell\\7\\pwsh.exe"));
+    // Degenerate inputs: empty commandline, and a non-empty commandline
+    // matched against an empty leaf, both return false without crashing.
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::Pwsh, L"", L""));
+    // Leading whitespace before a rooted unquoted path is tolerated.
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Pwsh,
+                                        L"",
+                                        L"   C:\\Program Files\\PowerShell\\7\\pwsh.exe"));
+}
+
+void ShellIntegrationTests::ProfileGate_WindowsPowerShellOnlyWhenNotPwsh()
+{
+    // The classic Windows PowerShell profile.
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::WindowsPowerShell,
+                                        L"",
+                                        L"powershell.exe"));
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::WindowsPowerShell,
+                                        L"",
+                                        L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"));
+    // pwsh.exe lives under a folder containing "PowerShell" — naive
+    // substring on "powershell" would mis-match. The anchor on the
+    // leaf "powershell.exe" (no "pwsh.exe") prevents this.
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::WindowsPowerShell,
+                                         L"Windows.Terminal.PowershellCore",
+                                         L"C:\\Program Files\\PowerShell\\7\\pwsh.exe"));
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::WindowsPowerShell,
+                                         L"",
+                                         L"pwsh.exe"));
+}
+
+void ShellIntegrationTests::ProfileGate_WindowsPowerShellWithDeveloperVsProfile()
+{
+    // "Developer PowerShell for VS 2022" — uses Windows PowerShell
+    // under the hood, even though the profile name is custom. This
+    // is the exact scenario the user called out: a user may have
+    // deleted the default Windows PowerShell profile but kept the
+    // VS Developer one, and we must still install for that shell.
+    const auto cmd = LR"(C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoExit -Command "&{Import-Module 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\Microsoft.VisualStudio.DevShell.dll'; Enter-VsDevShell ...}")";
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::WindowsPowerShell, L"", cmd));
+    // And does NOT trigger pwsh.
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::Pwsh, L"", cmd));
+}
+
+void ShellIntegrationTests::ProfileGate_BashOnlyForGitBashNotWsl()
+{
+    // Git Bash — quoted full path (the realistic form).
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Bash,
+                                        L"",
+                                        L"\"C:\\Program Files\\Git\\bin\\bash.exe\" -i -l"));
+    // Git Bash — UNQUOTED full path with spaces. This is the default
+    // Git-for-Windows install location ("C:\Program Files\Git") and the
+    // exact form a user gets when they type/paste the path into the
+    // profile commandline without quotes. CreateProcessW launches it by
+    // probing space-split prefixes, so it runs — and integration MUST be
+    // recognized. Regression guard for the silent "leaf=Program" skip.
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Bash,
+                                        L"",
+                                        L"C:\\Program Files\\Git\\bin\\bash.exe"));
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Bash,
+                                        L"",
+                                        L"C:\\Program Files\\Git\\bin\\bash.exe -i -l"));
+    // Git Bash — UNQUOTED rooted path with spaces and NO `.exe` extension.
+    // CreateProcessW resolves it by probing space-split prefixes and
+    // appending `.exe`, so the profile launches bash and integration MUST
+    // be recognized (regression guard for the reviewer-flagged gap).
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Bash,
+                                        L"",
+                                        L"C:\\Program Files\\Git\\bin\\bash -i -l"));
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Bash,
+                                        L"",
+                                        L"C:\\Program Files\\Git\\bin\\bash"));
+    // Extensionless rooted bash path must NOT be mistaken for pwsh — the
+    // leaf scan only matches `\<leaf>` segments terminated by whitespace/end.
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::Pwsh,
+                                         L"",
+                                         L"C:\\Program Files\\Git\\bin\\bash -i -l"));
+    // UNC path root (\\server\share\...) — another filesystem root the
+    // unquoted-with-spaces heuristic must accept, both with and without
+    // the `.exe` extension.
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Bash,
+                                        L"",
+                                        L"\\\\server\\share\\Git\\bin\\bash.exe -i"));
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Bash,
+                                        L"",
+                                        L"\\\\server\\share\\Git\\bin\\bash -i"));
+    // Forward-slash separators with a drive root (C:/...). Both the root
+    // detection and the leaf/`.exe` boundary scans must treat `/` like `\`.
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Bash,
+                                        L"",
+                                        L"C:/Program Files/Git/bin/bash.exe"));
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Bash,
+                                        L"",
+                                        L"C:/Program Files/Git/bin/bash -i -l"));
+    // Bare leaf — user with bash on PATH.
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Bash, L"", L"bash"));
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Bash, L"", L"bash.exe -i"));
+    // WSL distro profile — uses wsl.exe. Must NOT match the Git Bash
+    // target (it would be a duplicate install since WSL distros are
+    // handled separately by per-distro iteration).
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::Bash,
+                                         L"Windows.Terminal.Wsl",
+                                         L"wsl.exe -d Ubuntu"));
+    // Bare wsl too.
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::Bash, L"", L"wsl -d Ubuntu"));
+    // Launch is wsl.exe; bash.exe later in args MUST NOT match Bash
+    // (we anchor on the launch exe, not any token).
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::Bash,
+                                         L"",
+                                         L"wsl.exe -d Ubuntu -e bash.exe -l"));
+    // Unquoted path-root launch is wsl.exe; the first ".exe" boundary wins
+    // so a trailing bash.exe arg still does NOT match Bash.
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::Bash,
+                                         L"",
+                                         L"C:\\Windows\\System32\\wsl.exe -d Ubuntu -e bash.exe"));
+    // Legacy System32 bash.exe is the WSL default-distro launcher, NOT
+    // Git Bash — it must not be classified as Git Bash (it runs inside
+    // WSL whose $HOME is not %USERPROFILE%, so a Windows .bashrc would
+    // be a silent no-op).
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::Bash,
+                                         L"",
+                                         L"C:\\Windows\\System32\\bash.exe ~"));
+}
+
+void ShellIntegrationTests::ProfileGate_BashRejectsSystem32WslLauncher()
+{
+    // System32 / Sysnative bash.exe → WSL default distro, not Git Bash.
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::Bash, L"", L"C:\\Windows\\System32\\bash.exe"));
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::Bash, L"", L"\"C:\\Windows\\System32\\bash.exe\" ~"));
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::Bash, L"", L"C:\\Windows\\Sysnative\\bash.exe"));
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::Bash, L"", L"c:\\windows\\system32\\BASH.EXE -l"));
+    // Forward-slash separators must be treated like backslashes.
+    VERIFY_IS_FALSE(ProfileMatchesShell(Target::Bash, L"", L"C:/Windows/System32/bash.exe ~"));
+    // Real Git Bash (under Program Files) and bare leaf still match.
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Bash, L"", L"\"C:\\Program Files\\Git\\bin\\bash.exe\" -i -l"));
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Bash, L"", L"bash.exe -i"));
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Bash, L"", L"bash"));
+    // A bash.exe NOT under the real Windows System32/Sysnative directory
+    // (resolved via GetWindowsDirectoryW) is treated as Git Bash — the check
+    // anchors the launch-token prefix to the actual %SystemRoot%, so an
+    // unrelated path like C:\tools\bash.exe is not excluded.
+    VERIFY_IS_TRUE(ProfileMatchesShell(Target::Bash, L"", L"C:\\tools\\bash.exe"));
+}
+
+void ShellIntegrationTests::IsWslProfile_WslLauncherForms_True()
+{
+    // Every wsl.exe launch form is a WSL profile, recognized purely from the
+    // commandline (no Source) — the installer reuses the commandline and
+    // probes the distro, so we never parse `-d` / `--distribution-id` /
+    // Name(). This covers the common sourceless custom-profile gap, the
+    // legacy generator form, AND the modern Store `--distribution-id` form.
+    VERIFY_IS_TRUE(IsWslProfile(L"wsl.exe -d Ubuntu"));
+    VERIFY_IS_TRUE(IsWslProfile(L"wsl -d Ubuntu"));
+    VERIFY_IS_TRUE(IsWslProfile(L"wsl.exe ~ -d Ubuntu"));
+    VERIFY_IS_TRUE(IsWslProfile(L"wsl.exe --distribution Debian"));
+    VERIFY_IS_TRUE(IsWslProfile(L"C:\\Windows\\System32\\wsl.exe -d Ubuntu-22.04"));
+    VERIFY_IS_TRUE(IsWslProfile(L"C:\\Windows\\system32\\wsl.exe --distribution-id {6f8e9a45-40ca-470d-a649-30afc57d2a57}"));
+    // Bare wsl.exe (default distro) is supported — the probe resolves the
+    // default distro at runtime, so we no longer have to skip it.
+    VERIFY_IS_TRUE(IsWslProfile(L"wsl.exe"));
+    VERIFY_IS_TRUE(IsWslProfile(L"wsl"));
+}
+
+void ShellIntegrationTests::IsWslProfile_System32BashLauncher_True()
+{
+    // Legacy System32 / Sysnative bash.exe IS the WSL default-distro
+    // launcher (runs bash in the default distro), so it's a WSL profile —
+    // even though ProfileMatchesShell(Bash) deliberately excludes it from
+    // Git Bash.
+    VERIFY_IS_TRUE(IsWslProfile(L"C:\\Windows\\System32\\bash.exe"));
+    VERIFY_IS_TRUE(IsWslProfile(L"C:\\Windows\\System32\\bash.exe ~"));
+    VERIFY_IS_TRUE(IsWslProfile(L"C:\\Windows\\Sysnative\\bash.exe"));
+    VERIFY_IS_TRUE(IsWslProfile(L"C:/Windows/System32/bash.exe"));
+}
+
+void ShellIntegrationTests::IsWslProfile_GitBashAndOthers_False()
+{
+    // Git Bash (under Program Files) is NOT WSL.
+    VERIFY_IS_FALSE(IsWslProfile(L"\"C:\\Program Files\\Git\\bin\\bash.exe\" -i -l"));
+    VERIFY_IS_FALSE(IsWslProfile(L"C:\\Program Files\\Git\\bin\\bash.exe -i -l"));
+    VERIFY_IS_FALSE(IsWslProfile(L"bash.exe -i"));
+    VERIFY_IS_FALSE(IsWslProfile(L"pwsh.exe"));
+    // A longer leaf under System32 starting with "bash" must NOT match the
+    // System32-bash launcher (leaf-boundary check after `…\bash`).
+    VERIFY_IS_FALSE(IsWslProfile(L"C:\\Windows\\System32\\bashful.exe"));
+    // Anchored on the launch exe: `cmd /c wsl …` launches cmd, not wsl.
+    VERIFY_IS_FALSE(IsWslProfile(L"cmd.exe /c wsl -d Ubuntu"));
+}
+
+void ShellIntegrationTests::ProfileGate_AnyProfileEmptyCollection()
+{
+    std::vector<MockProfile> profiles;
+    VERIFY_IS_FALSE(AnyProfileUsesShell(Target::Pwsh, profiles));
+    VERIFY_IS_FALSE(AnyProfileUsesShell(Target::WindowsPowerShell, profiles));
+    VERIFY_IS_FALSE(AnyProfileUsesShell(Target::Bash, profiles));
+}
+
+void ShellIntegrationTests::ProfileGate_AnyProfileFindsOne()
+{
+    std::vector<MockProfile> profiles = {
+        { L"", L"cmd.exe" },
+        { L"", LR"(C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe)" },
+        // Git Bash — quoted (realistic Windows commandline form for
+        // paths with spaces). Bare `bash.exe` also fine.
+        { L"", LR"("C:\Program Files\Git\bin\bash.exe" -i -l)" },
+    };
+    // Pwsh missing, Windows PowerShell + Bash present.
+    VERIFY_IS_FALSE(AnyProfileUsesShell(Target::Pwsh, profiles));
+    VERIFY_IS_TRUE(AnyProfileUsesShell(Target::WindowsPowerShell, profiles));
+    VERIFY_IS_TRUE(AnyProfileUsesShell(Target::Bash, profiles));
+}
+
+void ShellIntegrationTests::ProfileGate_AnyProfileMissingShellReturnsFalse()
+{
+    // The "Developer PowerShell for VS" only scenario: user deleted
+    // the default Windows PowerShell profile AND has no pwsh / bash.
+    // Only the VS Developer profile remains.
+    std::vector<MockProfile> profiles = {
+        { L"", LR"(C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoExit -Command "&{Import-Module ...}")" },
+    };
+    VERIFY_IS_TRUE(AnyProfileUsesShell(Target::WindowsPowerShell, profiles));
+    VERIFY_IS_FALSE(AnyProfileUsesShell(Target::Pwsh, profiles));
+    VERIFY_IS_FALSE(AnyProfileUsesShell(Target::Bash, profiles));
 }

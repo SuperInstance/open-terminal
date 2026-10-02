@@ -573,6 +573,14 @@
     <value>Дозволи OSC 52 (Manipulate Selection Data) за упис у клипборд</value>
     <comment>{Locked="OSC 52"}{Locked="Manipulate Selection Data"}Header for a control to toggle support for applications to change the contents of the Windows system clipboard.</comment>
   </data>
+  <data name="Profile_AllowOscNotifications.Header" xml:space="preserve">
+    <value>Дозволи да OSC 777 (Desktop Notification) приказује искачућа обавештења</value>
+    <comment>{Locked="OSC 777"}{Locked="Desktop Notification"}Header for a control to toggle support for applications to display desktop toast notifications via the OSC 777 escape sequence.</comment>
+  </data>
+  <data name="Profile_AllowOscNotifications.HelpText" xml:space="preserve">
+    <value>Када је омогућено, апликације могу да пошаљу управљачку секвенцу OSC 777 да би покренуле обавештење на радној површини са прилагођеним насловом и телом.</value>
+    <comment>{Locked="OSC 777"}Help text for the OSC 777 desktop notification toggle.</comment>
+  </data>
   <data name="Globals_AllowHeadless.Header" xml:space="preserve">
     <value>Дозволи да се Интелигентни Терминал извршава у позадини</value>
     <comment>Header for a control to toggle support for Intelligent Terminal to run in the background.</comment>
@@ -669,6 +677,14 @@
     <value>Покретање</value>
     <comment>Header for the "startup" menu item. This navigates to a page that lets you see and modify settings related to the app's launch experience (i.e. screen position, mode, etc.)</comment>
   </data>
+  <data name="Nav_PaneOpenedAnnouncement" xml:space="preserve">
+    <value>Навигационо окно је отворено</value>
+    <comment>Screen reader announcement made when the user activates the toggle button that opens the settings navigation pane.</comment>
+  </data>
+  <data name="Nav_PaneClosedAnnouncement" xml:space="preserve">
+    <value>Навигационо окно је затворено</value>
+    <comment>Screen reader announcement made when the user activates the toggle button that closes the settings navigation pane.</comment>
+  </data>
   <data name="Nav_OpenJSON.Content" xml:space="preserve">
     <value>Отвори JSON датотеку</value>
     <comment>Header for a menu item. This opens the JSON file that is used to log the app's settings.</comment>
@@ -725,11 +741,12 @@
     <value>Изаберите модел који овај агент користи.</value>
     <comment>Supplementary description for the model setting.</comment>
   </data><data name="AIAgents_DelegateAgent.Header" xml:space="preserve">
-    <value>Агент</value>
-    <comment>Header for the setting that specifies which agent CLI handles command palette / on-demand requests.</comment>
+    <value>CLI агент</value>
+    <comment>{Locked="CLI"} Header for the agent CLI selector in Settings &gt; Agents &gt; Command palette. Here "agent" means an AI intelligent agent (e.g. Copilot, Claude, Gemini), not a proxy or human agent. CLI means command-line interface.</comment>
   </data><data name="AIAgents_DelegateAgent.HelpText" xml:space="preserve">
-    <value>Изаберите агента који се користи за брзе радње у палети команди.</value>
-    <comment>Supplementary description for the command palette agent setting.</comment>
+    <value>Направите нову картицу са жељеним CLI агентом, уз могућност укључивања упита и контекста из активног панела.
+Alt+Shift+/ унесите упит; Alt+Shift+B покрените без почетног упита.</value>
+    <comment>{Locked="CLI","Alt+Shift+/","Alt+Shift+B"} Agent CLI help in Settings &gt; Agents. Keep exactly one line break between the description and the shortcut reference. The UI renders the hotkeys with the same keycap style as Settings &gt; Actions. Start the description after each shortcut with lowercase where the language uses case. Context comes from the active pane; launching without an initial prompt is still interactive. Separate each hotkey and its description with a space, not a colon.</comment>
   </data><data name="AIAgents_AutoFix.Header" xml:space="preserve">
     <value>Аутоматски предложи исправке за неуспеле команде</value>
     <comment>Header for the toggle that enables automatic fix suggestions when commands fail.</comment>
@@ -740,9 +757,19 @@
     <value>Позиција панела</value>
     <comment>Header for the setting that controls where the agent pane appears relative to the active pane.</comment>
   </data><data name="AIAgents_PanePosition.HelpText" xml:space="preserve">
-    <value>Где се панел агента отвара у односу на ваш терминал.</value>
+    <value>Где се агент налази</value>
     <comment>Supplementary description for the pane position setting.</comment>
   </data>
+  <data name="AIAgents_SessionManagement.Header" xml:space="preserve">
+    <value>Сесије</value>
+    <comment>Title for the setting that controls agent session tracking.</comment>
+  </data>
+  <data name="AIAgents_SessionManagement.HelpText" xml:space="preserve">
+    <value>Пратите који су ВИ агенти покренути, а који захтевају вашу интервенцију.</value>
+    <comment>{Locked=qps-ploc,qps-ploca,qps-plocm} Description for the Sessions setting. In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
+  </data>
+  <data name="AIAgents_ShowTokenUsageAndCost.Header" xml:space="preserve"><value>Коришћење токена</value><comment>Header for a setting that shows available context-window usage and session cost in the terminal bottom bar. Session cost is reported for the active AI session. Keep 'session cost' generic and do not add a specific unit. Either value may be unavailable.</comment></data>
+  <data name="AIAgents_ShowTokenUsageAndCost.HelpText" xml:space="preserve"><value>Прикажи преостали контекст и цену сесије када су доступни</value><comment>Supplementary description for the usage visibility setting. Session cost is reported for the active AI session. Keep 'session cost' generic and do not add a specific unit. Either value may be unavailable.</comment></data>
   <data name="AIAgents_PanePosition_Bottom" xml:space="preserve">
     <value>Доле</value>
     <comment>Value shown in the agent pane position dropdown (selects which side of the terminal the agent pane opens on). Translation should match the existing FreOverlay_PanePositionBottom string used in the first-run experience.</comment>
@@ -758,22 +785,8 @@
   <data name="AIAgents_PanePosition_Left" xml:space="preserve">
     <value>Лево</value>
     <comment>Value shown in the agent pane position dropdown (selects which side of the terminal the agent pane opens on). Translation should match the existing FreOverlay_PanePositionLeft string used in the first-run experience.</comment>
-  </data><data name="AIAgents_HooksGroupHeader.Text" xml:space="preserve">
-    <value>Hooks агента</value>
-    <comment>Section header for the Agent Hooks installer (lets users install hook scripts that report agent CLI activity to the agent pane).</comment>
-  </data><data name="AIAgents_HooksInstall.Header" xml:space="preserve">
-    <value>Инсталирај Hook скрипте агента</value>
-    <comment>Header for the Agent Hooks install section.</comment>
-  </data><data name="AIAgents_HooksInstall.HelpText" xml:space="preserve">
-    <value>Пратите сесије међу агентима. Неопходно за управљање сесијама агената.</value>
-    <comment>Help text shown under the expandable section header.</comment>
-  </data><data name="AIAgents_HooksInstallButton.Content" xml:space="preserve">
-    <value>Инсталирај Hooks</value>
-    <comment>Button label that triggers installation of the wt-agent-hooks plugin/extension into all detected agent CLIs (Copilot, Claude, Codex, Gemini).</comment>
-  </data><data name="AIAgents_HooksRefreshButton.Content" xml:space="preserve">
-    <value>Освежи</value>
-    <comment>Button label that re-detects which agent CLIs are present and which already have hooks installed.</comment>
-  </data>
+  </data><data name="AIAgents_YoloMode.Header" xml:space="preserve"><value>Аутоматско одобравање</value><comment>Header for the Settings toggle that enables automatic approval for the AI agent running in the agent pane.</comment></data>
+<data name="AIAgents_YoloMode.HelpText" xml:space="preserve"><value>Ваш агент у панелу агента ради са пуним дозволама које обезбеђује CLI агента</value><comment>{Locked="CLI"} Description shown under the automatic approval toggle. Agent means an AI intelligent agent in the agent pane, not a proxy or human representative. Full permissions are provided by the agent CLI.</comment></data>
   
   
   
@@ -1320,6 +1333,30 @@
   <data name="Profile_StartingDirectoryUseParentCheckbox.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
     <value>Ако је укључено, овај профил ће се излећи у директоријуму у којем је покренут Терминал.</value>
     <comment>A description for what the supplementary "use parent process directory" setting does. Presented near "Profile_StartingDirectoryUseParentCheckbox".</comment>
+  </data>
+  <data name="Profile_AgentPaneBackend.Header" xml:space="preserve">
+    <value>Агент за панел агента</value>
+    <comment>Header for choosing which AI agent backend is used by this profile.</comment>
+  </data>
+  <data name="Profile_AgentPaneBackend.HelpText" xml:space="preserve">
+    <value>Изаберите агента компатибилног са ACP који ће се користити у панелу агента. За овај профил, овај избор има предност над глобалним избором агента за панел.</value>
+    <comment>{Locked="ACP"} Description for the per-profile AI agent setting.</comment>
+  </data>
+  <data name="Profile_CommandPaletteAgent.Header" xml:space="preserve">
+    <value>Агент за палету команди</value>
+    <comment>Header for choosing which AI agent handles command palette delegation for this profile.</comment>
+  </data>
+  <data name="Profile_CommandPaletteAgent.HelpText" xml:space="preserve">
+    <value>Изаберите агента који се користи за делегирање из палете команди у овом профилу. Овај избор има предност над глобалном поставком агента за делегирање.</value>
+    <comment>Description for the per-profile command palette agent setting. Here “agent” means an AI agent, not a proxy or human agent.</comment>
+  </data>
+  <data name="Profile_AgentPaneBackend_AgentFormat" xml:space="preserve">
+    <value>{0} · {1}</value>
+    <comment>{Locked="{0}","{1}"} Agent display name replaces {0}; Windows or a WSL distro name replaces {1}.</comment>
+  </data>
+  <data name="Profile_AgentPaneBackend_UnavailableSuffix" xml:space="preserve">
+    <value> (није доступно)</value>
+    <comment>Suffix for a saved per-profile agent backend that is no longer installed.</comment>
   </data>
   <data name="Profile_SuppressApplicationTitle.Header" xml:space="preserve">
     <value>Не приказуј измене наслова</value>
@@ -2882,60 +2919,145 @@
     <value>Овом поставком управља ваша организација.</value>
     <comment>Text shown when Group Policy controls this feature. Standard Windows policy notice wording.</comment>
   </data>
-  <data name="AIAgents_HooksInstallingSummary" xml:space="preserve">
-    <value>Инсталирање hooks...</value>
-    <comment>Status summary shown while installing agent session tracking hooks. {Locked="hooks"}</comment>
+  <data name="AIAgents_AutoErrorHandlingTitle.Text" xml:space="preserve">
+    <value>Аутоматско руковање грешкама</value>
+    <comment>Title for the Error detection dropdown in the AI agents settings page.</comment>
   </data>
-  <data name="AIAgents_HooksRemovingCopilotSummary" xml:space="preserve">
-    <value>Уклањање Copilot hooks...</value>
-    <comment>Status summary shown while removing agent session tracking hooks for Copilot. {Locked="Copilot","hooks"}</comment>
+  <data name="AIAgents_AutoErrorHandlingDescription.Text" xml:space="preserve">
+    <value>Аутоматски откривајте неуспеле команде у љусци и по жељи их шаљите свом ВИ агенту ради аутоматских исправки.</value>
+    <comment>Umbrella description for the three-state Error detection setting in the AI agents settings page. The Detect errors option is local-only; only Detect and fix errors sends failures to the AI agent. Use the approved product copy verbatim. Here "agent" refers to an AI intelligent agent, not a proxy or human agent.</comment>
   </data>
-  <data name="AIAgents_HooksRemovingClaudeSummary" xml:space="preserve">
-    <value>Уклањање Claude hooks...</value>
-    <comment>Status summary shown while removing agent session tracking hooks for Claude. {Locked="Claude","hooks"}</comment>
+  <data name="AIAgents_AutoErrorHandling_Off" xml:space="preserve">
+    <value>Искљ</value>
+    <comment>The third option in the Error detection dropdown. It disables automatic terminal error detection and suggestions.</comment>
   </data>
-  <data name="AIAgents_HooksRemovingGeminiSummary" xml:space="preserve">
-    <value>Уклањање Gemini hooks...</value>
-    <comment>Status summary shown while removing agent session tracking hooks for Gemini. {Locked="Gemini","hooks"}</comment>
+  <data name="AIAgents_AutoErrorHandling_DetectErrorsAutomatically" xml:space="preserve">
+    <value>Откриј грешке</value>
+    <comment>The first option in the Error detection dropdown. It enables automatic terminal error detection without sending failures to an AI agent. Here "agent" means an AI intelligent agent, not a proxy or human agent.</comment>
   </data>
-  <data name="AIAgents_HooksRemovingCodexSummary" xml:space="preserve">
-    <value>Уклањање Codex hooks...</value>
-    <comment>Status summary shown while removing agent session tracking hooks for Codex. {Locked="Codex","hooks"}</comment>
+  <data name="AIAgents_AutoErrorHandling_DetectErrorsAndSendToAgentForFixesAutomatically" xml:space="preserve">
+    <value>Откриј и исправи грешке</value>
+    <comment>The second option in the Error detection dropdown. It enables automatic terminal error detection and sends failures to an AI agent for suggested fixes. Here "agent" means an AI intelligent agent, not a proxy or human agent.</comment>
   </data>
-  <data name="AIAgents_CodexTrustHint.Text" xml:space="preserve">
-    <value>Након инсталације, покрените /hooks у Codex-у и одобрите да бисте веровали новим обрађивачима догађаја.</value>
-    <comment>One-line reminder shown under the Codex CLI row in the Agent Hooks section. Codex requires per-command trust before hook handlers run; users must execute /hooks inside Codex and approve. {Locked="/hooks","Codex"}</comment>
+  <data name="AIAgents_AutoErrorHandlingComboBox.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Аутоматско руковање грешкама</value>
+    <comment>Automation name for the Error detection dropdown in the AI agents settings page.</comment>
   </data>
-  <data name="AIAgents_HooksLocateWtaFailedSummary" xml:space="preserve">
-    <value>Неуспех: није могуће пронаћи wta.exe</value>
-    <comment>Failure summary shown when the Settings UI cannot find the WTA helper executable. {Locked="wta.exe"}</comment>
+  <data name="AIAgents_CustomModels.Header" xml:space="preserve">
+    <value>Прилагођена крајња тачка или локални модел</value>
+    <comment>Section header for user-configured remote endpoints or locally hosted models.</comment>
   </data>
-  <data name="AIAgents_HooksRemovedSummary" xml:space="preserve">
-    <value>Hooks су уклоњени. Поново покрените све отворене агенте да бисте одбацили претходне hooks.</value>
-    <comment>Success summary shown after removing agent session tracking hooks. {Locked="Hooks","hooks"}</comment>
+  <data name="AIAgents_CustomModels.HelpText" xml:space="preserve">
+    <value>Усмерите агента на сопствену крајњу тачку компатибилну са OpenAI. </value>
+    <comment>{Locked="OpenAI"} Caption under the custom endpoint section title. Include any locale-appropriate spacing before the inline AIAgents_CustomModelsLearnMore hyperlink at the end of this value.</comment>
   </data>
-  <data name="AIAgents_HooksInstalledSummary" xml:space="preserve">
-    <value>Hooks су инсталирани. Поново покрените све отворене агенте да бисте преузели нове hooks.</value>
-    <comment>Success summary shown after installing agent session tracking hooks. {Locked="Hooks","hooks"}</comment>
+  <data name="AIAgents_CustomModelsLearnMore" xml:space="preserve">
+    <value>Сазнајте више</value>
+    <comment>Inline hyperlink text that follows AIAgents_CustomModels.HelpText and opens documentation about custom providers.</comment>
   </data>
-  <data name="AIAgents_HooksRemovalFailedSummary" xml:space="preserve">
-    <value>Уклањање Hook није успело. Детаље потражите у %LOCALAPPDATA%\IntelligentTerminal\logs\.</value>
-    <comment>Failure summary shown when removing agent session tracking hooks fails. {Locked="Hook","%LOCALAPPDATA%","IntelligentTerminal","logs"}</comment>
+  <data name="AIAgents_CustomProviderUnsupportedForAgent" xml:space="preserve">
+    <value>{0} не подржава прилагођене добављаче Chat Completions компатибилне са OpenAI-јем. Сачувани добављачи остају доступни када пређете на GitHub Copilot или OpenCode.</value>
+    <comment>{Locked="OpenAI","Chat Completions","GitHub Copilot","OpenCode"} {0} is replaced with the current AI agent display name. Explains that saved providers remain available for supported agents.</comment>
   </data>
-  <data name="AIAgents_HooksInstallationFailedSummary" xml:space="preserve">
-    <value>Инсталација Hooks није успела. Детаље потражите у %LOCALAPPDATA%\IntelligentTerminal\logs\wta-install-hooks.log.</value>
-    <comment>Failure summary shown when installing agent session tracking hooks fails. {Locked="Hooks","%LOCALAPPDATA%","IntelligentTerminal","logs","wta-install-hooks.log"}</comment>
+  <data name="AIAgents_CustomProviderApiKeyMissing.Text" xml:space="preserve">
+    <value>Недостаје API кључ. Уклоните и поново додајте овог добављача.</value>
+    <comment>Inline error below a cloud BYOK provider when its saved Windows Credential Manager API key is missing. {Locked="API","BYOK"}</comment>
   </data>
-  <data name="AIAgents_AutoErrorDetectionTitle.Text" xml:space="preserve">
-    <value>Аутоматско откривање грешака</value>
+  <data name="AIAgents_CustomProviderCredentialRemovalFailed" xml:space="preserve">
+    <value>Није могуће уклонити сачувани API кључ из Windows менаџера акредитива. Ручно уклоните генерички акредитив под називом „{0}“, а затим покушајте поново.</value>
+    <comment>Error shown when Windows Credential Manager fails to delete a saved BYOK provider key. {0} is replaced with the exact Generic Credential target so the user can remove it manually. {Locked="API","BYOK","{0}"}</comment>
   </data>
-  <data name="AIAgents_AutoErrorDetectionCaption.Text" xml:space="preserve">
-    <value>Дозволите да Intelligent Terminal приступи вашој командној линији и аутоматски открива грешке. Доступно у PowerShell и Windows PowerShell.</value>
+  <data name="AIAgents_CustomProviderRemove.Content" xml:space="preserve">
+    <value>Уклони</value>
+    <comment>Button that removes a custom model provider.</comment>
   </data>
-  <data name="AIAgents_AutoErrorSuggestionTitle.Text" xml:space="preserve">
-    <value>Аутоматски предлог исправки</value>
+  <data name="AIAgents_CustomProviderAddHeader.Text" xml:space="preserve">
+    <value>Додај прилагођену крајњу тачку</value>
+    <comment>Heading above the form for adding a custom provider endpoint.</comment>
   </data>
-  <data name="AIAgents_AutoErrorSuggestionCaption.Text" xml:space="preserve">
-    <value>Дозволите да Intelligent Terminal шаље грешке вашем агенту ради аутоматског предлагања исправки.</value>
+  <data name="AIAgents_CustomProviderBaseUrl.Header" xml:space="preserve">
+    <value>Основни URL</value>
+    <comment>Header for the custom provider endpoint input. {Locked="URL"}</comment>
+  </data>
+  <data name="AIAgents_CustomProviderBaseUrl.PlaceholderText" xml:space="preserve">
+    <value>https://api.example.com/v1</value>
+    <comment>{Locked="https://api.example.com/v1"} Example of a valid OpenAI-compatible API root shown inside the custom provider endpoint input.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderBaseUrlHint.Text" xml:space="preserve">
+    <value>Укључите корен компатибилан са OpenAI, на пример https://api.openai.com/v1 или https://api.together.xyz/v1.</value>
+    <comment>{Locked="OpenAI","https://api.openai.com/v1","https://api.together.xyz/v1"} Hint below the custom provider endpoint input.</comment>
+  </data>
+  <data name="AIAgents_CustomModelId.Header" xml:space="preserve">
+    <value>ID модела</value>
+    <comment>Header for the custom provider model identifier input. {Locked="ID"}</comment>
+  </data>
+  <data name="AIAgents_CustomModelId.PlaceholderText" xml:space="preserve">
+    <value>gpt-4o</value>
+    <comment>{Locked="gpt-4o"} Example of a valid provider model identifier shown inside the custom model ID input.</comment>
+  </data>
+  <data name="AIAgents_CustomModelIdHint.Text" xml:space="preserve">
+    <value>Назив модела који ваша крајња тачка очекује, тачно онако како га добављач наводи.</value>
+    <comment>Hint below the custom model ID input.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderApiKey.Header" xml:space="preserve">
+    <value>API кључ (опционално)</value>
+    <comment>Header for the optional custom provider credential input. {Locked="API"}</comment>
+  </data>
+  <data name="AIAgents_CustomProviderApiKey.PlaceholderText" xml:space="preserve">
+    <value>sk-...</value>
+    <comment>{Locked="sk-..."} Example API key format shown inside the optional custom provider credential input.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderApiKeyHint.Text" xml:space="preserve">
+    <value>Оставите празно ако вашој крајњој тачки није потребна аутентификација. Чува се у Windows менаџеру акредитива.</value>
+    <comment>{Locked="API"} Hint below the optional custom provider credential input. Use the established localized product name for Windows Credential Manager.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderAdd.Content" xml:space="preserve">
+    <value>Додај крајњу тачку</value>
+    <comment>Button in the final custom provider row that reveals the fields for adding another endpoint.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderSave.Content" xml:space="preserve">
+    <value>Додај и изабери</value>
+    <comment>Button that adds a custom provider model and selects it as the current model.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderSaveHint.Text" xml:space="preserve">
+    <value>Ово ће додати модел и изабрати га као текући модел</value>
+    <comment>Supporting text beside the button that adds and selects a custom provider model.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderCancel.Content" xml:space="preserve">
+    <value>Откажи</value>
+    <comment>Button that cancels adding a provider and restores the Add endpoint row.</comment>
+  </data>
+  <data name="AIAgents_BYOKModelDisplayName" xml:space="preserve">
+    <value>{} (BYOK)</value>
+    <comment>{Locked="{}","BYOK"} {} is replaced with the provider-specific model identifier.</comment>
+  </data>
+  <data name="AIAgents_OpenAICompatibleModelDescription" xml:space="preserve">
+    <value>{} | {} | Компатибилно са OpenAI</value>
+    <comment>{Locked="{}","OpenAI"} The first {} is replaced with the provider name; the second is replaced with its location.</comment>
+  </data>
+  <data name="AIAgents_YoloGeminiInfo.Message" xml:space="preserve"><value>Аутоматско одобравање уз Gemini ограничено је на поуздане радне просторе</value><comment>{Locked="Gemini"} Single-line InfoBar message shown on the AI Agents settings page when automatic approval is on and the selected default provider is Gemini. Gemini restricts automatic approval to trusted workspaces.</comment></data>
+  <data name="AIAgents_CustomAgentRemove.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Уклони</value>
+    <comment>Accessible name for the X button that removes a custom agent from the agent list.</comment>
+  </data>
+  <data name="AIAgents_CustomAgentRemove.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>Уклони</value>
+    <comment>Tooltip for the X button that removes a custom agent from the agent list.</comment>
+  </data>
+  <data name="Globals_TabLayout.HelpText" xml:space="preserve">
+    <value>Пребаците се између нове бочне траке и класичног хоризонталног приказа картица</value>
+    <comment>A description for what the &quot;tab layout&quot; setting does. Presented near &quot;Globals_TabLayout.Header&quot;.</comment>
+  </data>
+  <data name="Globals_TabLayoutHorizontal.Content" xml:space="preserve">
+    <value>Хоризонтално</value>
+    <comment>An option to choose from for the &quot;tab layout&quot; setting. When selected, tabs run across the top of the window.</comment>
+  </data>
+  <data name="Globals_TabLayoutVertical.Content" xml:space="preserve">
+    <value>Бочна трака</value>
+    <comment>An option to choose from for the &quot;tab layout&quot; setting. When selected, tabs run down the left side of the window in a resizable sidebar. Use the same translation as FreOverlay_TabModeSidebar in TerminalApp.</comment>
+  </data>
+  <data name="Globals_TabLayout.Header" xml:space="preserve">
+    <value>Режим картица</value>
+    <comment>Header for a control to choose whether tabs are laid out horizontally across the top of the window or vertically down the left side.</comment>
   </data>
 </root>

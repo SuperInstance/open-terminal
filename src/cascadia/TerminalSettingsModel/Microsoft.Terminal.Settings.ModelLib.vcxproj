@@ -25,6 +25,9 @@
     <ClInclude Include="NewTabMenuEntry.h">
       <DependentUpon>NewTabMenuEntry.idl</DependentUpon>
     </ClInclude>
+    <ClInclude Include="CustomModelProvider.h">
+      <DependentUpon>CustomModelProvider.idl</DependentUpon>
+    </ClInclude>
     <ClInclude Include="SeparatorEntry.h">
       <DependentUpon>NewTabMenuEntry.idl</DependentUpon>
     </ClInclude>
@@ -107,6 +110,7 @@
     <ClInclude Include="EnumMappings.h">
       <DependentUpon>EnumMappings.idl</DependentUpon>
     </ClInclude>
+    <ClInclude Include="SettingsTelemetry.h" />
     <ClInclude Include="SettingsTypes.h" />
     <ClInclude Include="TerminalSettingsSerializationHelpers.h" />
     <ClInclude Include="TerminalWarnings.h">
@@ -188,6 +192,9 @@
     <ClCompile Include="NewTabMenuEntry.cpp">
       <DependentUpon>NewTabMenuEntry.idl</DependentUpon>
     </ClCompile>
+    <ClCompile Include="CustomModelProvider.cpp">
+      <DependentUpon>CustomModelProvider.idl</DependentUpon>
+    </ClCompile>
     <ClCompile Include="SeparatorEntry.cpp">
       <DependentUpon>NewTabMenuEntry.idl</DependentUpon>
     </ClCompile>
@@ -227,6 +234,7 @@
     <Midl Include="CascadiaSettings.idl" />
     <Midl Include="ColorScheme.idl" />
     <Midl Include="NewTabMenuEntry.idl" />
+    <Midl Include="CustomModelProvider.idl" />
     <Midl Include="Theme.idl" />
     <Midl Include="Command.idl" />
     <Midl Include="DefaultTerminal.idl" />

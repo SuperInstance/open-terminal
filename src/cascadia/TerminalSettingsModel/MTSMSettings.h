@@ -42,6 +42,8 @@ Author(s):
     X(Model::ThemePair, Theme, "theme")                                                                                                                                                               \
     X(hstring, Language, "language")                                                                                                                                                                  \
     X(winrt::Microsoft::UI::Xaml::Controls::TabViewWidthMode, TabWidthMode, "tabWidthMode", winrt::Microsoft::UI::Xaml::Controls::TabViewWidthMode::Equal)                                            \
+    X(Model::TabLayout, TabLayout, "tabLayout", Model::TabLayout::Horizontal)                                                                                                                         \
+    X(int32_t, TabLayoutVerticalWidth, "tabLayoutVerticalWidth", 220)                                                                                                                                 \
     X(bool, UseAcrylicInTabRow, "useAcrylicInTabRow", false)                                                                                                                                          \
     X(bool, ShowTabsInTitlebar, "showTabsInTitlebar", true)                                                                                                                                           \
     X(bool, InputServiceWarning, "warning.inputService", true)                                                                                                                                        \
@@ -63,6 +65,7 @@ Author(s):
     X(bool, MinimizeToNotificationArea, "minimizeToNotificationArea", false)                                                                                                                          \
     X(bool, AlwaysShowNotificationIcon, "alwaysShowNotificationIcon", false)                                                                                                                          \
     X(winrt::Windows::Foundation::Collections::IVector<winrt::hstring>, DisabledProfileSources, "disabledProfileSources", nullptr)                                                                    \
+    X(winrt::Windows::Foundation::Collections::IVector<winrt::hstring>, SafeUriSchemes, "safeUriSchemes", nullptr)                                                                                    \
     X(bool, ShowAdminShield, "showAdminShield", true)                                                                                                                                                 \
     X(bool, TrimPaste, "trimPaste", true)                                                                                                                                                             \
     X(bool, EnableColorSelection, "experimental.enableColorSelection", false)                                                                                                                         \
@@ -74,13 +77,20 @@ Author(s):
     X(bool, ShowTabsFullscreen, "showTabsFullscreen", false)                                                                                                                                            \
     X(hstring, AcpAgent, "acpAgent", L"copilot")                                                                                                                                                        \
     X(hstring, AcpModel, "acpModel", L"")                                                                                                                                                               \
+    X(hstring, CustomModelSelection, "customModelSelection", L"")                                                                                                                                       \
+    X(winrt::Windows::Foundation::Collections::IVector<Model::CustomModelProvider>, CustomModelProviders, "customModelProviders", winrt::single_threaded_vector<Model::CustomModelProvider>())             \
     X(hstring, DelegateAgent, "delegateAgent", L"copilot")                                                                                                                                              \
     X(hstring, DelegateModel, "delegateModel", L"")                                                                                                                                                    \
     X(bool, AutoErrorDetectionEnabled, "autoErrorDetectionEnabled", true)                                                                                                                               \
     X(bool, AutoFixEnabled, "autoFixEnabled", false)                                                                                                                                                    \
+    X(bool, AgentSessionManagementEnabled, "agentSessionManagementEnabled", true)                                                                                                                       \
+    X(bool, ShowTokenUsageAndCost, "showTokenUsageAndCost", true)                                                                                                                                       \
     X(hstring, AcpCustomCommand, "acpCustomCommand", L"")                                                                                                                                              \
+    X(winrt::Windows::Foundation::Collections::IVector<winrt::hstring>, AcpCustomCommands, "acpCustomCommands", winrt::single_threaded_vector<winrt::hstring>())                                         \
     X(hstring, DelegateCustomCommand, "delegateCustomCommand", L"")                                                                                                                                    \
+    X(winrt::Windows::Foundation::Collections::IVector<winrt::hstring>, DelegateCustomCommands, "delegateCustomCommands", winrt::single_threaded_vector<winrt::hstring>())                               \
     X(hstring, AgentPanePosition, "agentPanePosition", L"bottom")                                                                                                                                       \
+    X(bool, AgentPaneYoloMode, "agentPane.yoloMode", false)                                                                                                                                             \
     X(bool, AiCoordinatorEnabled, "aiIntegration.coordinator.enabled", false)                                                                                                                          \
     X(hstring, AiCoordinatorCommandline, "aiIntegration.coordinator.commandline", L"wta")                                                                                                                     \
     X(hstring, AiCoordinatorProfile, "aiIntegration.coordinator.profile", L"{fd19208a-412b-4857-8a2d-9ca592b4b16e}")                                                                                   \
@@ -103,6 +113,8 @@ Author(s):
     X(Microsoft::Terminal::Control::ScrollbarState, ScrollState, "scrollbarState", Microsoft::Terminal::Control::ScrollbarState::Visible)                      \
     X(Microsoft::Terminal::Control::TextAntialiasingMode, AntialiasingMode, "antialiasingMode", Microsoft::Terminal::Control::TextAntialiasingMode::Grayscale) \
     X(hstring, StartingDirectory, "startingDirectory")                                                                                                         \
+    X(hstring, AgentPaneBackend, "agentPaneBackend", L"")                                                                                                      \
+    X(hstring, CommandPaletteAgent, "commandPaletteAgent", L"")                                                                                                \
     X(IMediaResource, Icon, "icon", implementation::MediaResource::FromString(L"\uE756"))                                                                      \
     X(bool, SuppressApplicationTitle, "suppressApplicationTitle", false)                                                                                       \
     X(guid, ConnectionType, "connectionType")                                                                                                                  \
@@ -122,6 +134,7 @@ Author(s):
     X(bool, AllowKittyKeyboardMode, "compatibility.kittyKeyboardMode", true)                                                                                   \
     X(bool, AllowVtChecksumReport, "compatibility.allowDECRQCRA", false)                                                                                       \
     X(bool, AllowVtClipboardWrite, "compatibility.allowOSC52", true)                                                                                           \
+    X(bool, AllowOscNotifications, "compatibility.allowOSC777", false)                                                                                         \
     X(bool, AllowKeypadMode, "compatibility.allowDECNKM", false)                                                                                               \
     X(hstring, DragDropDelimiter, "dragDropDelimiter", L" ")                                                                                                   \
     X(Microsoft::Terminal::Control::PathTranslationStyle, PathTranslationStyle, "pathTranslationStyle", Microsoft::Terminal::Control::PathTranslationStyle::None)
@@ -175,7 +188,8 @@ Author(s):
     X(winrt::Microsoft::Terminal::Settings::Model::ThemeColor, Frame, "frame", nullptr)                                            \
     X(winrt::Microsoft::Terminal::Settings::Model::ThemeColor, UnfocusedFrame, "unfocusedFrame", nullptr)                          \
     X(bool, RainbowFrame, "experimental.rainbowFrame", false)                                                                      \
-    X(bool, UseMica, "useMica", false)
+    X(bool, UseMica, "useMica", false)                                                                                             \
+    X(bool, ShowWorkspacesButton, "showWorkspacesButton", true)
 
 #define MTSM_THEME_SETTINGS_SETTINGS(X) \
     X(winrt::Windows::UI::Xaml::ElementTheme, RequestedTheme, "theme", winrt::Windows::UI::Xaml::ElementTheme::Default)

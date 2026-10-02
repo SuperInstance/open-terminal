@@ -18,6 +18,7 @@ use std::fmt;
 pub enum HandshakeStage {
     PipeConnect,
     Initialize,
+    Authenticate,
     NewSession,
     LoadSession,
 }
@@ -28,6 +29,7 @@ impl HandshakeStage {
         match self {
             HandshakeStage::PipeConnect => "pipe_connect",
             HandshakeStage::Initialize => "initialize",
+            HandshakeStage::Authenticate => "authenticate",
             HandshakeStage::NewSession => "new_session",
             HandshakeStage::LoadSession => "load_session",
         }
@@ -44,14 +46,12 @@ pub enum AgentFailure {
     /// transitional non-compliant-auth shim). Routes to the sign-in screen.
     AuthRequired { message: String },
 
-    /// The helper↔master pipe ended (master died, or an agent-CLI death
-    /// cascaded into a master shutdown). A *signal*, never an ACP error.
-    /// Recovery today is manual `/restart`; Phase 3 adds auto-reconnect.
-    TransportLost,
-
     /// The connection never *established*: pipe-connect / `initialize` /
     /// `session/new` / `session/load` failed or timed out at startup.
-    HandshakeFailed { stage: HandshakeStage, detail: String },
+    HandshakeFailed {
+        stage: HandshakeStage,
+        detail: String,
+    },
 
     /// A referenced resource is gone (`ErrorCode::ResourceNotFound` / -32002):
     /// e.g. `session/load` of an expired session. The session survives; the
@@ -102,11 +102,19 @@ impl AgentFailure {
         matches!(self, AgentFailure::Cancelled)
     }
 
+    /// True when this failure occurred at the specified startup handshake
+    /// stage. Recovery policy remains with the caller.
+    pub fn failed_at(&self, expected: HandshakeStage) -> bool {
+        matches!(
+            self,
+            AgentFailure::HandshakeFailed { stage, .. } if *stage == expected
+        )
+    }
+
     /// Short, stable class label for structured logging (`target=failure`).
     pub fn class(&self) -> &'static str {
         match self {
             AgentFailure::AuthRequired { .. } => "auth_required",
-            AgentFailure::TransportLost => "transport_lost",
             AgentFailure::HandshakeFailed { .. } => "handshake_failed",
             AgentFailure::ResourceGone { .. } => "resource_gone",
             AgentFailure::Protocol { .. } => "protocol",
@@ -121,7 +129,6 @@ impl fmt::Display for AgentFailure {
             AgentFailure::AuthRequired { message } => {
                 write!(f, "authentication required: {message}")
             }
-            AgentFailure::TransportLost => f.write_str("connection to the agent was lost"),
             AgentFailure::HandshakeFailed { stage, detail } => {
                 write!(f, "handshake failed at {}: {detail}", stage.label())
             }
@@ -176,7 +183,7 @@ pub fn message_looks_like_auth(msg: &str) -> bool {
         || l.contains("unauthorized")
         || l.contains("401")
         || l.contains("apikey is missing")
-        || l.contains("api key")
+        || l.contains("api key is missing")
 }
 
 #[cfg(test)]
@@ -214,11 +221,26 @@ mod tests {
     }
 
     #[test]
+    fn failed_at_matches_only_the_handshake_stage() {
+        let failure = AgentFailure::HandshakeFailed {
+            stage: HandshakeStage::NewSession,
+            detail: "session failed".into(),
+        };
+        assert!(failure.failed_at(HandshakeStage::NewSession));
+        assert!(!failure.failed_at(HandshakeStage::Authenticate));
+        assert!(!AgentFailure::Cancelled.failed_at(HandshakeStage::NewSession));
+    }
+
+    #[test]
     fn string_fallback_matches_auth_phrases_only() {
         assert!(message_looks_like_auth(
             "new_session over master pipe failed: authentication required"
         ));
         assert!(message_looks_like_auth("HTTP 401 Unauthorized"));
+        assert!(message_looks_like_auth("API key is missing"));
+        assert!(!message_looks_like_auth(
+            "The saved API key for the selected BYOK provider was not found in Windows Credential Manager"
+        ));
         assert!(!message_looks_like_auth("new_session timed out after 30s"));
     }
 

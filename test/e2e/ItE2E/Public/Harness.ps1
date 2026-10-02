@@ -1,0 +1,478 @@
+# Harness.ps1 — lifecycle: resolve, (safely) configure, launch, attach, teardown.
+# Non-destructive by default: settings.json/state.json are backed up and restored.
+
+function Backup-WtConfig {
+    [CmdletBinding()] param([Parameter(Mandatory)]$App)
+    foreach ($f in @($App.SettingsPath, $App.StatePath)) {
+        $bak = "$f.e2ebak"
+        $missing = "$bak.missing"
+        # A leftover backup or missing-file marker means a prior run crashed before
+        # restoring. Recover first so we snapshot the real pre-test state.
+        if (Test-Path $bak) {
+            Copy-Item -LiteralPath $bak -Destination $f -Force
+            Remove-Item -LiteralPath $bak -Force
+            Remove-Item -LiteralPath $missing -Force -ErrorAction SilentlyContinue
+            Write-ItLog -Level WARN -Message "Recovered stale backup for $f (prior run did not clean up)"
+        }
+        elseif (Test-Path $missing) {
+            Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $missing -Force
+            Write-ItLog -Level WARN -Message "Recovered stale missing-file marker for $f (prior run did not clean up)"
+        }
+        if (Test-Path $f) {
+            Copy-Item -LiteralPath $f -Destination $bak -Force
+            Write-ItLog -Level INFO -Message "Backed up $f"
+        }
+        else {
+            $parent = Split-Path $missing -Parent
+            if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+            [System.IO.File]::WriteAllBytes($missing, [byte[]]::new(0))
+            Write-ItLog -Level INFO -Message "Recorded that $f did not exist before the test"
+        }
+    }
+}
+
+function Get-DescendantWtaIds {
+    <# wta.exe PIDs that are descendants of the given WindowsTerminal pid (master spawned by
+       SharedWta, helpers as conpty children). Only these belong to this test run. #>
+    [CmdletBinding()] param([Parameter(Mandatory)][int]$RootPid)
+    $all = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
+    if (-not $all) { return @() }
+    $byParent = @{}
+    foreach ($p in $all) { $byParent[[int]$p.ParentProcessId] += @($p) }
+    # BFS from the WT root to collect all descendant PIDs.
+    $descendants = [System.Collections.Generic.HashSet[int]]::new()
+    $queue = [System.Collections.Generic.Queue[int]]::new(); $queue.Enqueue($RootPid)
+    while ($queue.Count) {
+        $cur = $queue.Dequeue()
+        foreach ($child in $byParent[$cur]) {
+            $cpid = [int]$child.ProcessId
+            if ($descendants.Add($cpid)) { $queue.Enqueue($cpid) }
+        }
+    }
+    $all | Where-Object { $_.Name -ieq 'wta.exe' -and $descendants.Contains([int]$_.ProcessId) } |
+        Select-Object -ExpandProperty ProcessId
+}
+
+function Restore-WtConfig {
+    [CmdletBinding()] param([Parameter(Mandatory)]$App)
+    foreach ($f in @($App.SettingsPath, $App.StatePath)) {
+        $bak = "$f.e2ebak"
+        $missing = "$bak.missing"
+        if (Test-Path $bak) {
+            Copy-Item -LiteralPath $bak -Destination $f -Force
+            Remove-Item -LiteralPath $bak -Force
+            Remove-Item -LiteralPath $missing -Force -ErrorAction SilentlyContinue
+            Write-ItLog -Level INFO -Message "Restored $f"
+        }
+        elseif (Test-Path $missing) {
+            Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $missing -Force
+            Write-ItLog -Level INFO -Message "Removed test-created $f"
+        }
+    }
+}
+
+function Clear-WtConfig {
+    <#
+    .SYNOPSIS
+        Strip agent/AI keys from settings.json so NO stale provider-specific value leaks into a
+        test that only patches a subset of keys.
+    .DESCRIPTION
+        Tests apply settings by PATCHING individual keys (Set-WtSetting), layering on top of the
+        existing settings.json. If the user's real file carries provider-specific keys — e.g.
+        `acpModel`/`acpBaseUrl` pointing at a Foundry-local model that is only valid for
+        `acpAgent: native` — a test that merely flips `acpAgent` to `copilot` would launch
+        `copilot --acp --stdio --model <foundry>`, which the Copilot CLI rejects ("Invalid model
+        …") and the agent handshake dies. Starting every test from an agent-clean config makes the
+        launch deterministic and provider-pure.
+
+        We REMOVE every agent/AI top-level key (acp*, delegate*, agentPane*, autoFix*,
+        showToken*, aiIntegration*) while PRESERVING the rest of the file (profiles, theme, keybindings). A
+        full schema-only wipe is deliberately NOT used: WindowsTerminal rejects a settings.json
+        with no usable profile and pops a "Failed to load settings" dialog that would destabilize
+        UI tests. When called via Start-Terminal (the normal path) the user's real settings are
+        preserved in `.e2ebak` (Backup-WtConfig) and restored by Stop-Terminal, so this stays
+        non-destructive across a run. If called standalone WITHOUT a prior backup, there is no
+        `.e2ebak` to restore from — the caller owns preserving the original.
+    #>
+    [CmdletBinding()] param([Parameter(Mandatory)]$App)
+    $obj = Get-WtSettingsObject -App $App
+    if (-not $obj) { Write-ItLog -Level INFO -Message "Clear-WtConfig: no parseable settings.json to clean"; return }
+    $agentKeys = @($obj.PSObject.Properties.Name | Where-Object { $_ -match '^(acp|delegate|agentPane|autoFix|showToken|aiIntegration)' })
+    foreach ($k in $agentKeys) { $obj.PSObject.Properties.Remove($k) }
+    ($obj | ConvertTo-Json -Depth 64) | Set-Content -LiteralPath $App.SettingsPath -Encoding utf8
+    $preserved = if (Test-Path "$($App.SettingsPath).e2ebak") { "; original preserved in .e2ebak" } else { "" }
+    Write-ItLog -Level INFO -Message "Cleared agent/AI keys from settings.json (removed: $($agentKeys -join ', '))$preserved"
+}
+
+function Get-WtProcessesForApp {
+    [CmdletBinding()] param([Parameter(Mandatory)]$App, [switch]$IncludePackageExecutables)
+    $loc = $App.InstallLocation
+    if ($IncludePackageExecutables) {
+        if (-not $loc) { throw 'Package-wide process discovery requires an installation directory.' }
+        $root = [IO.Path]::GetFullPath([string]$loc).TrimEnd('\') + '\'
+        # Refusal-only callers opt in; existing process-cleanup callers remain terminal-only.
+        Get-Process | Where-Object {
+            $_.Path -and [IO.Path]::GetFullPath($_.Path).StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
+        }
+        return
+    }
+    Get-Process -Name WindowsTerminal -ErrorAction SilentlyContinue | Where-Object {
+        try { $loc -and $_.Path -and $_.Path.StartsWith($loc, [StringComparison]::OrdinalIgnoreCase) } catch { $false }
+    }
+}
+
+function Stop-AppInstances {
+    <#
+    .SYNOPSIS
+        Force a COLD start by terminating every running WindowsTerminal of THIS package.
+    .DESCRIPTION
+        WT is single-instance: a launch hands off to an existing monarch instead of starting
+        fresh, and the monarch keeps `agentFreCompleted` (and the rest of ApplicationState)
+        cached in memory — it never re-reads state.json. So driving the FRE overlay, or any
+        test that depends on cold-start behaviour, requires no monarch to be alive first.
+        Closes gracefully (CloseMainWindow), then force-kills only the specific stragglers by
+        pid. ONLY ever targets this IT package's processes (filtered by install location) — it
+        never touches the user's stock Windows Terminal.
+    #>
+    [CmdletBinding()] param([Parameter(Mandatory)]$App, [int]$GraceSec = 6)
+    $ids = @(Get-WtProcessesForApp -App $App | Select-Object -ExpandProperty Id)
+    if (-not $ids.Count) { return }
+    Write-ItLog -Level INFO -Message "Cold start: closing existing $($App.Package) instance(s) [$($ids -join ',')]"
+    foreach ($id in $ids) {
+        $p = Get-Process -Id $id -ErrorAction SilentlyContinue
+        if ($p) { try { $p.CloseMainWindow() | Out-Null } catch {} }
+    }
+    Test-Until -TimeoutSec $GraceSec -IntervalSec 0.5 -Condition {
+        -not @(Get-WtProcessesForApp -App $App).Count
+    } | Out-Null
+    # Force-kill any window-less / multi-window monarch that ignored CloseMainWindow.
+    foreach ($id in @(Get-WtProcessesForApp -App $App | Select-Object -ExpandProperty Id)) {
+        Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+        Write-ItLog -Level WARN -Message "Cold start: force-killed straggler pid=$id"
+    }
+    # Let the OS tear down the COM monarch registration before the next launch.
+    Start-Sleep -Milliseconds 500
+}
+
+function Stop-StaleItInstances {
+    <#
+    .SYNOPSIS
+        Close leftover Intelligent Terminal windows for the selected package before launch.
+    .DESCRIPTION
+        The harness owns windows for the package selected by ITE2E_PACKAGE for the duration of
+        a run. It closes stale windows from that package so the next activation is a cold start,
+        while preserving other Intelligent Terminal products and stock Windows Terminal.
+
+        Any IT window already running at launch is treated as a leftover from a previous test
+        whose AfterAll/Stop-Terminal didn't run (e.g. a BeforeAll that threw). Such a leftover
+        causes the package-specific AUMID launch to hand off to the stale (often
+        half-initialised) window instead of starting fresh, so the harness can attach to a
+        broken instance and `new-tab` returns CreateTab E_FAIL (0x80004005).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$App,
+        [int]$GraceSec = 6
+    )
+    $ancestorIds = [System.Collections.Generic.HashSet[int]]::new()
+    $ancestorId = $PID
+    while ($ancestorId -gt 0 -and $ancestorIds.Add($ancestorId)) {
+        $ancestor = Get-CimInstance Win32_Process -Filter "ProcessId=$ancestorId" -ErrorAction SilentlyContinue
+        if (-not $ancestor -or $ancestor.ParentProcessId -eq $ancestorId) { break }
+        $ancestorId = [int]$ancestor.ParentProcessId
+    }
+    $find = {
+        Get-WtProcessesForApp -App $App
+    }
+    $procs = @(& $find)
+    if (-not $procs.Count) { return }
+    $hostingAncestors = @($procs | Where-Object { $ancestorIds.Contains([int]$_.Id) })
+    if ($hostingAncestors.Count) {
+        $ids = ($hostingAncestors | ForEach-Object Id) -join ','
+        if ($env:ITE2E_PRESERVE_ANCESTOR_PID -ne $ids) {
+            throw "Refusing to run ItE2E from an Intelligent Terminal process tree because cold start would terminate the test runner (ancestor pid(s): $ids). Launch the suite from an independent conhost or stock Windows Terminal."
+        }
+        Write-ItLog -Level WARN -Message "Preserving explicitly protected Intelligent Terminal ancestor pid(s) [$ids]; shared COM registration may make the run fail safely."
+        $procs = @($procs | Where-Object { -not $ancestorIds.Contains([int]$_.Id) })
+    }
+    if (-not $procs.Count) { return }
+    $staleIds = @($procs | ForEach-Object { [int]$_.Id })
+    Write-ItLog -Level INFO -Message "Cleaning $($procs.Count) stale $($App.Package) instance(s) before launch: [$(($procs | ForEach-Object Id) -join ',')]"
+    foreach ($p in $procs) { try { $p.CloseMainWindow() | Out-Null } catch {} }
+    Test-Until -TimeoutSec $GraceSec -IntervalSec 0.5 -Condition {
+        -not @(Get-Process -Id $staleIds -ErrorAction SilentlyContinue).Count
+    } | Out-Null
+    foreach ($staleId in $staleIds) {
+        $stale = @(& $find) | Where-Object Id -eq $staleId | Select-Object -First 1
+        if ($stale) {
+            Stop-Process -InputObject $stale -Force -ErrorAction SilentlyContinue
+            Write-ItLog -Level WARN -Message "Force-killed stale IT straggler pid=$staleId"
+        }
+    }
+    Start-Sleep -Milliseconds 500   # let the OS tear down this package's COM registration
+}
+
+function Get-ItTestPackage {
+    <#
+    .SYNOPSIS
+        Resolve which package selector the feature/self-test suites should launch.
+        Requires the ITE2E_PACKAGE env var (Store|Dev|<PackageFamilyName>). Live tests
+        must never infer a package because they mutate package state and may send real
+        agent requests.
+    #>
+    [CmdletBinding()]
+    param()
+    if (-not $env:ITE2E_PACKAGE -or $env:ITE2E_PACKAGE -eq 'Auto') {
+        throw "Choose the live integration-test package explicitly: set `$env:ITE2E_PACKAGE = 'Dev' or 'Store' (or an explicit PackageFamilyName). 'Auto' is not allowed."
+    }
+    return $env:ITE2E_PACKAGE
+}
+
+function Start-Terminal {
+    <#
+    .SYNOPSIS
+        Resolve, (optionally) configure, launch, and attach to a deployed Intelligent
+        Terminal. Returns the app context object used by every primitive.
+    .PARAMETER Package   Store|Dev|<PackageFamilyName>. Auto is rejected for live tests.
+    .PARAMETER Settings  Hashtable of top-level settings.json keys to apply.
+    .PARAMETER PassFre   Mark the agent FRE complete before launch (default $true).
+    .PARAMETER Backup    Back up settings/state for restore on Stop-Terminal (default $true).
+    .PARAMETER CleanSettings  Strip agent/AI keys from settings.json after backup so the user's
+                         real config (e.g. a Foundry acpModel/acpBaseUrl set for acpAgent=native)
+                         cannot leak into a test that only patches a subset of keys (default
+                         $true; ignored when Backup is $false).
+    .PARAMETER ShowFre   Leave the agent FRE overlay SHOWING (writes agentFreCompleted=false).
+                         COM resolution is best-effort in this mode. A fresh monarch is always
+                         started (see Stop-StaleItInstances below), which is what lets the FRE
+                         re-read state.json — a running monarch caches ApplicationState.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Package = (Get-ItTestPackage),
+        [hashtable]$Settings,
+        [bool]$PassFre = $true,
+        [bool]$Backup = $true,
+        [bool]$CleanSettings = $true,
+        [switch]$ShowFre,
+        [int]$TimeoutSec = 60
+    )
+    if ($Package -eq 'Auto') {
+        throw "Choose the live integration-test package explicitly: use -Package Dev, -Package Store, or an explicit PackageFamilyName. 'Auto' is not allowed."
+    }
+    $app = Resolve-ItApp -Package $Package
+    Write-ItLog -Level INFO -Message "Resolved package $($app.Package) v$($app.Version); wtcli=$($app.WtcliPath)"
+
+    # Per-run framework log file under TEMP.
+    $script:ItE2ELogFile = Join-Path $env:TEMP ("ite2e-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+
+    # Clear leftover instances of the selected package BEFORE writing config: a stale window
+    # from a crashed prior test would otherwise be attached-to in a broken state (new-tab ->
+    # CreateTab E_FAIL 0x80004005). Doing it before config write also stops a closing monarch's
+    # flush from clobbering the FRE/settings values we are about to write. Other Intelligent
+    # Terminal products have separate package identities and brand CLSIDs and remain running.
+    # This enforces a cold start for the selected package; -ShowFre separately controls whether
+    # the FRE overlay is left showing.
+    Stop-StaleItInstances -App $app
+    Initialize-LogOffsets -App $app | Out-Null
+    $preLaunchLogStartOffset = if ($app.LogStartOffset) { $app.LogStartOffset.Clone() } else { @{} }
+    $app | Add-Member -NotePropertyName PreLaunchLogStartOffset -NotePropertyValue $preLaunchLogStartOffset -Force
+
+    if ($Backup) { Backup-WtConfig -App $app }
+    # Strip agent/AI keys from settings.json so the user's real config (e.g. a Foundry
+    # acpModel/acpBaseUrl set for acpAgent=native) cannot leak into a test that only patches a
+    # subset of keys. Requires a backup so Stop-Terminal can restore the real settings.
+    if ($CleanSettings -and $Backup) { Clear-WtConfig -App $app }
+    elseif ($CleanSettings) { Write-ItLog -Level WARN -Message "CleanSettings requested but Backup is off; skipping clean to avoid destroying user settings." }
+    if ($ShowFre) { Reset-Fre -App $app | Out-Null }
+    elseif ($PassFre) { Invoke-FrePass -App $app | Out-Null }
+    if ($Settings) { Set-WtSettings -App $app -Settings $Settings | Out-Null }
+
+    # Snapshot the agent-pane-sessions.jsonl BEFORE launching WT so Get-AgentPaneSession can tell
+    # OUR agent pane(s) apart from every pane recorded by prior runs / other windows. The file is
+    # shared + append-only under the single-instance monarch and accumulates across all runs, so
+    # any pane_session_id already present here is NOT ours. Captured before activation, so the
+    # pre-warm agent pane this launch creates is guaranteed to be a NEW id.
+    $agentJsonl = Join-Path $app.LocalStateDir 'IntelligentTerminal\agent-pane-sessions.jsonl'
+    # Case-insensitive set: pane_session_id GUIDs can vary in casing between producer/serializer, so
+    # an ordinal (case-sensitive) HashSet would miss a match and treat a pre-existing pane as new.
+    $preIds = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+    if (Test-Path $agentJsonl) {
+        Get-Content -LiteralPath $agentJsonl | Where-Object { $_.Trim() } |
+            ForEach-Object { $_ | ConvertFrom-JsonSafe } |
+            Where-Object { $_ -and $_.pane_session_id } |
+            ForEach-Object { [void]$preIds.Add([string]$_.pane_session_id) }
+    }
+    $app | Add-Member -NotePropertyName PreExistingAgentPaneIds -NotePropertyValue $preIds -Force
+    Write-ItLog -Level INFO -Message "Snapshotted $($preIds.Count) pre-existing agent-pane id(s) before launch."
+
+    $existing = @(Get-WtProcessesForApp -App $app | Select-Object -ExpandProperty Id)
+    # Launch via AUMID shell activation — this is package-specific by construction
+    # (shell:AppsFolder\<PackageFamilyName>!App) and therefore launches EXACTLY the
+    # target package. The global `wtai` AppExecutionAlias is owned by only one package,
+    # so when both the store and a dev/sideloaded IT build are installed it is ambiguous
+    # and would launch the wrong one (silently timing out the dev-targeted tests). The
+    # earlier crash-on-AUMID-activation was the state.json corruption bug (now fixed via
+    # the unary-comma ConvertFrom-ItJsonElement change), not the activation method.
+    if ($app.AppUserModelId) {
+        Write-ItLog -Level INFO -Message "Launching via AUMID: $($app.AppUserModelId)"
+        Start-Process -FilePath 'explorer.exe' -ArgumentList "shell:AppsFolder\$($app.AppUserModelId)" | Out-Null
+    }
+    elseif ($app.LaunchAlias -and (Test-Path $app.LaunchAlias)) {
+        Write-ItLog -Level WARN -Message "No AUMID; falling back to wtai alias ($($app.LaunchAlias)) — may be ambiguous across packages."
+        Start-Process -FilePath $app.LaunchAlias | Out-Null
+    }
+
+    # Find our WindowsTerminal.exe process (prefer a newly-spawned pid).
+    $proc = Wait-Until -TimeoutSec $TimeoutSec -IntervalSec 1 -Because "WindowsTerminal process for $($app.Package)" -Condition {
+        $ps = Get-WtProcessesForApp -App $app
+        $new = $ps | Where-Object { $_.Id -notin $existing } | Select-Object -First 1
+        if ($new) { $new } elseif ($ps) { $ps | Select-Object -First 1 } else { $null }
+    }
+    $app.Pid = $proc.Id
+    # Track whether WE launched this process or merely attached to a pre-existing one
+    # (WT is single-instance — a launch can join an already-running window). Stop-Terminal
+    # only kills processes we launched, so it never terminates a user's existing terminal.
+    $app | Add-Member -NotePropertyName Launched -NotePropertyValue ($app.Pid -notin $existing) -Force
+    if (-not $app.Launched) {
+        Write-ItLog -Level WARN -Message "Attached to a pre-existing WindowsTerminal (pid=$($app.Pid)); Stop-Terminal will NOT kill it."
+    }
+    Write-ItLog -Level INFO -Message "WindowsTerminal pid=$($app.Pid) launched=$($app.Launched)"
+
+    # Wait until shell activation has created the first real window before probing COM.
+    # An immediate COM activation while the process exists but has no HWND races startup
+    # and can create a second logical window in the same WindowsTerminal process.
+    $hwnd = Wait-Until -TimeoutSec 20 -IntervalSec 1 -Quiet -Because "WT window HWND" -Condition {
+        $w = Get-WtWindowHwnds -App $app | Where-Object { [int]$_.pid -eq [int]$app.Pid } | Select-Object -First 1
+        if ($w) { $w.hwnd } else { $null }
+    }
+    if ($hwnd) { $app.Hwnd = $hwnd; Write-ItLog -Level INFO -Message "WT window hwnd=$hwnd" }
+    else { Write-ItLog -Level WARN -Message "Could not resolve WT HWND; UI primitives will fall back to -a pid." }
+
+    # Bring COM online and resolve the brand CLSID. Best-effort while the FRE overlay is up
+    # (the overlay replaces the window content, so the COM tab/pane surface may not be ready).
+    if ($ShowFre) {
+        try { Resolve-WtComClsid -App $app -TimeoutSec ([Math]::Min($TimeoutSec, 15)) | Out-Null }
+        catch { Write-ItLog -Level WARN -Message "COM not resolved during FRE (expected): $_" }
+    }
+    else {
+        Resolve-WtComClsid -App $app -TimeoutSec $TimeoutSec | Out-Null
+    }
+
+    # Capture the WT logical window id (informational; agent panes are XAML chrome and never
+    # appear in list-panes, so window scoping of the agent pane itself relies on the
+    # pre-existing-id snapshot above rather than on this).
+    try {
+        $active = Get-ActivePane -App $app
+        if ($active -and $null -ne $active.window_id) {
+            $app | Add-Member -NotePropertyName WindowId -NotePropertyValue ([string]$active.window_id) -Force
+            Write-ItLog -Level INFO -Message "WT window_id=$($app.WindowId)"
+        }
+    }
+    catch { Write-ItLog -Level WARN -Message "Could not resolve WT window_id: $_" }
+
+    Initialize-LogOffsets -App $app | Out-Null
+    $app
+}
+
+Set-Alias -Name Start-TerminalClean -Value Start-Terminal
+
+function Stop-Terminal {
+    <#
+    .SYNOPSIS
+        Close the terminal and (by default) restore the backed-up config.
+    .DESCRIPTION
+        Closes GRACEFULLY first (CloseMainWindow), giving WindowEmperor time to deregister
+        its single-instance/COM-protocol server cleanly. Only force-kills as a fallback after
+        -GraceSec. Graceful close is preferred so the COM monarch handoff between runs is
+        clean; force-kill is a last resort for an unresponsive window.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, ValueFromPipeline)]$App,
+        [bool]$RestoreSettings = $true,
+        [int]$GraceSec = 8
+    )
+    process {
+        # Only tear down processes WE launched. If Start-Terminal attached to a pre-existing
+        # WindowsTerminal (single-instance), leave it (and its wta) alone.
+        if ($App.PSObject.Properties.Name -contains 'Launched' -and -not $App.Launched) {
+            Write-ItLog -Level WARN -Message "Stop-Terminal: not killing pre-existing WindowsTerminal (pid=$($App.Pid))."
+            if ($RestoreSettings) { Restore-WtConfig -App $App }
+            return
+        }
+        # Collect OUR wta descendants before WT exits (parent links vanish afterwards).
+        $wtaIds = if ($App.Pid) { @(Get-DescendantWtaIds -RootPid ([int]$App.Pid)) } else { @() }
+
+        $forced = $false
+        if ($App.Pid) {
+            $proc = Get-Process -Id $App.Pid -ErrorAction SilentlyContinue
+            if ($proc) {
+                # 1) Graceful close: post WM_CLOSE to the main window so WindowEmperor runs
+                #    its normal shutdown (deregisters COM monarch / protocol server cleanly).
+                $closed = $false
+                try { $closed = $proc.CloseMainWindow() } catch { }
+                if ($closed -or $proc.MainWindowHandle -eq 0) {
+                    $closed = Test-Until -TimeoutSec $GraceSec -IntervalSec 0.5 -Condition {
+                        $null -eq (Get-Process -Id $App.Pid -ErrorAction SilentlyContinue)
+                    }
+                }
+                # 2) Fallback: force-kill only if it did not exit gracefully in time.
+                if (-not (Get-Process -Id $App.Pid -ErrorAction SilentlyContinue)) {
+                    Write-ItLog -Level INFO -Message "Terminal closed gracefully (pid=$($App.Pid))."
+                }
+                else {
+                    Write-ItLog -Level WARN -Message "Graceful close timed out after ${GraceSec}s; force-killing pid=$($App.Pid)."
+                    Stop-Process -Id $App.Pid -Force -ErrorAction SilentlyContinue
+                    $forced = $true
+                }
+            }
+        }
+
+        # Reap any of OUR wta helpers/master still alive (they normally exit with their helper
+        # conpty once WT closes; force only the stragglers, never every wta on the machine).
+        $alive = @($wtaIds | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+        if ($alive.Count) { Stop-Process -Id $alive -Force -ErrorAction SilentlyContinue }
+
+        if ($RestoreSettings) { Restore-WtConfig -App $App }
+        Write-ItLog -Level INFO -Message "Terminal stopped (pid=$($App.Pid), graceful=$(-not $forced), wta reaped=$($alive.Count))."
+    }
+}
+
+function Start-TerminalFre {
+    <#
+    .SYNOPSIS
+        Launch with the agent FRE overlay SHOWING so the FRE flow can be driven via UIA.
+        Forces a COLD start (kills any running monarch) because a running monarch caches
+        ApplicationState and would otherwise just open a normal tab instead of the overlay.
+        Backs up config for restore on Stop-Terminal.
+    #>
+    [CmdletBinding()]
+    param([string]$Package = (Get-ItTestPackage), [int]$TimeoutSec = 60)
+    return (Start-Terminal -Package $Package -ShowFre -Backup $true -TimeoutSec $TimeoutSec)
+}
+
+function Reset-TerminalState {
+    <#
+    .SYNOPSIS
+        Apply a clean baseline to a (running or not) app: optional minimal settings.json,
+        FRE state. Use -Replace to overwrite settings.json with a minimal schema-only file.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, ValueFromPipeline)]$App,
+        [hashtable]$Settings,
+        [bool]$PassFre = $true,
+        [switch]$Replace
+    )
+    process {
+        if ($Replace) {
+            $minimal = [pscustomobject]@{ '$schema' = 'https://aka.ms/terminal-profiles-schema' }
+            Set-Content -LiteralPath $App.SettingsPath -Value ($minimal | ConvertTo-Json) -Encoding utf8
+        }
+        if ($PassFre) { Invoke-FrePass -App $App | Out-Null } else { Reset-Fre -App $App | Out-Null }
+        if ($Settings) { Set-WtSettings -App $App -Settings $Settings | Out-Null }
+        $App
+    }
+}

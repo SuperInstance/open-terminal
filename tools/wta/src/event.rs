@@ -1,9 +1,45 @@
-use crossterm::event::{Event, EventStream};
+use crossterm::event::{Event, EventStream, MouseButton, MouseEventKind};
 use futures::StreamExt;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration, MissedTickBehavior};
 
-use crate::app::AppEvent;
+use crate::app_contracts::AppEvent;
+
+/// Pure translation of a crossterm input `Event` into the `AppEvent` the TUI
+/// consumes, or `None` for events we deliberately drop.
+///
+/// Load-bearing branch: only `KeyEventKind::Press` becomes an `AppEvent::Key`
+/// — key *release* / *repeat* events (which conpty/Windows can deliver) must
+/// be dropped; otherwise every keystroke would fire twice. Mouse events are
+/// forwarded so the app can scroll its virtual chat viewport without stealing
+/// Up/Down from prompt history. Paste and unsupported variants are dropped.
+fn map_crossterm_event(event: Event) -> Option<AppEvent> {
+    match event {
+        Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
+            Some(AppEvent::Key(key))
+        }
+        Event::Mouse(mouse)
+            if matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp
+                    | MouseEventKind::ScrollDown
+                    | MouseEventKind::Down(MouseButton::Left)
+                    | MouseEventKind::Drag(MouseButton::Left)
+                    | MouseEventKind::Up(MouseButton::Left)
+                    | MouseEventKind::Down(MouseButton::Right)
+            ) =>
+        {
+            Some(AppEvent::Mouse(mouse))
+        }
+        Event::Resize(w, h) => Some(AppEvent::Resize(w, h)),
+        // WT/conpty forwards xterm focus-in/out (CSI I / CSI O) to the child
+        // when the hosting TermControl gains/loses XAML focus — one event per
+        // pane. Used to hide the input cursor when the agent pane is unfocused.
+        Event::FocusGained => Some(AppEvent::FocusChanged(true)),
+        Event::FocusLost => Some(AppEvent::FocusChanged(false)),
+        _ => None,
+    }
+}
 
 pub async fn read_crossterm_events(tx: mpsc::UnboundedSender<AppEvent>) {
     let mut reader = EventStream::new();
@@ -78,35 +114,140 @@ pub async fn read_crossterm_events(tx: mpsc::UnboundedSender<AppEvent>) {
                         break;
                     }
                 };
-                let app_event = match event {
-                    Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
-                        tracing::trace!(
-                            target: "input",
-                            code = ?key.code,
-                            mods = ?key.modifiers,
-                            "key press received",
-                        );
-                        AppEvent::Key(key)
-                    }
-                    Event::Resize(w, h) => AppEvent::Resize(w, h),
-                    // WT/conpty forwards xterm focus-in/out (CSI I / CSI O)
-                    // to the child unconditionally when the hosting TermControl
-                    // gains/loses XAML focus — one event per pane, not per
-                    // window. Used to hide the input cursor when the agent
-                    // pane is not the focused pane.
-                    Event::FocusGained => AppEvent::FocusChanged(true),
-                    Event::FocusLost => AppEvent::FocusChanged(false),
-                    // We do not enable mouse capture (see main.rs run_acp_tui_mode).
-                    // The terminal emulator translates wheel into Up/Down arrow
-                    // keystrokes in alt-screen mode, so we never observe raw
-                    // Event::Mouse here. Drop anything else (Paste, etc.).
-                    _ => continue,
+                let app_event = match map_crossterm_event(event) {
+                    Some(ev) => ev,
+                    // Drop paste, key release/repeat, and any other event the
+                    // TUI does not consume.
+                    None => continue,
                 };
+                if let AppEvent::Key(key) = &app_event {
+                    tracing::trace!(
+                        target: "input",
+                        code = ?key.code,
+                        mods = ?key.modifiers,
+                        "key press received",
+                    );
+                }
                 if tx.send(app_event).is_err() {
                     tracing::info!(target: "input", "crossterm reader exiting: AppEvent channel closed");
                     break;
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    };
+
+    #[test]
+    fn key_press_maps_to_key_event() {
+        let press = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        // KeyEvent::new defaults kind to Press.
+        assert!(matches!(
+            map_crossterm_event(Event::Key(press)),
+            Some(AppEvent::Key(_))
+        ));
+    }
+
+    #[test]
+    fn key_release_and_repeat_are_dropped() {
+        // Only Press maps; release/repeat must be dropped to avoid double-fire.
+        let mut release = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        release.kind = KeyEventKind::Release;
+        assert!(map_crossterm_event(Event::Key(release)).is_none());
+
+        let mut repeat = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        repeat.kind = KeyEventKind::Repeat;
+        assert!(map_crossterm_event(Event::Key(repeat)).is_none());
+    }
+
+    #[test]
+    fn resize_maps_with_dimensions() {
+        assert!(matches!(
+            map_crossterm_event(Event::Resize(120, 40)),
+            Some(AppEvent::Resize(120, 40))
+        ));
+    }
+
+    #[test]
+    fn focus_in_out_map_to_focus_changed() {
+        assert!(matches!(
+            map_crossterm_event(Event::FocusGained),
+            Some(AppEvent::FocusChanged(true))
+        ));
+        assert!(matches!(
+            map_crossterm_event(Event::FocusLost),
+            Some(AppEvent::FocusChanged(false))
+        ));
+    }
+
+    #[test]
+    fn mouse_events_are_forwarded() {
+        let mouse = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 4,
+            row: 7,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(matches!(
+            map_crossterm_event(Event::Mouse(mouse)),
+            Some(AppEvent::Mouse(mapped)) if mapped == mouse
+        ));
+    }
+
+    #[test]
+    fn left_button_selection_events_are_forwarded() {
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            let mouse = MouseEvent {
+                kind,
+                column: 4,
+                row: 7,
+                modifiers: KeyModifiers::NONE,
+            };
+            assert!(matches!(
+                map_crossterm_event(Event::Mouse(mouse)),
+                Some(AppEvent::Mouse(mapped)) if mapped == mouse
+            ));
+        }
+    }
+
+    #[test]
+    fn right_click_copy_event_is_forwarded() {
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: 4,
+            row: 7,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(matches!(
+            map_crossterm_event(Event::Mouse(mouse)),
+            Some(AppEvent::Mouse(mapped)) if mapped == mouse
+        ));
+    }
+
+    #[test]
+    fn unsupported_mouse_and_paste_events_are_dropped() {
+        for kind in [
+            MouseEventKind::Moved,
+            MouseEventKind::Up(MouseButton::Right),
+        ] {
+            let mouse = MouseEvent {
+                kind,
+                column: 4,
+                row: 7,
+                modifiers: KeyModifiers::NONE,
+            };
+            assert!(map_crossterm_event(Event::Mouse(mouse)).is_none());
+        }
+        assert!(map_crossterm_event(Event::Paste("text".to_string())).is_none());
     }
 }

@@ -441,6 +441,7 @@
         "openTabColorPicker",
         "openTabRenamer",
         "openWindowRenamer",
+        "openWorkspace",
         "paste",
         "prevTab",
         "quakeMode",
@@ -478,7 +479,9 @@
         "togglePaneZoom",
         "toggleReadOnlyMode",
         "toggleShaderEffects",
+        "toggleSidebar",
         "toggleSplitOrientation",
+        "workspaces",
         "wt",
         "unbound"
       ],
@@ -1721,6 +1724,28 @@
         }
       ]
     },
+    "OpenWorkspaceAction": {
+      "description": "Arguments corresponding to an openWorkspace Action",
+      "allOf": [
+        {
+          "$ref": "#/$defs/ShortcutAction"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "openWorkspace"
+            },
+            "name": {
+              "type": "string",
+              "default": "",
+              "description": "The name of the workspace to open. If omitted, the workspaces UI will be shown so the user can pick one."
+            }
+          }
+        }
+      ]
+    },
     "FocusPaneAction": {
       "description": "Arguments corresponding to a focusPane Action",
       "allOf": [
@@ -2040,6 +2065,11 @@
         "unfocusedFrame": {
           "description": "The color of the window frame when the window is inactive. This only works on Windows 11",
           "$ref": "#/$defs/ThemeColor"
+        },
+        "showWorkspacesButton": {
+          "description": "Currently ignored. The workspaces button remains hidden until the workspace feature is generally available.",
+          "type": "boolean",
+          "default": true
         }
       }
     },
@@ -2207,6 +2237,9 @@
             },
             {
               "$ref": "#/$defs/RenameWindowAction"
+            },
+            {
+              "$ref": "#/$defs/OpenWorkspaceAction"
             },
             {
               "$ref": "#/$defs/FocusPaneAction"
@@ -2472,6 +2505,13 @@
           },
           "type": "array"
         },
+        "safeUriSchemes": {
+          "description": "Specifies a list of URI schemes that are considered safe. No confirmation will be required to open URIs with these schemes.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "rendering.graphicsAPI": {
           "description": "Direct3D 11 provides a more performant and feature-rich experience, whereas Direct2D is more stable. The default option \"Automatic\" will pick the API that best fits your graphics hardware. If you experience significant issues, consider using Direct2D.",
           "type": "string",
@@ -2519,10 +2559,11 @@
         },
         "firstWindowPreference": {
           "default": "defaultProfile",
-          "description": "Defines what behavior the terminal takes when it starts. \"defaultProfile\" will have the terminal launch with one tab of the default profile, and \"persistedWindowLayout\" will cause the terminal to save its layout on close and reload it on open.",
+          "description": "Defines how the terminal behaves when it starts. \"defaultProfile\" launches one tab using the default profile. \"persistedWindowLayout\" saves the window layout on close and restores it on open. \"persistedLayoutAndContent\" saves both the layout and the tab content on close and restores them on open.",
           "enum": [
             "defaultProfile",
-            "persistedWindowLayout"
+            "persistedWindowLayout",
+            "persistedLayoutAndContent"
           ],
           "type": "string"
         },
@@ -2649,6 +2690,22 @@
             "titleLength"
           ],
           "type": "string"
+        },
+        "tabLayout": {
+          "default": "horizontal",
+          "description": "Whether tabs render as a horizontal strip across the top of the window (\"horizontal\", the classic layout) or as a resizable vertical rail down the left edge (\"vertical\"). When set to \"vertical\", the tab rail is hosted inside the page; \"showTabsInTitlebar\" controls whether the tab row chrome appears in the titlebar or at the top of the rail.",
+          "enum": [
+            "horizontal",
+            "vertical"
+          ],
+          "type": "string"
+        },
+        "tabLayoutVerticalWidth": {
+          "default": 220,
+          "description": "Width in pixels of the vertical tab rail when \"tabLayout\" is \"vertical\". Clamped to [180, 480]. Persisted automatically when the user drags the rail divider.",
+          "type": "integer",
+          "minimum": 180,
+          "maximum": 480
         },
         "wordDelimiters": {
           "default": " ./\\()\"'-:,.;<>~!@#$%^&*|+=[]{}~?│",
@@ -2785,6 +2842,11 @@
         "compatibility.allowOSC52": {
           "default": true,
           "description": "When set to true, VT applications will be allowed to set the contents of the local clipboard using OSC 52 (Manipulate Selection Data).",
+          "type": "boolean"
+        },
+        "compatibility.allowOSC777": {
+          "default": false,
+          "description": "When set to true, applications can send OSC 777 escape sequences to trigger desktop toast notifications with a custom title and body.",
           "type": "boolean"
         },
         "unfocusedAppearance": {
@@ -3150,6 +3212,22 @@
             "string",
             "null"
           ]
+        },
+        "agentPaneBackend": {
+          "description": "Selects an optional profile-specific agent pane agent. An empty value uses the global Windows-hosted agent. WSL values identify an agent installed in the profile's own distro.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^(|host:[^:]+|wsl:[^:]+:[^:]+)$"
+        },
+        "commandPaletteAgent": {
+          "description": "Selects the agent used for command palette delegation from this profile. An empty value uses the global Windows-hosted delegate agent. An explicit host or WSL selection is strict and never falls back to another agent.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^(|host:[^:]+|wsl:[^:]+:[^:]+)$"
         },
         "suppressApplicationTitle": {
           "description": "When set to true, tabTitle overrides the default title of the tab and any title change messages from the application will be suppressed. When set to false, tabTitle behaves as normal.",

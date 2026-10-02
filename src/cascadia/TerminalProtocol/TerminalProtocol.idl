@@ -38,6 +38,11 @@ namespace Microsoft.Terminal.Protocol
         // terminal control's working-directory tracking (OSC 9;9 / shell
         // integration). Empty when not known.
         String Cwd;
+        // Shell identity reported by shell integration via OSC 9001;ShellType
+        // (e.g. "pwsh", "powershell", "bash", "wsl:Ubuntu"). Empty when the
+        // shell has not reported its identity.
+        String Shell;
+        String ShellVersion;
     };
 
     struct PaneOutput
@@ -50,6 +55,17 @@ namespace Microsoft.Terminal.Protocol
         // (i.e., shell integration produced a parseable command boundary).
         // False when no marks were available — the client should fall
         // back to a line-count read of the same pane.
+        Boolean HasMarks;
+    };
+
+    struct PaneContext
+    {
+        PaneInfo Pane;
+        String Content;
+        String OutputSource;
+        String FallbackReason;
+        Int32 LineCount;
+        Boolean Truncated;
         Boolean HasMarks;
     };
 
@@ -97,6 +113,8 @@ namespace Microsoft.Terminal.Protocol
     interface IProtocolServer
     {
         // Meta
+        // Compatibility handshake. COM activation is the trust boundary; this
+        // call does not gate any protocol method.
         AuthResult Authenticate(String token);
         String GetCapabilities();
 
@@ -124,6 +142,9 @@ namespace Microsoft.Terminal.Protocol
 
         // Client-originated event publishing (agent → WT → listeners)
         void SendEvent(String eventJson);
+
+        // Appended in protocol 2.3. Resolves the explicit or effective source
+        // pane and captures bounded context in one operation.
+        PaneContext GetPaneContext(Guid sourceSessionId, Boolean hasExplicitSource, Int32 maxLines, Int32 maxCharacters);
     }
 }
-

@@ -24,6 +24,7 @@ const INPUT_MAX_INNER_ROWS: usize = (INPUT_MAX_HEIGHT - 2) as usize;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InputViewport {
     pub visible_lines: Vec<String>,
+    pub visible_line_starts: Vec<usize>,
     pub cursor_row: usize,
     pub cursor_col: usize,
     pub scroll_row: usize,
@@ -32,21 +33,33 @@ pub(crate) struct InputViewport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WrappedInput {
     lines: Vec<String>,
+    line_starts: Vec<usize>,
     cursor_row: usize,
     cursor_col: usize,
 }
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+    let tab = app.current_tab();
+    let border_style = if app.pane_focused {
+        theme::INPUT_BORDER_FOCUSED
+    } else {
+        theme::INPUT_BORDER
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(theme::INPUT_BORDER)
+        .border_style(border_style)
         .style(Style::new().bg(theme::INPUT_BG))
         .padding(Padding::new(INPUT_LEFT_PAD, 0, 0, 0));
-    let tab = app.current_tab();
-    let text_width = area
-        .width
-        .saturating_sub(INPUT_LEFT_PAD + 2 + INPUT_PROMPT_WIDTH);
-    let viewport = input_viewport(&tab.input, tab.cursor_pos, text_width);
+    let text_width = input_text_width(area.width);
+    let viewport = input_viewport_with_max_rows(
+        &tab.input,
+        tab.cursor_pos,
+        text_width,
+        area.height.saturating_sub(2) as usize,
+    );
+    let attachment_ranges = tab.attachments.token_ranges().collect::<Vec<_>>();
+    let prepared_command_range = app.prepared_command_range();
+    let ghost_suffix = app.command_ghost_suffix();
 
     // The caret is painted as a buffer cell (not the OS cursor) in every
     // state, but only when the input box is the live caret target: the pane
@@ -65,21 +78,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             ConnectionState::Disconnected => t!("input.placeholder.disconnected").into_owned(),
             ConnectionState::Failed(_) => t!("input.placeholder.disconnected").into_owned(),
         };
-        // Paint the first cell of the placeholder as "white block with
-        // black glyph" directly in the buffer. The WT block cursor lands
-        // on this exact cell (input is empty ⇒ cursor_pos == 0) and is
-        // alpha-overlaid onto an already-white cell — same color in, same
-        // color out — so the visible result is a stable white block with
-        // a readable black character. Setting only fg=Black wouldn't work:
-        // the glyph would be painted onto the black cell bg first (Black
-        // on Black = invisible) before the cursor overlay had anything to
-        // reveal.
-        //
+        // Paint the first cell of the placeholder as the caret using reverse
+        // video (swap the scheme's fg/bg) so it reads as a solid block in the
+        // scheme's own colors. A hardcoded white block was invisible on light
+        // schemes once the pane background follows the scheme (#234). The OS
+        // cursor stays hidden (`terminal.hide_cursor`), so this painted cell
+        // is the only caret.
         let mut placeholder_spans = vec![Span::styled(INPUT_PROMPT, theme::DIM)];
         let mut chars = placeholder.chars();
         if let Some(first) = chars.next() {
             let first_style = if input_active {
-                Style::new().fg(Color::Black).bg(Color::White)
+                Style::new().add_modifier(Modifier::REVERSED)
             } else {
                 theme::DIM
             };
@@ -114,12 +123,46 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 // cursor sits on. This replaces the OS block cursor so there
                 // is nothing for WT to blink or tear, and lets `draw_frame`
                 // keep the OS cursor hidden in every state.
-                if input_active && i == viewport.cursor_row {
+                if input_active && tab.input_all_selected {
                     let mut spans = vec![prefix];
-                    push_caret_spans(&mut spans, line, viewport.cursor_col);
+                    push_styled_input(
+                        &mut spans,
+                        line,
+                        viewport.visible_line_starts[i],
+                        &attachment_ranges,
+                        prepared_command_range.as_ref(),
+                    );
+                    for span in spans.iter_mut().skip(1) {
+                        span.style = span.style.add_modifier(Modifier::REVERSED);
+                    }
+                    Line::from(spans)
+                } else if input_active && i == viewport.cursor_row {
+                    let mut spans = vec![prefix];
+                    push_caret_spans(
+                        &mut spans,
+                        line,
+                        viewport.visible_line_starts[i],
+                        &attachment_ranges,
+                        prepared_command_range.as_ref(),
+                        viewport.cursor_col,
+                        ghost_suffix,
+                    );
                     Line::from(spans)
                 } else {
-                    Line::from(vec![prefix, Span::styled(line.clone(), theme::INPUT_TEXT)])
+                    let mut spans = vec![prefix];
+                    push_styled_input(
+                        &mut spans,
+                        line,
+                        viewport.visible_line_starts[i],
+                        &attachment_ranges,
+                        prepared_command_range.as_ref(),
+                    );
+                    if i == viewport.cursor_row {
+                        if let Some(suffix) = ghost_suffix {
+                            spans.push(Span::styled(suffix.to_string(), theme::DIM));
+                        }
+                    }
+                    Line::from(spans)
                 }
             })
             .collect()
@@ -130,11 +173,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 pub(crate) fn input_height(input: &str, cursor_pos: usize, total_width: u16) -> u16 {
-    let viewport = input_viewport(
-        input,
-        cursor_pos,
-        total_width.saturating_sub(INPUT_LEFT_PAD + 2 + INPUT_PROMPT_WIDTH),
-    );
+    let viewport = input_viewport(input, cursor_pos, input_text_width(total_width));
     (viewport.visible_lines.len() as u16 + 2).clamp(INPUT_MIN_HEIGHT, INPUT_MAX_HEIGHT)
 }
 
@@ -143,7 +182,15 @@ pub(crate) fn input_height(input: &str, cursor_pos: usize, total_width: u16) -> 
 /// a space when the caret sits past the last char at end of line) painted as
 /// an inverse block, and the text after. `caret_col` is a display-cell column
 /// produced by `wrap_input`, so it always lands on a char boundary.
-fn push_caret_spans(spans: &mut Vec<Span<'static>>, line: &str, caret_col: usize) {
+fn push_caret_spans(
+    spans: &mut Vec<Span<'static>>,
+    line: &str,
+    line_start: usize,
+    attachment_ranges: &[std::ops::Range<usize>],
+    prepared_command_range: Option<&std::ops::Range<usize>>,
+    caret_col: usize,
+    ghost_suffix: Option<&str>,
+) {
     let mut before = String::new();
     let mut col = 0usize;
     let mut chars = line.chars();
@@ -157,36 +204,212 @@ fn push_caret_spans(spans: &mut Vec<Span<'static>>, line: &str, caret_col: usize
         col += char_display_width(ch);
     }
     let after: String = chars.collect();
-    let caret_text = caret_ch.map(|c| c.to_string()).unwrap_or_else(|| " ".to_string());
+    let mut ghost_chars = ghost_suffix.unwrap_or_default().chars();
+    let ghost_caret = if caret_ch.is_none() {
+        ghost_chars.next()
+    } else {
+        None
+    };
+    let caret_text = caret_ch
+        .or(ghost_caret)
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| " ".to_string());
 
-    if !before.is_empty() {
-        spans.push(Span::styled(before, theme::INPUT_TEXT));
-    }
+    push_styled_input(
+        spans,
+        &before,
+        line_start,
+        attachment_ranges,
+        prepared_command_range,
+    );
+    // Reverse video so the caret block uses the scheme's own fg/bg and stays
+    // visible on light schemes too (a hardcoded white block vanished on a
+    // light background once the pane follows the scheme — #234).
     spans.push(Span::styled(
         caret_text,
-        Style::new().fg(Color::Black).bg(Color::White),
+        if ghost_caret.is_some() {
+            theme::DIM.add_modifier(Modifier::REVERSED)
+        } else {
+            Style::new().add_modifier(Modifier::REVERSED)
+        },
     ));
     if !after.is_empty() {
-        spans.push(Span::styled(after, theme::INPUT_TEXT));
+        let after_start =
+            line_start + before.len() + caret_ch.map(|ch| ch.len_utf8()).unwrap_or_default();
+        push_styled_input(
+            spans,
+            &after,
+            after_start,
+            attachment_ranges,
+            prepared_command_range,
+        );
+    }
+
+    let ghost_rest: String = ghost_chars.collect();
+    if !ghost_rest.is_empty() {
+        spans.push(Span::styled(ghost_rest, theme::DIM));
     }
 }
 
+fn push_styled_input(
+    spans: &mut Vec<Span<'static>>,
+    text: &str,
+    source_start: usize,
+    attachment_ranges: &[std::ops::Range<usize>],
+    prepared_command_range: Option<&std::ops::Range<usize>>,
+) {
+    if text.is_empty() {
+        return;
+    }
+
+    let mut run = String::new();
+    let mut run_style = None;
+    for (offset, ch) in text.char_indices() {
+        let source_pos = source_start + offset;
+        let style = if attachment_ranges
+            .iter()
+            .any(|range| range.contains(&source_pos))
+        {
+            theme::ATTACHMENT_TOKEN
+        } else if prepared_command_range.is_some_and(|range| range.contains(&source_pos)) {
+            theme::COMMAND_TOKEN
+        } else {
+            theme::INPUT_TEXT
+        };
+        if run_style.is_some_and(|current| current != style) {
+            spans.push(Span::styled(
+                std::mem::take(&mut run),
+                run_style.unwrap_or(theme::INPUT_TEXT),
+            ));
+        }
+        run_style = Some(style);
+        run.push(ch);
+    }
+    spans.push(Span::styled(run, run_style.unwrap_or(theme::INPUT_TEXT)));
+}
+
 pub(crate) fn input_viewport(input: &str, cursor_pos: usize, total_width: u16) -> InputViewport {
+    input_viewport_with_max_rows(input, cursor_pos, total_width, INPUT_MAX_INNER_ROWS)
+}
+
+fn input_text_width(total_width: u16) -> u16 {
+    total_width
+        .saturating_sub(INPUT_LEFT_PAD + 2 + INPUT_PROMPT_WIDTH)
+        .max(1)
+}
+
+pub(crate) fn input_cursor_at(
+    input: &str,
+    cursor_pos: usize,
+    area: Rect,
+    column: u16,
+    row: u16,
+) -> Option<usize> {
+    let text_start = area
+        .x
+        .saturating_add(1 + INPUT_LEFT_PAD + INPUT_PROMPT_WIDTH);
+    if column < text_start
+        || column >= area.right().saturating_sub(1)
+        || row <= area.y
+        || row >= area.bottom().saturating_sub(1)
+    {
+        return None;
+    }
+    let viewport = input_viewport_with_max_rows(
+        input,
+        cursor_pos,
+        input_text_width(area.width),
+        area.height.saturating_sub(2) as usize,
+    );
+    let visible_row = usize::from(row - area.y - 1);
+    let line = viewport.visible_lines.get(visible_row)?;
+    let start = viewport.visible_line_starts[visible_row];
+    let target_column = usize::from(column - text_start);
+    let mut display_column = 0;
+    for (offset, ch) in line.char_indices() {
+        display_column += char_display_width(ch);
+        if target_column < display_column {
+            return Some(start + offset);
+        }
+    }
+    Some(start + line.len())
+}
+
+pub(crate) fn adjacent_input_cursor(
+    input: &str,
+    cursor_pos: usize,
+    total_width: u16,
+    upward: bool,
+    preferred_column: Option<usize>,
+) -> Option<(usize, usize)> {
+    let width = usize::from(input_text_width(total_width));
+    let cursor_pos = clamp_cursor_to_boundary(input, cursor_pos);
+    // Keep a trailing caret row reachable during an established vertical sequence,
+    // without inventing an initial Down target for a full-width single visible row.
+    let layout_cursor = if preferred_column.is_some() {
+        input.len()
+    } else {
+        cursor_pos
+    };
+    let wrapped = wrap_input(input, layout_cursor, width);
+    let row = wrapped
+        .line_starts
+        .partition_point(|start| *start <= cursor_pos)
+        .saturating_sub(1);
+    let in_line = cursor_pos
+        .saturating_sub(wrapped.line_starts[row])
+        .min(wrapped.lines[row].len());
+    let column = preferred_column.unwrap_or_else(|| {
+        wrapped.lines[row][..in_line]
+            .chars()
+            .map(char_display_width)
+            .sum()
+    });
+    let target_row = if upward {
+        row.checked_sub(1)?
+    } else {
+        row.checked_add(1)?
+    };
+    let line = wrapped.lines.get(target_row)?;
+    let start = wrapped.line_starts[target_row];
+    let mut position = start;
+    let mut display_column = 0;
+    for (offset, ch) in line.char_indices() {
+        let next_column = display_column + char_display_width(ch);
+        // A full-row end would put the caret on the next row or behind the border.
+        if next_column > column || next_column >= width {
+            break;
+        }
+        position = start + offset + ch.len_utf8();
+        display_column = next_column;
+    }
+    Some((position, column))
+}
+
+fn input_viewport_with_max_rows(
+    input: &str,
+    cursor_pos: usize,
+    total_width: u16,
+    max_visible_rows: usize,
+) -> InputViewport {
     let inner_width = total_width.max(1) as usize;
     let wrapped = wrap_input(input, cursor_pos, inner_width);
+    let max_visible_rows = max_visible_rows.clamp(INPUT_MIN_INNER_ROWS, INPUT_MAX_INNER_ROWS);
     let visible_rows = wrapped
         .lines
         .len()
-        .clamp(INPUT_MIN_INNER_ROWS, INPUT_MAX_INNER_ROWS);
+        .clamp(INPUT_MIN_INNER_ROWS, max_visible_rows);
     let scroll_row = if wrapped.cursor_row + 1 > visible_rows {
         wrapped.cursor_row + 1 - visible_rows
     } else {
         0
     };
     let visible_lines = wrapped.lines[scroll_row..scroll_row + visible_rows].to_vec();
+    let visible_line_starts = wrapped.line_starts[scroll_row..scroll_row + visible_rows].to_vec();
 
     InputViewport {
         visible_lines,
+        visible_line_starts,
         cursor_row: wrapped.cursor_row.saturating_sub(scroll_row),
         cursor_col: wrapped.cursor_col,
         scroll_row,
@@ -198,6 +421,7 @@ fn wrap_input(input: &str, cursor_pos: usize, max_width: usize) -> WrappedInput 
     let max_width = max_width.max(1);
 
     let mut lines = vec![String::new()];
+    let mut line_starts = vec![0usize];
     let mut row = 0usize;
     let mut col = 0usize;
     let mut cursor = if cursor_pos == 0 {
@@ -214,6 +438,7 @@ fn wrap_input(input: &str, cursor_pos: usize, max_width: usize) -> WrappedInput 
         if ch == '\n' {
             row += 1;
             lines.push(String::new());
+            line_starts.push(idx + ch.len_utf8());
             col = 0;
 
             if cursor.is_none() && idx + ch.len_utf8() == cursor_pos {
@@ -226,7 +451,11 @@ fn wrap_input(input: &str, cursor_pos: usize, max_width: usize) -> WrappedInput 
         if col > 0 && col + char_width > max_width {
             row += 1;
             lines.push(String::new());
+            line_starts.push(idx);
             col = 0;
+            if idx == cursor_pos {
+                cursor = Some((row, col));
+            }
         }
 
         lines[row].push(ch);
@@ -251,11 +480,13 @@ fn wrap_input(input: &str, cursor_pos: usize, max_width: usize) -> WrappedInput 
         cursor_col = 0;
         if lines.len() <= cursor_row {
             lines.push(String::new());
+            line_starts.push(input.len());
         }
     }
 
     WrappedInput {
         lines,
+        line_starts,
         cursor_row,
         cursor_col,
     }
@@ -278,7 +509,8 @@ fn clamp_cursor_to_boundary(input: &str, cursor_pos: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{input_height, input_viewport, push_caret_spans};
+    use super::{input_height, input_viewport, push_caret_spans, push_styled_input};
+    use crate::theme;
 
     #[test]
     fn empty_input_uses_single_visible_row() {
@@ -342,6 +574,12 @@ mod tests {
     }
 
     #[test]
+    fn input_vertical_soft_wrap_boundary_uses_the_next_row() {
+        let viewport = input_viewport("alpha bravo delta echo", 12, 6);
+        assert_eq!((viewport.cursor_row, viewport.cursor_col), (2, 0));
+    }
+
+    #[test]
     fn caret_mid_text_at_wrap_boundary_does_not_jump_to_next_line() {
         // Caret just before a hard '\n' that lands on the wrap boundary is
         // mid-text, not end-of-input, so it must stay on its own line instead
@@ -354,7 +592,7 @@ mod tests {
     fn caret_past_end_of_short_line_uses_blank_cell() {
         // Short line: the caret sits in the blank cell right after the text.
         let mut spans = Vec::new();
-        push_caret_spans(&mut spans, "ab", 2);
+        push_caret_spans(&mut spans, "ab", 0, &[], None, 2, None);
 
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content.as_ref(), "ab");
@@ -364,11 +602,50 @@ mod tests {
     #[test]
     fn caret_in_middle_splits_before_glyph_after() {
         let mut spans = Vec::new();
-        push_caret_spans(&mut spans, "abcd", 1);
+        push_caret_spans(&mut spans, "abcd", 0, &[], None, 1, None);
 
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[0].content.as_ref(), "a");
         assert_eq!(spans[1].content.as_ref(), "b");
         assert_eq!(spans[2].content.as_ref(), "cd");
+    }
+
+    #[test]
+    fn ghost_suffix_starts_under_end_caret() {
+        let mut spans = Vec::new();
+        push_caret_spans(&mut spans, "/agent co", 0, &[], None, 9, Some("pilot"));
+
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[0].content.as_ref(), "/agent co");
+        assert_eq!(spans[1].content.as_ref(), "p");
+        assert_eq!(spans[2].content.as_ref(), "ilot");
+    }
+
+    #[test]
+    fn attachment_range_renders_as_a_distinct_chip() {
+        let token = "[image: image-1.png]";
+        let text = format!("a{token}b");
+        let mut spans = Vec::new();
+
+        push_styled_input(&mut spans, &text, 0, &[1..1 + token.len()], None);
+
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[0].content.as_ref(), "a");
+        assert_eq!(spans[1].content.as_ref(), token);
+        assert_eq!(spans[1].style, theme::ATTACHMENT_TOKEN);
+        assert_eq!(spans[2].content.as_ref(), "b");
+    }
+
+    #[test]
+    fn prepared_command_range_renders_as_a_distinct_token() {
+        let mut spans = Vec::new();
+
+        push_styled_input(&mut spans, "/intent describe it", 0, &[], Some(&(0..7)));
+
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content.as_ref(), "/intent");
+        assert_eq!(spans[0].style, theme::COMMAND_TOKEN);
+        assert_eq!(spans[1].content.as_ref(), " describe it");
+        assert_eq!(spans[1].style, theme::INPUT_TEXT);
     }
 }

@@ -5,6 +5,7 @@
 
 #include "FreAgentEntry.g.h"
 #include "FreOverlay.g.h"
+#include "../inc/AgentAvailability.h"
 
 namespace winrt::TerminalApp::implementation
 {
@@ -28,9 +29,14 @@ namespace winrt::TerminalApp::implementation
 
         // Initialize with settings to populate controls.
         void Initialize(const winrt::Microsoft::Terminal::Settings::Model::CascadiaSettings& settings);
+        void UpdateSettings(const winrt::Microsoft::Terminal::Settings::Model::CascadiaSettings& settings);
 
         // Event — sender must be the WinRT projected type.
         til::typed_event<winrt::TerminalApp::FreOverlay, winrt::Windows::Foundation::IInspectable> Completed;
+
+        // True only after the full Save flow succeeds with Copilot selected.
+        // TerminalPage consumes this as a one-shot WTA startup hint.
+        bool ShouldAutoInstallCopilotAfterCompletion() const noexcept { return _autoInstallCopilotAfterCompletion; }
 
         // XAML event handlers — must be public for generated code access.
         void _OnNextButtonClick(const winrt::Windows::Foundation::IInspectable& sender,
@@ -41,28 +47,61 @@ namespace winrt::TerminalApp::implementation
                                  const winrt::Windows::UI::Xaml::RoutedEventArgs& args);
         void _OnAgentSelectionChanged(const winrt::Windows::Foundation::IInspectable& sender,
                                       const winrt::Windows::UI::Xaml::Controls::SelectionChangedEventArgs& args);
-        void _OnSessionManagementToggled(const winrt::Windows::Foundation::IInspectable& sender,
-                                         const winrt::Windows::UI::Xaml::RoutedEventArgs& args);
-        void _OnAutoDetectToggled(const winrt::Windows::Foundation::IInspectable& sender,
-                                  const winrt::Windows::UI::Xaml::RoutedEventArgs& args);
+        void _OnSettingsFormScrollerSizeChanged(const winrt::Windows::Foundation::IInspectable& sender,
+                                                const winrt::Windows::UI::Xaml::SizeChangedEventArgs& args);
 
         // No-op kept for IDL compatibility.
         void ResetDragOffset();
 
     private:
         winrt::Microsoft::Terminal::Settings::Model::CascadiaSettings _settings{ nullptr };
+        std::optional<::Microsoft::Terminal::AgentAvailability::HostAgentSnapshot> _hostAgentSnapshot;
+        bool _updatingAgentComboBox{ false };
+        bool _agentSelectionExplicitlyChanged{ false };
+        bool _autoInstallCopilotAfterCompletion{ false };
 
         // Things that can block FRE completion, in priority order (lower value
         // = higher priority). Only the highest-priority problem is surfaced in
         // the bottom-left error area at a time (see _ShowProblem).
+        //
+        // WinGet install failures are not in this enum because they carry
+        // richer structured state (package + failure kind + HRESULT + installer
+        // exit code); those go through _ShowWingetProblem instead, which uses
+        // FreWingetPackage + FreWingetFailureKind below.
         enum class FreProblemKind
         {
             WingetMissing = 0, // hard prerequisite — winget itself unavailable
-            CopilotInstall = 1, // hard prerequisite — winget GitHub.Copilot
-            NodeInstall = 2, // hard prerequisite — winget OpenJS.NodeJS.LTS
-            ShellIntegrationExecutionPolicy = 3, // optional feature — error detection blocked by PowerShell execution policy
-            ShellIntegration = 4, // optional feature — error detection (generic install failure)
-            Hooks = 5, // optional feature — session management
+            ShellIntegrationExecutionPolicy = 1, // optional feature — error detection blocked by PowerShell execution policy
+            ShellIntegration = 2, // optional feature — error detection (generic install failure)
+            Hooks = 3, // optional feature — session management
+        };
+
+        // Which winget-installed prerequisite a failure refers to. Used by
+        // _ShowWingetProblem to pick the right package display name and
+        // manual-fix URL anchor.
+        enum class FreWingetPackage
+        {
+            Copilot = 0, // GitHub.Copilot
+            Node = 1, // OpenJS.NodeJS.LTS
+        };
+
+        // Categorization of why a winget install failed, derived from the COM
+        // API's structured status + HRESULT in _WingetInstallAsync. Each kind
+        // maps to a localized user-facing message that tells the user what
+        // happened and what to do next (retry, contact IT, install manually).
+        // The Success sentinel lets _WingetInstallAsync encode success/failure
+        // in a single IAsyncOperation<int32_t> return value (WinRT projection
+        // can't carry a richer struct without an IDL type).
+        enum class FreWingetFailureKind : int32_t
+        {
+            Success = -1, // install completed OK
+            Network = 0, // connect / download failed with a network-like HRESULT
+            BlockedByPolicy = 1, // winget GP / org policy blocked the install
+            PackageNotFound = 2, // catalog has no manifest with this ID
+            NoCompatibleInstaller = 3, // manifest exists but no installer matches this OS/arch
+            InstallerFailed = 4, // installer ran but reported an error (e.g. MSI 1603)
+            Timeout = 5, // we hit our own 20-min hard timeout
+            Generic = 6, // everything else (catalog corruption, internal error, unknown HRESULT, …)
         };
 
         // Show a single problem: set the error message + manual-fix link, then
@@ -70,24 +109,82 @@ namespace winrt::TerminalApp::implementation
         // any) and re-enable the Save button. Does not raise Completed.
         void _ShowProblem(FreProblemKind kind);
 
-        // Apply the detection→suggestion master-detail dependency: detection
-        // off turns the suggestion toggle off and disables it; detection on
-        // re-enables it (preserving the stored value).
-        void _UpdateSuggestionEnabledState();
+        // Show a winget install failure with package-aware, failure-kind-aware
+        // text. Picks the localized template by `kind`, substitutes the
+        // package display name and (for InstallerFailed / Generic) a
+        // pre-formatted error code string. Re-enables Save like _ShowProblem.
+        void _ShowWingetProblem(FreWingetPackage package,
+                                FreWingetFailureKind kind,
+                                int32_t hr,
+                                uint32_t installerErrorCode);
 
-        // (Re)build the agent dropdown from the GPO-filtered registry, labeling
-        // each entry with its live install state. Safe to call repeatedly (e.g.
-        // after a save) and preserves the current selection.
-        void _PopulateAgentComboBox();
+        // Shared tail end of _ShowProblem / _ShowWingetProblem after the
+        // caller has set ErrorText and computed the help URL: applies the
+        // URL to the help link, makes the panel visible, rebuilds the
+        // agent dropdown from cached availability, fires the Narrator
+        // notification, re-enables editing, and parks focus on the help link.
+        void _FinalizeProblemDisplay(const std::wstring& url);
 
-        // Detect whether an executable is on PATH.
-        static bool _IsAgentInstalled(const wchar_t* name);
-        static bool _IsNodeInstalled();
+        enum class ErrorDetectionMode : int32_t
+        {
+            Detect = 0,
+            DetectAndFix = 1,
+            Off = 2,
+        };
+
+        ErrorDetectionMode _CurrentErrorDetectionMode();
+        void _SetErrorDetectionMode(ErrorDetectionMode mode);
+        void _UpdateIllustrationTheme();
+        void _UpdateSettingsFormWidth();
+
+        // Rebuild the dropdown from the cached probe result. This never runs a
+        // probe, so Save/error paths cannot block the UI on process startup.
+        void _PopulateAgentComboBox(bool preserveCurrentSelection);
+        void _UpdateAgentProbeWarning();
+        winrt::hstring _SelectedAgentId();
+        void _UpdateAutomaticApprovalState();
+
         static bool _IsWingetInstalled();
 
-        // Run a winget install synchronously on a background thread.
-        // Returns true on success.
-        static winrt::Windows::Foundation::IAsyncOperation<bool> _WingetInstallAsync(winrt::hstring packageId);
+        // Run a winget install asynchronously on a background thread.
+        // Returns FreWingetFailureKind cast to int32_t — Success (-1) on
+        // success, or one of the failure kinds otherwise. On failure, the
+        // associated HRESULT and installer exit code (if any) are stored in
+        // the _lastWinget* instance fields below for the caller to read.
+        //
+        // Per-instance state, not static: each FreOverlay window has its
+        // own _lastWinget* slot, so two FRE windows installing concurrently
+        // (multi-window scenario) can't clobber each other's diagnostics.
+        // Within one instance, the caller awaits each prerequisite install
+        // before starting any later setup work.
+        winrt::Windows::Foundation::IAsyncOperation<int32_t> _WingetInstallAsync(winrt::hstring packageId);
+
+        // Diagnostic state from the last _WingetInstallAsync call — read by
+        // the caller right after `co_await` to pass into _ShowWingetProblem.
+        // Both fields are reset to 0 by _WingetInstallAsync on each entry.
+        int32_t _lastWingetHr{ 0 };
+        uint32_t _lastWingetInstallerErrorCode{ 0 };
+
+        // Decide whether an HRESULT looks like a network-class failure
+        // (WinINet / WinHTTP / Winsock). Conservative whitelist of specific
+        // codes rather than facility-range scans, to avoid misclassifying
+        // HTTP-status HRESULTs (HTTP 404 is 0x80190194 — not a "check your
+        // VPN" situation) or RPC failures as network issues.
+        static bool _IsNetworkLikeHResult(int32_t hr) noexcept;
+
+        // Classify a raw HRESULT (from a winget COM exception or from
+        // InstallResult.ExtendedErrorCode) into the most-specific
+        // FreWingetFailureKind we can infer. Recognizes the winget-CLI's
+        // APPINSTALLER_CLI_ERROR_* family for policy blocks, missing
+        // packages, no-applicable-installer, and falls back to
+        // _IsNetworkLikeHResult, then Generic.
+        //
+        // Without this layer, winget COM exceptions like
+        // APPINSTALLER_CLI_ERROR_BLOCKED_BY_POLICY (0x8A15003A — thrown
+        // when group policy disables winget) would map to a generic
+        // "(error code 0x8A15003A)" message instead of the actionable
+        // "blocked by policy — contact your IT admin" message.
+        static FreWingetFailureKind _ClassifyWingetHResult(int32_t hr) noexcept;
 
         // Run wta.exe hooks install on a background thread.
         // Returns true on success.
@@ -96,6 +193,36 @@ namespace winrt::TerminalApp::implementation
 
         // Perform the full save + install flow asynchronously.
         winrt::Windows::Foundation::IAsyncAction _SaveAndInstallAsync();
+
+        enum class ProgressStep
+        {
+            Setup = 0,
+            Agent = 1,
+            ErrorDetection = 2,
+            Sessions = 3,
+        };
+
+        enum class ProgressResult
+        {
+            Completed,
+            Warning,
+            Failed,
+        };
+
+        // Presentation-only observers for the current FRE save flow. These
+        // helpers never decide which work runs or how failures are handled.
+        void _BeginProgressAttempt(const winrt::hstring& agentId);
+        void _BeginProgressStep(ProgressStep step);
+        void _FinishProgressStep(ProgressStep step, ProgressResult result);
+
+        // Flip the overlay between "saving / installing in progress" and
+        // "idle / editable" states. While saving: a modal SavingOverlay
+        // covers the settings form with the progressive setup checklist,
+        // the form underneath is disabled (blocks keyboard too — pointer
+        // is caught by the overlay's Background), and the Save button is
+        // disabled. On error or completion the inverse is applied so the
+        // user can edit and retry (or click Save again).
+        void _SetSavingState(bool saving);
     };
 }
 

@@ -1,0 +1,24517 @@
+//! Core App unit tests, split out of the large app.rs file so it lives
+//! in its own file. This is a child module of `app` (declared with `#[path]`
+//! in app.rs), not of the crate root, so it can reach App's private
+//! dispatch methods and state directly, the same way the file used to when
+//! this was an inline `mod tests { ... }` block.
+
+use super::*;
+use crate::agent_sessions::SessionLocation;
+use crate::app::tab_state::{collapsed_prompt_preview, PendingTerminalActionProposal};
+use crate::app_contracts::{PermOption, PlanEntry};
+use serde_json::json;
+use std::sync::Mutex;
+
+#[test]
+fn qualified_session_removal_only_demotes_matching_helper_scope() {
+    let params = crate::session_registry::SessionRemovedParams {
+        session_id: agent_client_protocol::schema::v1::SessionId::new("same-id"),
+        history_key: crate::session_registry::HistoryRowKey::new(
+            "claude",
+            SessionLocation::Wsl {
+                distro: "Ubuntu".to_string(),
+            },
+            "same-id",
+            None,
+        ),
+    };
+
+    assert!(session_removed_matches_scope(
+        &params,
+        "claude",
+        &SessionLocation::Wsl {
+            distro: "Ubuntu".to_string(),
+        }
+    ));
+    assert!(!session_removed_matches_scope(
+        &params,
+        "copilot",
+        &SessionLocation::Host
+    ));
+}
+
+/// Custom-agent preflight regression: when the user's `acpAgent` is a
+/// `custom:*` id, the preflight must NOT gate the TUI into Setup mode.
+/// Previously `check_agent("custom:foo")` walked PATH for a literal
+/// `custom:foo.exe`, always failed, and dropped the TUI into Setup with
+/// the misleading `DEFAULT_PROFILE` "Agent" display name — blocking
+/// `/restart` and other chat input until a re-save lifecycle-raced the
+/// preflight failure.
+#[test]
+fn passed_for_custom_agent_never_triggers_setup_mode() {
+    let r = PreflightResult::passed_for_custom_agent("custom:foo");
+    // Identity preserved on the canonical id (downstream retry/auth
+    // paths still see `custom:foo`, not the bare exe name).
+    assert_eq!(r.agent_id, "custom:foo");
+    // Display name comes from the canonical id stripped of the
+    // `custom:` prefix — never the generic `DEFAULT_PROFILE` "Agent".
+    assert_eq!(r.display_name, "foo");
+    // `all_passed()` must return true so the PreflightComplete handler
+    // does NOT enter `AppMode::Setup` ("Agent not installed" banner).
+    assert!(r.all_passed());
+    assert_eq!(r.cli_status, CheckStatus::Passed);
+    assert!(matches!(r.auth_status, CheckStatus::Skipped));
+}
+
+/// Defensive: a bare `custom:` (empty name) or a non-`custom:` unknown id
+/// must not produce an empty display name. Falls back to the canonical id.
+#[test]
+fn passed_for_custom_agent_falls_back_when_no_custom_suffix() {
+    let r = PreflightResult::passed_for_custom_agent("custom:");
+    assert_eq!(r.display_name, "custom:");
+    assert!(r.all_passed());
+
+    let r2 = PreflightResult::passed_for_custom_agent("some-unknown-id");
+    assert_eq!(r2.display_name, "some-unknown-id");
+    assert!(r2.all_passed());
+}
+
+// Helper to create an App for testing (avoids needing real channels for simple state tests).
+// `pub(super)` so the sibling `slash_command_tests` module (see the
+// `#[path]` mod in app.rs) can reuse it instead of duplicating App::new.
+pub(super) fn test_app() -> App {
+    let (prompt_tx, _prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (recommendation_tx, _recommendation_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (permission_tx, _permission_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (new_session_tx, _new_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (load_session_tx, _load_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (drop_session_tx, _drop_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (rename_session_tx, _rename_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (restart_tx, _restart_rx) = tokio::sync::mpsc::unbounded_channel();
+    let debug_capture = Arc::new(AtomicBool::new(false));
+    let (master_tx, _master_rx) = tokio::sync::mpsc::unbounded_channel();
+    App::new(
+        prompt_tx,
+        recommendation_tx,
+        permission_tx,
+        new_session_tx,
+        load_session_tx,
+        drop_session_tx,
+        rename_session_tx,
+        restart_tx,
+        master_tx,
+        debug_capture,
+        true,
+        false,
+        Arc::new(crate::shell::ShellManager::new()),
+        Arc::new(Mutex::new(crate::app_contracts::YoloState::new(
+            false, false,
+        ))),
+    )
+}
+
+pub(super) fn test_app_with_new_session_rx() -> (
+    App,
+    tokio::sync::mpsc::UnboundedReceiver<crate::protocol::acp::client::NewSessionForTab>,
+) {
+    let mut app = test_app();
+    let (new_session_tx, new_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.new_session_tx = new_session_tx;
+    (app, new_session_rx)
+}
+
+fn test_app_with_restart_rx() -> (
+    App,
+    tokio::sync::mpsc::UnboundedReceiver<crate::protocol::acp::client::AgentLifecycleRequest>,
+) {
+    let (prompt_tx, _prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (recommendation_tx, _recommendation_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (permission_tx, _permission_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (new_session_tx, _new_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (load_session_tx, _load_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (drop_session_tx, _drop_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (rename_session_tx, _rename_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (restart_tx, restart_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (master_tx, _master_rx) = tokio::sync::mpsc::unbounded_channel();
+    (
+        App::new(
+            prompt_tx,
+            recommendation_tx,
+            permission_tx,
+            new_session_tx,
+            load_session_tx,
+            drop_session_tx,
+            rename_session_tx,
+            restart_tx,
+            master_tx,
+            Arc::new(AtomicBool::new(false)),
+            true,
+            false,
+            Arc::new(crate::shell::ShellManager::new()),
+            Arc::new(Mutex::new(crate::app_contracts::YoloState::new(
+                false, false,
+            ))),
+        ),
+        restart_rx,
+    )
+}
+
+fn test_app_with_drop_session_rx() -> (
+    App,
+    tokio::sync::mpsc::UnboundedReceiver<crate::protocol::acp::client::DropSessionRequest>,
+) {
+    let (prompt_tx, _prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (recommendation_tx, _recommendation_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (permission_tx, _permission_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (new_session_tx, _new_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (load_session_tx, _load_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (drop_session_tx, drop_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (rename_session_tx, _rename_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (restart_tx, _restart_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (master_tx, _master_rx) = tokio::sync::mpsc::unbounded_channel();
+    (
+        App::new(
+            prompt_tx,
+            recommendation_tx,
+            permission_tx,
+            new_session_tx,
+            load_session_tx,
+            drop_session_tx,
+            rename_session_tx,
+            restart_tx,
+            master_tx,
+            Arc::new(AtomicBool::new(false)),
+            true,
+            false,
+            Arc::new(crate::shell::ShellManager::new()),
+            Arc::new(Mutex::new(crate::app_contracts::YoloState::new(
+                false, false,
+            ))),
+        ),
+        drop_session_rx,
+    )
+}
+
+fn agent_rebind_event(tab_id: &str, generation: u64, agent_id: &str) -> AppEvent {
+    agent_rebind_event_for_window(
+        "window-1",
+        tab_id,
+        generation,
+        agent_id,
+        &crate::agent_source::AgentSource::Host,
+    )
+}
+
+fn agent_rebind_event_with_yolo(
+    tab_id: &str,
+    generation: u64,
+    agent_id: &str,
+    yolo_enabled: bool,
+) -> AppEvent {
+    let mut event = agent_rebind_event(tab_id, generation, agent_id);
+    if let AppEvent::WtEvent { params, .. } = &mut event {
+        params["yolo_enabled"] = json!(yolo_enabled);
+        params["yolo_policy_blocked"] = json!(false);
+    }
+    event
+}
+
+fn agent_rebind_event_for_window(
+    window_id: &str,
+    tab_id: &str,
+    generation: u64,
+    agent_id: &str,
+    source: &crate::agent_source::AgentSource,
+) -> AppEvent {
+    AppEvent::WtEvent {
+        method: "rebind_agent".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "operation_id": format!("op-{generation}"),
+            "generation": generation,
+            "window_id": window_id,
+            "tab_id": tab_id,
+            "agent_id": agent_id,
+            "agent_source": source.kind(),
+            "wsl_distro": source.distro(),
+            "acp_model": ""
+        }),
+    }
+}
+
+fn passed_preflight(agent_id: &str, display_name: &str) -> PreflightResult {
+    PreflightResult {
+        agent_id: agent_id.into(),
+        display_name: display_name.into(),
+        cli_status: CheckStatus::Passed,
+        cli_path: Some(format!(r"C:\Agents\{agent_id}.exe")),
+        auth_status: CheckStatus::Skipped,
+        install_hint: String::new(),
+        install_url: String::new(),
+        auth_hint: String::new(),
+    }
+}
+
+#[test]
+fn tab_close_drops_state_and_requests_acp_session_close() {
+    let (mut app, mut drop_session_rx) = test_app_with_drop_session_rx();
+    let tab_id = "closed-tab";
+    app.tab_id = Some(tab_id.to_string());
+    app.current_tab_mut().session_id = Some("session-to-close".to_string());
+
+    app.drop_tab_session(tab_id);
+
+    assert!(!app.tab_sessions.contains_key(tab_id));
+    let request = drop_session_rx
+        .try_recv()
+        .expect("tab close must request ACP session teardown");
+    assert_eq!(request.tab_id, tab_id);
+    assert!(request.notify_master);
+}
+
+#[test]
+fn cross_window_tab_close_only_requests_master_cleanup() {
+    let (mut app, mut drop_session_rx) = test_app_with_drop_session_rx();
+    app.window_id = Some("window-a".to_string());
+    app.tab_id = Some("local-tab".to_string());
+    app.tab_sessions
+        .insert("local-tab".to_string(), TabSession::default());
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "tab_closed".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "window_id": "window-b",
+            "tab_id": "foreign-closed-tab",
+        }),
+    });
+
+    assert!(
+        app.tab_sessions.contains_key("local-tab"),
+        "a cross-window close must not mutate this helper's local tab state"
+    );
+    let request = drop_session_rx
+        .try_recv()
+        .expect("a surviving helper must forward cross-window close to master");
+    assert_eq!(request.tab_id, "foreign-closed-tab");
+    assert!(request.notify_master);
+}
+
+#[test]
+fn reset_tab_session_clears_local_binding_without_duplicate_master_close() {
+    let (mut app, mut drop_session_rx) = test_app_with_drop_session_rx();
+    let tab_id = "reset-tab";
+    app.tab_id = Some(tab_id.to_string());
+    app.current_tab_mut().session_id = Some("session-to-reset".to_string());
+
+    app.reset_tab_session_for(tab_id);
+
+    let request = drop_session_rx
+        .try_recv()
+        .expect("reset must ask the ACP client task to clear its local binding");
+    assert_eq!(request.tab_id, tab_id);
+    assert!(
+        !request.notify_master,
+        "the master consumes WT reset events directly and owns physical close"
+    );
+}
+
+#[test]
+fn reset_tab_session_clears_native_config_prompt_gate() {
+    let (mut app, _drop_session_rx) = test_app_with_drop_session_rx();
+    let tab_id = "reset-yolo-tab";
+    let session_id = "reused-reset-session";
+    app.tab_id = Some(tab_id.to_string());
+    app.current_tab_mut().session_id = Some(session_id.to_string());
+    app.current_tab_mut().config_pending_id = Some("mode".into());
+    app.current_tab_mut().native_yolo_config_pending = true;
+
+    app.reset_tab_session_for(tab_id);
+
+    assert!(app.current_tab().config_pending_id.is_none());
+    assert!(!app.current_tab().native_yolo_config_pending);
+}
+
+#[test]
+fn replacement_session_clears_old_native_config_prompt_gate() {
+    let mut app = test_app();
+    app.current_tab_mut().session_id = Some("old-session".into());
+    app.current_tab_mut().config_pending_id = Some("mode".into());
+    app.current_tab_mut().native_yolo_config_pending = true;
+    app.session_to_tab
+        .insert("old-session".into(), DEFAULT_TAB_ID.into());
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "replacement-session".into(),
+        prompt_id: None,
+        available_models: Vec::new(),
+        current_model_id: None,
+    });
+
+    assert_eq!(
+        app.current_tab().session_id.as_deref(),
+        Some("replacement-session")
+    );
+    assert!(app.current_tab().config_pending_id.is_none());
+    assert!(!app.current_tab().native_yolo_config_pending);
+}
+
+fn agent_paste_params(window_id: &str, tab_id: &str) -> serde_json::Value {
+    json!({
+        "window_id": window_id,
+        "tab_id": tab_id,
+        "pane_id": "{PANE-A}",
+    })
+}
+
+#[test]
+fn agent_paste_text_normalizes_and_filters_control_chars() {
+    assert_eq!(
+        normalize_agent_paste_text("a\r\nb\rc\n\u{0085}d\u{2028}e\u{2029}f"),
+        "a\nb\nc\n\nd\ne\nf"
+    );
+    assert_eq!(
+        normalize_agent_paste_text("ok\u{0000}\u{001b}\u{0007}\tΩ\u{202E}x"),
+        "ok\tΩx",
+        "paste sanitizer must preserve tabs/text but strip controls and bidi overrides"
+    );
+}
+
+#[test]
+fn agent_paste_text_inserts_into_owner_chat_input_without_submitting() {
+    let mut app = test_app();
+    app.window_id = Some("w1".into());
+    app.owner_tab_id = Some("tab-a".into());
+    app.tab_id = Some("tab-a".into());
+    app.pane_id = Some("pane-a".into());
+    app.tab_mut("tab-a").pane_open = true;
+    let pasted = format!("{}\r\n{}", "alpha", "beta");
+    let expected = ["alpha", "beta"].join("\n");
+
+    app.insert_agent_paste_text("tab-a", 0, &pasted);
+
+    let tab = app.tab_sessions.get("tab-a").expect("target tab exists");
+    assert_eq!(tab.input, expected);
+    assert_eq!(tab.cursor_pos, tab.input.len());
+    assert!(tab
+        .messages
+        .iter()
+        .all(|m| !matches!(m, ChatMessage::User(_))));
+}
+
+#[test]
+fn agent_paste_text_inserts_at_cursor() {
+    let mut app = test_app();
+    app.window_id = Some("w1".into());
+    app.owner_tab_id = Some("tab-a".into());
+    app.tab_id = Some("tab-a".into());
+    {
+        let tab = app.tab_mut("tab-a");
+        tab.pane_open = true;
+        tab.input = "ab".into();
+        tab.cursor_pos = 1;
+        tab.paste_pending = true;
+    }
+
+    app.insert_agent_paste_text("tab-a", 0, "X\nY");
+
+    let tab = app.tab_sessions.get("tab-a").expect("target tab exists");
+    assert_eq!(tab.input, "aX\nYb");
+    assert_eq!(tab.cursor_pos, "aX\nY".len());
+    assert!(!tab.paste_pending);
+}
+
+#[test]
+fn agent_paste_text_ignores_wrong_window_and_non_owner_helpers() {
+    let mut app = test_app();
+    app.window_id = Some("w1".into());
+    app.owner_tab_id = Some("tab-a".into());
+    app.tab_id = Some("tab-a".into());
+    app.pane_id = Some("pane-a".into());
+    app.tab_mut("tab-a");
+
+    assert_eq!(
+        app.agent_paste_target_tab(&agent_paste_params("w2", "tab-a")),
+        None
+    );
+    assert_eq!(
+        app.agent_paste_target_tab(&agent_paste_params("w1", "tab-b")),
+        None
+    );
+    let wrong_pane = json!({
+        "window_id": "w1",
+        "tab_id": "tab-a",
+        "pane_id": "pane-b",
+    });
+    assert_eq!(app.agent_paste_target_tab(&wrong_pane), None);
+
+    assert!(app.tab_sessions.get("tab-a").unwrap().input.is_empty());
+    assert!(
+        app.tab_sessions
+            .get("tab-b")
+            .map(|t| t.input.is_empty())
+            .unwrap_or(true),
+        "non-owner helper must not create a phantom draft for another tab"
+    );
+}
+
+#[test]
+fn agent_paste_text_ignores_missing_owner_or_window() {
+    let mut app = test_app();
+    app.window_id = Some("w1".into());
+    app.owner_tab_id = None;
+    app.pane_id = Some("pane-a".into());
+    assert_eq!(
+        app.agent_paste_target_tab(&agent_paste_params("w1", "tab-a")),
+        None
+    );
+    assert!(app
+        .tab_sessions
+        .get("tab-a")
+        .map(|t| t.input.is_empty())
+        .unwrap_or(true));
+
+    app.owner_tab_id = Some("tab-a".into());
+    let missing_window = json!({ "tab_id": "tab-a" });
+    assert_eq!(app.agent_paste_target_tab(&missing_window), None);
+}
+
+#[test]
+fn agent_paste_text_allows_unknown_helper_window_when_owner_matches() {
+    let mut app = test_app();
+    app.owner_tab_id = Some("tab-a".into());
+    app.window_id = None;
+    app.pane_id = Some("pane-a".into());
+    assert_eq!(
+        app.agent_paste_target_tab(&agent_paste_params("w1", "tab-a")),
+        Some("tab-a")
+    );
+}
+
+#[test]
+fn agent_paste_text_ignores_non_chat_or_non_live_input() {
+    let mut app = test_app();
+    app.window_id = Some("w1".into());
+    app.owner_tab_id = Some("tab-a".into());
+    app.tab_id = Some("tab-a".into());
+    app.pane_id = Some("pane-a".into());
+    app.tab_mut("tab-a").pane_open = true;
+    app.tab_mut("tab-a").current_view = View::Agents;
+
+    app.insert_agent_paste_text("tab-a", 0, "hidden");
+    assert!(app.tab_sessions.get("tab-a").unwrap().input.is_empty());
+
+    app.tab_mut("tab-a").current_view = View::Chat;
+    app.tab_mut("tab-a").completed_turns.push(CompletedTurn {
+        prompt: "old".into(),
+        details: Vec::new(),
+        expanded: false,
+        trailing_marker: None,
+    });
+    app.tab_mut("tab-a").selected_completed_turn_idx = Some(0);
+
+    app.insert_agent_paste_text("tab-a", 0, "locked");
+    assert!(app.tab_sessions.get("tab-a").unwrap().input.is_empty());
+}
+
+#[test]
+fn agent_paste_input_live_requires_existing_chat_input_focus() {
+    let mut app = test_app();
+    assert!(!app.agent_paste_input_is_live("tab-a"));
+
+    app.tab_mut("tab-a");
+    app.tab_mut("tab-a").pane_open = true;
+    assert!(app.agent_paste_input_is_live("tab-a"));
+
+    app.tab_mut("tab-a").pane_open = false;
+    assert!(!app.agent_paste_input_is_live("tab-a"));
+    app.tab_mut("tab-a").pane_open = true;
+
+    app.tab_mut("tab-a").paste_pending = true;
+    assert!(!app.agent_paste_input_is_live("tab-a"));
+    app.tab_mut("tab-a").paste_pending = false;
+
+    app.tab_mut("tab-a").current_view = View::Agents;
+    assert!(!app.agent_paste_input_is_live("tab-a"));
+
+    app.tab_mut("tab-a").current_view = View::Chat;
+    app.tab_mut("tab-a").completed_turns.push(CompletedTurn {
+        prompt: "old".into(),
+        details: Vec::new(),
+        expanded: false,
+        trailing_marker: None,
+    });
+    app.tab_mut("tab-a").selected_completed_turn_idx = Some(0);
+    assert!(!app.agent_paste_input_is_live("tab-a"));
+
+    app.tab_mut("tab-a").selected_completed_turn_idx = None;
+    app.tab_mut("tab-a").model_picker_open = true;
+    assert!(!app.agent_paste_input_is_live("tab-a"));
+    app.tab_mut("tab-a").model_picker_open = false;
+
+    app.tab_mut("tab-a").agent_picker_open = true;
+    assert!(!app.agent_paste_input_is_live("tab-a"));
+}
+
+#[test]
+fn agent_paste_failure_clears_pending_state() {
+    let mut app = test_app();
+    app.tab_mut("tab-a").paste_pending = true;
+    app.tab_mut("tab-a").paste_generation = 1;
+
+    app.handle_event(AppEvent::AgentPasteTextFailed {
+        tab_id: "tab-a".into(),
+        generation: 1,
+        error: "clipboard busy".into(),
+    });
+
+    assert!(!app.tab_sessions.get("tab-a").unwrap().paste_pending);
+}
+
+#[test]
+fn stale_agent_paste_completion_is_ignored() {
+    let mut app = test_app();
+    app.mode = AppMode::Chat;
+    app.tab_mut("tab-a").paste_pending = true;
+    app.tab_mut("tab-a").paste_generation = 2;
+
+    app.handle_event(AppEvent::AgentPasteTextReady {
+        tab_id: "tab-a".into(),
+        generation: 1,
+        text: "stale".into(),
+    });
+
+    let tab = app.tab_sessions.get("tab-a").unwrap();
+    assert!(tab.input.is_empty());
+    assert!(
+        tab.paste_pending,
+        "stale completion must not clear a newer pending paste"
+    );
+}
+
+#[test]
+fn agent_paste_completion_is_ignored_after_pane_is_stashed() {
+    let mut app = test_app();
+    app.mode = AppMode::Chat;
+    app.owner_tab_id = Some("tab-a".into());
+    {
+        let tab = app.tab_mut("tab-a");
+        tab.pane_open = true;
+        tab.paste_pending = true;
+        tab.paste_generation = 1;
+    }
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "set_agent_state".into(),
+        pane_id: String::new(),
+        tab_id: Some("tab-a".into()),
+        params: json!({ "tab_id": "tab-a", "pane_open": false }),
+    });
+
+    let tab = app.tab_sessions.get("tab-a").unwrap();
+    assert!(!tab.paste_pending);
+    assert_eq!(tab.paste_generation, 2);
+
+    app.handle_event(AppEvent::AgentPasteTextReady {
+        tab_id: "tab-a".into(),
+        generation: 1,
+        text: "hidden".into(),
+    });
+
+    let tab = app.tab_sessions.get("tab-a").unwrap();
+    assert!(tab.input.is_empty());
+    assert!(!tab.paste_pending);
+}
+
+#[test]
+fn tab_rename_invalidates_pending_agent_paste() {
+    let mut app = test_app();
+    app.tab_id = Some("AAAA".into());
+    let mut tab = TabSession::default();
+    tab.paste_pending = true;
+    tab.paste_generation = 7;
+    app.tab_sessions.insert("AAAA".into(), tab);
+
+    app.rename_tab_session("AAAA", "BBBB", None);
+
+    let tab = app.tab_sessions.get("BBBB").unwrap();
+    assert!(!tab.paste_pending);
+    assert_eq!(tab.paste_generation, 8);
+
+    app.handle_event(AppEvent::AgentPasteTextReady {
+        tab_id: "AAAA".into(),
+        generation: 7,
+        text: "stale".into(),
+    });
+    assert!(app.tab_sessions.get("BBBB").unwrap().input.is_empty());
+}
+
+#[test]
+fn agent_paste_text_ignores_auth_and_setup_modes_before_reading_clipboard() {
+    let mut app = test_app();
+    app.window_id = Some("w1".into());
+    app.owner_tab_id = Some("tab-a".into());
+    app.tab_id = Some("tab-a".into());
+    app.pane_id = Some("pane-a".into());
+
+    app.mode = AppMode::Auth;
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_paste_text".into(),
+        pane_id: String::new(),
+        tab_id: Some("tab-a".into()),
+        params: agent_paste_params("w1", "tab-a"),
+    });
+    assert!(app
+        .tab_sessions
+        .get("tab-a")
+        .map(|t| t.input.is_empty())
+        .unwrap_or(true));
+
+    app.mode = AppMode::Setup;
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_paste_text".into(),
+        pane_id: String::new(),
+        tab_id: Some("tab-a".into()),
+        params: agent_paste_params("w1", "tab-a"),
+    });
+    assert!(app
+        .tab_sessions
+        .get("tab-a")
+        .map(|t| t.input.is_empty())
+        .unwrap_or(true));
+}
+
+#[test]
+fn restored_session_bindings_request_is_scoped_and_independent_of_acp_readiness() {
+    let mut app = test_app();
+    assert!(app.restored_session_bindings_request().is_none());
+    app.owner_tab_id = Some("owning-tab".into());
+    app.tab_id = Some("focused-other-tab".into());
+    assert!(app.restored_session_bindings_request().is_none());
+    app.window_id = Some("owning-window".into());
+    app.state = ConnectionState::Disconnected;
+    let request: serde_json::Value =
+        serde_json::from_str(&app.restored_session_bindings_request().unwrap()).unwrap();
+    assert_eq!(request["type"], "event");
+    assert_eq!(request["method"], "pane_agent_session_changed");
+    assert_eq!(request["params"]["event"], "restore_bindings_requested");
+    assert_eq!(request["params"]["tab_id"], "owning-tab");
+    assert_eq!(request["params"]["window_id"], "owning-window");
+}
+
+#[test]
+fn restored_bindings_notification_requires_exact_owner_tab_and_window() {
+    let mut app = test_app();
+    assert!(!app.owns_restored_bindings_notification(None, &json!({})));
+    app.owner_tab_id = Some("owning-tab".into());
+    app.tab_id = Some("focused-other-tab".into());
+    app.window_id = Some("owning-window".into());
+    app.state = ConnectionState::Disconnected;
+    for (tab, window, expected) in [
+        (Some("owning-tab"), Some("owning-window"), true),
+        (Some("focused-other-tab"), Some("owning-window"), false),
+        (Some("owning-tab"), Some("other-window"), false),
+        (None, Some("owning-window"), false),
+        (Some("owning-tab"), None, false),
+    ] {
+        assert_eq!(
+            app.owns_restored_bindings_notification(tab, &json!({ "window_id": window })),
+            expected
+        );
+    }
+}
+
+#[test]
+fn restored_session_birth_is_forwarded_only_by_the_owning_helper() {
+    for (tab, window, expected) in [
+        ("restored-tab", "restored-window", true),
+        ("other-tab", "restored-window", false),
+        ("restored-tab", "other-window", false),
+    ] {
+        let mut app = test_app();
+        app.owner_tab_id = Some(tab.into());
+        app.window_id = Some(window.into());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.master_request_tx = tx;
+        app.handle_event(AppEvent::WtEvent {
+            method: "session_born_bound".into(),
+            pane_id: "restored-pane".into(),
+            tab_id: Some("restored-tab".into()),
+            params: json!({
+                "agent_session_id": "restored-session",
+                "agent": "copilot",
+                "cwd": "C:\\repo",
+                "window_id": "restored-window"
+            }),
+        });
+        if expected {
+            let crate::protocol::acp::client::MasterExtRequest::SessionBornBound { event } = rx
+                .try_recv()
+                .expect("owning helper forwards the restored birth")
+            else {
+                panic!("expected a binding-only registration");
+            };
+            assert!(matches!(event,
+                crate::agent_sessions::SessionEvent::SessionStarted { key, pane_session_id, .. }
+                if key == "restored-session" && pane_session_id == "restored-pane"));
+            assert!(rx.try_recv().is_err());
+        } else {
+            assert!(rx.try_recv().is_err());
+            assert!(app.agent_sessions.iter_sorted().is_empty());
+        }
+    }
+}
+
+#[test]
+fn copilot_sidekick_hook_session_is_ignored() {
+    use crate::agent_sessions::{AgentSessionRegistry, SessionEvent};
+
+    let mut reg = AgentSessionRegistry::new();
+    let params = json!({
+        "event": "agent.prompt.submit",
+        "cli_source": "copilot",
+        "agent_session_id": "sidekick-github-context-memory-1783651400639",
+        "payload": { "cwd": r#"C:\Users\user"# }
+    });
+    let mut published = Vec::<SessionEvent>::new();
+
+    let dirty = route_agent_event_to_registry_with_hook_sink(
+        &mut reg,
+        "11111111-1111-1111-1111-111111111111",
+        &params,
+        |event| published.push(event),
+    );
+
+    assert!(
+        !dirty,
+        "an internal sidekick event must not dirty the registry"
+    );
+    assert!(
+        reg.iter_sorted().is_empty(),
+        "an internal sidekick must not create a session row"
+    );
+    assert!(
+        published.is_empty(),
+        "an internal sidekick event must not reach master"
+    );
+}
+
+/// A terminal event for a session WTA has never seen must not fabricate a row.
+///
+/// Repro from a live `wta-main_master.log`: Copilot CLI emitted
+/// `agent.session.end` for an abandoned session with zero turns that WTA had
+/// never observed starting. The synthetic-start branch only excluded
+/// `agent.session.started`, so the router invented a `SessionStarted` titled
+/// after the cwd basename, published it to master, then immediately published
+/// the `SessionStopped`. The result was a permanent `Ended` row in `/sessions`
+/// that no reconcile pass can prune — `is_stale_host_history_row` only drops
+/// ids the listing agent itself returned and later stopped returning.
+#[test]
+fn terminal_agent_event_for_unknown_session_does_not_fabricate_a_row() {
+    use crate::agent_sessions::{AgentSessionRegistry, SessionEvent};
+
+    for event in ["agent.session.end", "agent.session.stopped"] {
+        let mut reg = AgentSessionRegistry::new();
+        let params = json!({
+            "event": event,
+            "cli_source": "copilot",
+            "agent_session_id": "abandoned-sid",
+            "payload": {
+                "cwd": r#"C:\Users\dev"#,
+                "reason": "user_exit"
+            }
+        });
+        let mut published = Vec::<SessionEvent>::new();
+
+        route_agent_event_to_registry_with_hook_sink(
+            &mut reg,
+            "dd7141e2-a8d7-4766-b7ee-77c286cafe83",
+            &params,
+            |ev| published.push(ev),
+        );
+
+        assert!(
+            reg.get(&"abandoned-sid".to_string()).is_none(),
+            "{event} for an unseen session must not materialize a row; \
+             an `Ended` ghost here is unprunable by reconcile"
+        );
+        assert!(
+            !published
+                .iter()
+                .any(|ev| matches!(ev, SessionEvent::SessionStarted { .. })),
+            "{event} must never publish a fabricated SessionStarted to master"
+        );
+    }
+}
+
+/// `agent.error` is NOT a terminal event and must keep its synthetic start.
+///
+/// It reports a session that is still live but failing, and its
+/// `ConnectionFailed` reducer resolves the row through `active_by_pane` rather
+/// than the session key. Without a row — and therefore without a pane binding —
+/// a first-observed connection failure silently no-ops, losing the only signal
+/// that the agent broke.
+#[test]
+fn agent_error_for_unknown_session_still_records_the_failure() {
+    use crate::agent_sessions::{AgentSessionRegistry, AgentStatus, SessionEvent};
+
+    let mut reg = AgentSessionRegistry::new();
+    let pane = "dd7141e2-a8d7-4766-b7ee-77c286cafe83";
+    let params = json!({
+        "event": "agent.error",
+        "cli_source": "copilot",
+        "agent_session_id": "failing-sid",
+        "payload": { "cwd": r#"C:\repo"#, "error": "agent CLI exited 1" }
+    });
+    let mut published = Vec::<SessionEvent>::new();
+
+    route_agent_event_to_registry_with_hook_sink(&mut reg, pane, &params, |ev| published.push(ev));
+
+    let row = reg
+        .get(&"failing-sid".to_string())
+        .expect("agent.error must still create the row its reducer needs");
+    assert_eq!(
+        row.status,
+        AgentStatus::Error,
+        "the pane-keyed ConnectionFailed must reach the freshly-created row"
+    );
+    assert_eq!(row.last_error.as_deref(), Some("agent CLI exited 1"));
+    assert!(
+        published
+            .iter()
+            .any(|ev| matches!(ev, SessionEvent::ConnectionFailed { .. })),
+        "master must learn about the failure too"
+    );
+}
+
+/// Guard the other half of the same condition: a *non*-terminal event for an
+/// unknown session still needs its placeholder row; otherwise the event has
+/// nothing to land on. Complements
+/// `helper_agent_event_queues_synthetic_start_and_followup_hook`, which covers
+/// the same path through `handle_event`.
+#[test]
+fn non_terminal_agent_event_for_unknown_session_still_synthesizes_a_start() {
+    use crate::agent_sessions::{AgentSessionRegistry, SessionEvent};
+
+    let mut reg = AgentSessionRegistry::new();
+    let params = json!({
+        "event": "agent.tool.starting",
+        "cli_source": "copilot",
+        "agent_session_id": "live-sid",
+        "payload": { "cwd": r#"C:\repo"#, "tool_name": "edit" }
+    });
+    let mut published = Vec::<SessionEvent>::new();
+
+    route_agent_event_to_registry_with_hook_sink(
+        &mut reg,
+        "11111111-1111-1111-1111-111111111111",
+        &params,
+        |ev| published.push(ev),
+    );
+
+    assert!(
+        reg.get(&"live-sid".to_string()).is_some(),
+        "a tool event for an unseen live session must still create its row"
+    );
+    assert!(
+        published
+            .iter()
+            .any(|ev| matches!(ev, SessionEvent::SessionStarted { .. })),
+        "the synthetic start must still reach master for live sessions"
+    );
+}
+
+/// Both spellings accepted as a real session-start hook must supersede the
+/// pane-keyed placeholder created while the agent session id was unavailable.
+/// Leaving the placeholder behind produces a second local row for one pane and
+/// can make later PaneClosed/origin lookups resolve the wrong session.
+#[test]
+fn singular_session_start_drops_the_earlier_pane_placeholder() {
+    use crate::agent_sessions::AgentSessionRegistry;
+
+    let pane = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE";
+    let placeholder = format!("pane:{}", pane.to_ascii_lowercase());
+    let mut reg = AgentSessionRegistry::new();
+
+    route_agent_event_to_registry(
+        &mut reg,
+        pane,
+        &json!({
+            "event": "agent.tool.starting",
+            "cli_source": "copilot",
+            "agent_session_id": "",
+            "payload": { "cwd": r#"C:\repo"#, "tool_name": "edit" }
+        }),
+    );
+    assert!(
+        reg.has_session(&placeholder),
+        "the missing-id event establishes the helper-local placeholder"
+    );
+
+    route_agent_event_to_registry(
+        &mut reg,
+        pane,
+        &json!({
+            "event": "agent.session.start",
+            "cli_source": "copilot",
+            "agent_session_id": "real-session-id",
+            "payload": { "cwd": r#"C:\repo"# }
+        }),
+    );
+
+    assert!(
+        !reg.has_session(&placeholder),
+        "the singular start spelling must remove the superseded placeholder"
+    );
+    assert!(reg.has_session(&"real-session-id".to_string()));
+}
+
+/// Bug-1 fix (PR #73 follow-up): an `agent.notification` hook event
+/// arrives with neither `agent_session_id` nor a `pane_session_id`
+/// resolving to a live session — exactly the shape Copilot CLI's
+/// `Notification` hook emits (no `session_id` field in the JSON
+/// payload AND no `WT_SESSION` inherited by the hook subprocess).
+///
+/// Before the fix, `resolve_or_synthesize_key` produces `pane:<x>`,
+/// the reducer no-ops (synthetic session unknown) AND the synthetic
+/// key gates the event out of the master publish path, so the row
+/// stays at `Working` from the prior `tool.starting`.
+///
+/// After the fix, the routing layer falls back to the most-recently-
+/// active live session for the same `cli_source` — the row flips to
+/// `Attention` locally AND a real-key event is published to master.
+#[test]
+fn sessionless_notification_falls_back_to_recent_live_cli_session() {
+    use crate::agent_sessions::{AgentSessionRegistry, AgentStatus, CliSource, SessionEvent};
+    let mut reg = AgentSessionRegistry::new();
+    // One live Copilot session bound to a known pane.
+    reg.apply(SessionEvent::SessionStarted {
+        key: "real-copilot-sid".into(),
+        cli_source: CliSource::Copilot,
+        pane_session_id: "11111111-1111-1111-1111-111111111111".into(),
+        cwd: std::path::PathBuf::from("/work"),
+        title: "live copilot".into(),
+    });
+    reg.take_dirty();
+
+    // Notification arrives with an UNRELATED active-pane GUID
+    // (user focused on a different pane) and no agent_session_id —
+    // mirrors the WT_SESSION-less Copilot hook trace.
+    let unrelated_pane = "99999999-9999-9999-9999-999999999999";
+    let params = json!({
+        "event": "agent.notification",
+        "cli_source": "copilot",
+        "agent_session_id": "",  // missing — the bug shape
+        "payload": { "message": "approve: rm -rf foo" }
+    });
+
+    let mut published: Vec<SessionEvent> = Vec::new();
+    route_agent_event_to_registry_with_hook_sink(&mut reg, unrelated_pane, &params, |ev| {
+        published.push(ev)
+    });
+
+    // Local reducer flipped the real row to Attention.
+    let s = reg
+        .get(&"real-copilot-sid".to_string())
+        .expect("row preserved");
+    assert_eq!(
+        s.status,
+        AgentStatus::Attention,
+        "fallback must route the Notification to the live Copilot row",
+    );
+    assert_eq!(s.attention_reason.as_deref(), Some("approve: rm -rf foo"));
+
+    // Master got a real-key (not synthetic `pane:`) Notification.
+    let notif_to_master = published.iter().find_map(|ev| match ev {
+        SessionEvent::Notification { key, .. } => Some(key.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        notif_to_master.as_deref(),
+        Some("real-copilot-sid"),
+        "Notification must be published to master keyed by the real session id; \
+         synthetic `pane:` keys are dropped from the publish path",
+    );
+    assert!(
+        !published.iter().any(|ev| matches!(
+            ev,
+            SessionEvent::Notification { key, .. } if key.starts_with("pane:")
+        )),
+        "no synthetic-key Notification should leak to master",
+    );
+}
+
+/// Turn-based hook status (multi-tool turn bug): Copilot/Gemini fire a
+/// `tool.finished` per tool — several per turn, in parallel batches — but
+/// the agent keeps working until `agent.stop`. A `tool.finished` must NOT
+/// demote the row to Idle (only `agent.stop` ends the turn); otherwise a
+/// multi-tool turn flickers to (and sits at) Idle while the agent is busy.
+#[test]
+fn copilot_tool_finished_keeps_working_only_agent_stop_idles() {
+    use crate::agent_sessions::{AgentSessionRegistry, AgentStatus, CliSource, SessionEvent};
+    let mut reg = AgentSessionRegistry::new();
+    let pane = "11111111-1111-1111-1111-111111111111";
+    let sid = "copilot-sid";
+    reg.apply(SessionEvent::SessionStarted {
+        key: sid.into(),
+        cli_source: CliSource::Copilot,
+        pane_session_id: pane.into(),
+        cwd: std::path::PathBuf::from("/work"),
+        title: "copilot".into(),
+    });
+    reg.take_dirty();
+
+    let route = |reg: &mut AgentSessionRegistry, event: &str| {
+        let params = json!({
+            "event": event,
+            "cli_source": "copilot",
+            "agent_session_id": sid,
+            "payload": { "tool_name": "read_file" }
+        });
+        route_agent_event_to_registry_with_hook_sink(reg, pane, &params, |_| {});
+    };
+
+    // User prompt → Working (turn start).
+    route(&mut reg, "agent.prompt.submit");
+    assert_eq!(
+        reg.get(&sid.to_string()).unwrap().status,
+        AgentStatus::Working
+    );
+
+    // A parallel batch: three starts, then three finishes.
+    route(&mut reg, "agent.tool.starting");
+    route(&mut reg, "agent.tool.starting");
+    route(&mut reg, "agent.tool.starting");
+    assert_eq!(
+        reg.get(&sid.to_string()).unwrap().status,
+        AgentStatus::Working
+    );
+    route(&mut reg, "agent.tool.finished");
+    assert_eq!(
+        reg.get(&sid.to_string()).unwrap().status,
+        AgentStatus::Working,
+        "first tool.finished must NOT demote while siblings run / the turn continues",
+    );
+    route(&mut reg, "agent.tool.finished");
+    route(&mut reg, "agent.tool.finished");
+    assert_eq!(
+        reg.get(&sid.to_string()).unwrap().status,
+        AgentStatus::Working,
+        "tool completions never end the turn",
+    );
+
+    // Only agent.stop ends the turn → Idle.
+    route(&mut reg, "agent.stop");
+    assert_eq!(
+        reg.get(&sid.to_string()).unwrap().status,
+        AgentStatus::Idle,
+        "agent.stop owns the turn-end → Idle",
+    );
+}
+
+/// Counterpart guard: when the event carries a real `agent_session_id`,
+/// the fallback must NOT replace it — the explicit session id always
+/// wins over the heuristic.
+#[test]
+fn notification_with_real_session_id_skips_fallback() {
+    use crate::agent_sessions::{AgentSessionRegistry, AgentStatus, CliSource, SessionEvent};
+    let mut reg = AgentSessionRegistry::new();
+    // Two Copilot sessions; `target` is the explicit one in the hook,
+    // `other` is the most-recently-active and would win the fallback.
+    reg.apply(SessionEvent::SessionStarted {
+        key: "target".into(),
+        cli_source: CliSource::Copilot,
+        pane_session_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".into(),
+        cwd: std::path::PathBuf::from("/work"),
+        title: "target".into(),
+    });
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    reg.apply(SessionEvent::SessionStarted {
+        key: "other".into(),
+        cli_source: CliSource::Copilot,
+        pane_session_id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb".into(),
+        cwd: std::path::PathBuf::from("/work"),
+        title: "other".into(),
+    });
+    reg.take_dirty();
+
+    let params = json!({
+        "event": "agent.notification",
+        "cli_source": "copilot",
+        "agent_session_id": "target",
+        "payload": { "message": "explicit" }
+    });
+    let unrelated_pane = "99999999-9999-9999-9999-999999999999";
+    route_agent_event_to_registry_with_hook_sink(&mut reg, unrelated_pane, &params, |_| {});
+
+    assert_eq!(
+        reg.get(&"target".to_string()).unwrap().status,
+        AgentStatus::Attention,
+        "explicit session id must win over the fallback heuristic",
+    );
+    assert_ne!(
+        reg.get(&"other".to_string()).unwrap().status,
+        AgentStatus::Attention,
+        "fallback target must NOT be touched when explicit sid was supplied",
+    );
+}
+
+/// The fallback must refuse to act when `cli_source` is `Unknown`
+/// (no trustworthy CLI hint); otherwise a sessionless event from an
+/// unknown source could land on whichever live session happened to be
+/// the most recent across ALL CLIs.
+#[test]
+fn sessionless_notification_with_unknown_cli_does_not_fall_back() {
+    use crate::agent_sessions::{AgentSessionRegistry, AgentStatus, CliSource, SessionEvent};
+    let mut reg = AgentSessionRegistry::new();
+    reg.apply(SessionEvent::SessionStarted {
+        key: "copilot".into(),
+        cli_source: CliSource::Copilot,
+        pane_session_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".into(),
+        cwd: std::path::PathBuf::from("/work"),
+        title: "live".into(),
+    });
+
+    // No cli_source field at all → CliSource::Unknown — fallback
+    // must NOT pick the only live row.
+    let params = json!({
+        "event": "agent.notification",
+        "agent_session_id": "",
+        "payload": { "message": "approve?" }
+    });
+    let _ = route_agent_event_to_registry_with_hook_sink(
+        &mut reg,
+        "99999999-9999-9999-9999-999999999999",
+        &params,
+        |_| {},
+    );
+
+    assert_ne!(
+        reg.get(&"copilot".to_string()).unwrap().status,
+        AgentStatus::Attention,
+        "fallback must require a trustworthy cli_source hint to avoid \
+         routing sessionless events into unrelated CLIs",
+    );
+}
+
+/// The WTA-side half of the `wtcli send-event` pane contract: an event whose
+/// `pane_id` is empty must not touch any *other* session's pane binding.
+///
+/// `send-event` publishes an empty `pane_id` when the caller could not
+/// identify its pane (a legacy hook bundle whose CLI never inherited
+/// `WT_SESSION`). It used to substitute `GetActivePane()` instead, which fed
+/// the focused pane's GUID into exactly this reducer — and `SessionStarted`'s
+/// orphan-handover branch then demoted the focused pane's real session to
+/// `Ended` and unbound it, because a new key appeared to claim its pane.
+///
+/// This pins the property that makes publishing empty safe: `pane_known` is
+/// false, so no handover runs, `active_by_pane` is untouched, and the
+/// bystander session survives intact.
+#[test]
+fn empty_pane_session_start_does_not_evict_a_bound_session() {
+    use crate::agent_sessions::{AgentSessionRegistry, AgentStatus, CliSource, SessionEvent};
+    let mut reg = AgentSessionRegistry::new();
+    let bystander_pane = "11111111-1111-1111-1111-111111111111";
+    reg.apply(SessionEvent::SessionStarted {
+        key: "bystander-sid".into(),
+        cli_source: CliSource::Copilot,
+        pane_session_id: bystander_pane.into(),
+        cwd: std::path::PathBuf::from("/work"),
+        title: "bystander".into(),
+    });
+    reg.take_dirty();
+
+    // A different session starts, carrying a real agent_session_id but no pane
+    // — the agent-pane / pane-less hook shape.
+    let params = json!({
+        "event": "agent.session.start",
+        "cli_source": "copilot",
+        "agent_session_id": "paneless-sid",
+        "payload": { "cwd": "C:\\elsewhere" }
+    });
+    route_agent_event_to_registry_with_hook_sink(&mut reg, "", &params, |_| {});
+
+    let bystander = reg
+        .get(&"bystander-sid".to_string())
+        .expect("bystander row preserved");
+    assert_eq!(
+        bystander.status,
+        AgentStatus::Idle,
+        "a pane-less session start must not end an unrelated session",
+    );
+    assert_eq!(
+        bystander.pane_session_id.as_deref(),
+        Some(bystander_pane),
+        "a pane-less session start must not steal another session's pane binding",
+    );
+
+    let paneless = reg
+        .get(&"paneless-sid".to_string())
+        .expect("pane-less row created");
+    assert_eq!(
+        paneless.pane_session_id, None,
+        "an empty pane_id must stay unbound rather than adopt some other pane",
+    );
+}
+
+/// Counterpart: the pane-less row must not be reachable through
+/// `active_by_pane` either, or a later `PaneClosed` for an unrelated pane
+/// could end it. The empty string is not a pane, so it must never become a
+/// key in that map.
+#[test]
+fn empty_pane_session_start_is_not_registered_in_active_by_pane() {
+    use crate::agent_sessions::{AgentSessionRegistry, AgentStatus, SessionEvent};
+    let mut reg = AgentSessionRegistry::new();
+    let params = json!({
+        "event": "agent.session.start",
+        "cli_source": "copilot",
+        "agent_session_id": "paneless-sid",
+        "payload": {}
+    });
+    route_agent_event_to_registry_with_hook_sink(&mut reg, "", &params, |_| {});
+    reg.take_dirty();
+
+    // A PaneClosed for the empty "pane" must not resolve to the row.
+    reg.apply(SessionEvent::PaneClosed {
+        pane_session_id: String::new(),
+    });
+
+    assert_eq!(
+        reg.get(&"paneless-sid".to_string()).unwrap().status,
+        AgentStatus::Idle,
+        "an empty pane id must not be a lookup key, so it cannot end the row",
+    );
+
+    // And a second pane-less session must not collide with the first through
+    // the pane map.
+    let params2 = json!({
+        "event": "agent.session.start",
+        "cli_source": "claude",
+        "agent_session_id": "paneless-sid-2",
+        "payload": {}
+    });
+    route_agent_event_to_registry_with_hook_sink(&mut reg, "", &params2, |_| {});
+    assert_eq!(
+        reg.get(&"paneless-sid".to_string()).unwrap().status,
+        AgentStatus::Idle,
+        "two pane-less sessions must coexist; neither may evict the other",
+    );
+    assert_eq!(
+        reg.get(&"paneless-sid-2".to_string()).unwrap().status,
+        AgentStatus::Idle,
+    );
+}
+
+/// Claude's `Notification` hook fires for two unrelated situations and only
+/// `notification_type` tells them apart. `idle_prompt` arrives ~60s *after*
+/// `agent.stop` already moved the row to Idle, so routing it to Attention
+/// parked every Claude session at "Claude is waiting for your input" between
+/// turns. Payload shape below mirrors a real capture, with identifying values
+/// replaced.
+#[test]
+fn claude_idle_prompt_notification_leaves_turn_end_idle_intact() {
+    use crate::agent_sessions::{AgentSessionRegistry, AgentStatus, CliSource, SessionEvent};
+    let mut reg = AgentSessionRegistry::new();
+    reg.apply(SessionEvent::SessionStarted {
+        key: "claude-sid".into(),
+        cli_source: CliSource::Claude,
+        pane_session_id: "ee1b7549-2c86-47a1-9337-38753ddc03fc".into(),
+        cwd: std::path::PathBuf::from("/work"),
+        title: "claude".into(),
+    });
+    reg.take_dirty();
+
+    let pane = "ee1b7549-2c86-47a1-9337-38753ddc03fc";
+    let turn_end = json!({
+        "event": "agent.stop",
+        "cli_source": "claude",
+        "agent_session_id": "claude-sid",
+        "payload": {}
+    });
+    route_agent_event_to_registry_with_hook_sink(&mut reg, pane, &turn_end, |_| {});
+    assert_eq!(
+        reg.get(&"claude-sid".to_string()).unwrap().status,
+        AgentStatus::Idle,
+        "precondition: agent.stop owns the turn-end transition",
+    );
+
+    let idle_prompt = json!({
+        "event": "agent.notification",
+        "cli_source": "claude",
+        "agent_session_id": "claude-sid",
+        "payload": {
+            "cwd": "C:\\Users\\example",
+            "message": "Claude is waiting for your input",
+            "notification_type": "idle_prompt",
+            "session_id": "claude-sid"
+        }
+    });
+    let mut published: Vec<SessionEvent> = Vec::new();
+    route_agent_event_to_registry_with_hook_sink(&mut reg, pane, &idle_prompt, |ev| {
+        published.push(ev)
+    });
+
+    let s = reg.get(&"claude-sid".to_string()).unwrap();
+    assert_eq!(
+        s.status,
+        AgentStatus::Idle,
+        "idle_prompt means the agent is idle, not blocked on the user",
+    );
+    assert!(
+        s.attention_reason.is_none(),
+        "idle_prompt must not leave an attention reason on the row",
+    );
+    assert!(
+        !published
+            .iter()
+            .any(|ev| matches!(ev, SessionEvent::Notification { .. })),
+        "a dropped notification must not be published to master either",
+    );
+}
+
+/// The other half of the same discriminator: a permission request is the case
+/// Attention exists for, and it must survive the `idle_prompt` filter.
+#[test]
+fn claude_permission_prompt_notification_still_sets_attention() {
+    use crate::agent_sessions::{AgentSessionRegistry, AgentStatus, CliSource, SessionEvent};
+    let mut reg = AgentSessionRegistry::new();
+    reg.apply(SessionEvent::SessionStarted {
+        key: "claude-sid".into(),
+        cli_source: CliSource::Claude,
+        pane_session_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".into(),
+        cwd: std::path::PathBuf::from("/work"),
+        title: "claude".into(),
+    });
+    reg.take_dirty();
+
+    let params = json!({
+        "event": "agent.notification",
+        "cli_source": "claude",
+        "agent_session_id": "claude-sid",
+        "payload": {
+            "message": "Claude needs your permission to use Bash",
+            "notification_type": "permission_prompt"
+        }
+    });
+    route_agent_event_to_registry_with_hook_sink(
+        &mut reg,
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        &params,
+        |_| {},
+    );
+
+    let s = reg.get(&"claude-sid".to_string()).unwrap();
+    assert_eq!(s.status, AgentStatus::Attention);
+    assert_eq!(
+        s.attention_reason.as_deref(),
+        Some("Claude needs your permission to use Bash"),
+    );
+}
+
+/// The filter is a denylist of one known-inert type, not an allowlist of known
+/// types: CLIs that send no `notification_type` at all (Copilot, Gemini,
+/// OpenCode) and any type Claude adds later must keep reaching Attention.
+/// Under-reporting silently loses an approval request; over-reporting only
+/// costs a badge the next event clears.
+#[test]
+fn notification_without_a_known_type_still_sets_attention() {
+    use crate::agent_sessions::{AgentSessionRegistry, AgentStatus, CliSource, SessionEvent};
+    for payload in [
+        json!({ "message": "approve: rm -rf foo" }),
+        json!({ "message": "something new", "notification_type": "some_future_prompt" }),
+    ] {
+        let mut reg = AgentSessionRegistry::new();
+        reg.apply(SessionEvent::SessionStarted {
+            key: "sid".into(),
+            cli_source: CliSource::Copilot,
+            pane_session_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".into(),
+            cwd: std::path::PathBuf::from("/work"),
+            title: "t".into(),
+        });
+        reg.take_dirty();
+
+        let params = json!({
+            "event": "agent.notification",
+            "cli_source": "copilot",
+            "agent_session_id": "sid",
+            "payload": payload,
+        });
+        route_agent_event_to_registry_with_hook_sink(
+            &mut reg,
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            &params,
+            |_| {},
+        );
+
+        assert_eq!(
+            reg.get(&"sid".to_string()).unwrap().status,
+            AgentStatus::Attention,
+            "unknown notification types must fail toward visibility",
+        );
+    }
+}
+
+/// Why `idle_prompt` is dropped rather than mapped to Idle: an unanswered
+/// permission prompt also goes idle after 60s, so mapping it would clear a
+/// pending approval that is still blocking the agent.
+#[test]
+fn idle_prompt_does_not_demote_a_pending_permission_prompt() {
+    use crate::agent_sessions::{AgentSessionRegistry, AgentStatus, CliSource, SessionEvent};
+    let mut reg = AgentSessionRegistry::new();
+    reg.apply(SessionEvent::SessionStarted {
+        key: "claude-sid".into(),
+        cli_source: CliSource::Claude,
+        pane_session_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".into(),
+        cwd: std::path::PathBuf::from("/work"),
+        title: "claude".into(),
+    });
+    reg.apply(SessionEvent::Notification {
+        key: "claude-sid".into(),
+        message: "Claude needs your permission to use Bash".into(),
+    });
+    reg.take_dirty();
+
+    let idle_prompt = json!({
+        "event": "agent.notification",
+        "cli_source": "claude",
+        "agent_session_id": "claude-sid",
+        "payload": {
+            "message": "Claude is waiting for your input",
+            "notification_type": "idle_prompt"
+        }
+    });
+    route_agent_event_to_registry_with_hook_sink(
+        &mut reg,
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        &idle_prompt,
+        |_| {},
+    );
+
+    let s = reg.get(&"claude-sid".to_string()).unwrap();
+    assert_eq!(
+        s.status,
+        AgentStatus::Attention,
+        "a pending approval must outlive the idle notification that follows it",
+    );
+    assert_eq!(
+        s.attention_reason.as_deref(),
+        Some("Claude needs your permission to use Bash"),
+    );
+}
+
+#[test]
+fn session_info_to_agent_session_preserves_live_agent_pane_session_fields() {
+    // Regression: master's new_session/load_session handlers stamp
+    // status=Idle, cli_source=<resolved>, origin=AgentPane on the
+    // SessionInfo so helper-side session management routing sees a Live row. Without
+    // this stamping the row would land with all fields None, the
+    // converter would map status=None -> AgentStatus::Historical (its
+    // documented default), and Enter would fall through to the resume
+    // path and fail with "unknown CLI" since cli_source is also None.
+    let mut info = crate::session_registry::SessionInfo::new(
+        agent_client_protocol::schema::v1::SessionId::new("sid-live"),
+        std::path::PathBuf::from("/repo"),
+    );
+    info.pane_session_id = Some("pane-live".to_string());
+    info.status = Some(crate::agent_sessions::AgentStatus::Idle);
+    info.cli_source = Some(crate::agent_sessions::CliSource::Copilot);
+    info.origin = Some(crate::agent_sessions::SessionOrigin::AgentPane);
+    let s = crate::app::session_info_to_agent_session(&info);
+    assert_eq!(s.status, crate::agent_sessions::AgentStatus::Idle);
+    assert_eq!(s.cli_source, crate::agent_sessions::CliSource::Copilot);
+    assert_eq!(s.origin, crate::agent_sessions::SessionOrigin::AgentPane);
+    assert_eq!(s.pane_session_id.as_deref(), Some("pane-live"));
+}
+
+#[test]
+fn session_info_to_agent_session_uses_cwd_fallback_for_opencode_placeholder() {
+    let mut info = crate::session_registry::SessionInfo::new(
+        agent_client_protocol::schema::v1::SessionId::new("sid-opencode"),
+        std::path::PathBuf::from(r"C:\repo\project"),
+    );
+    info.cli_source = Some(crate::agent_sessions::CliSource::OpenCode);
+    info.title = Some("New session - 2026-07-23T01:14:00.422Z".to_string());
+
+    let session = crate::app::session_info_to_agent_session(&info);
+
+    assert!(session.title.is_empty());
+    assert_eq!(
+        session.cwd.file_name().and_then(|name| name.to_str()),
+        Some("project")
+    );
+}
+
+#[test]
+fn session_info_to_agent_session_unstamped_row_falls_to_historical() {
+    // Defensive: SessionInfo with all metadata None (the master-side
+    // bug we're guarding against) deliberately maps status -> Historical
+    // and cli_source -> Unknown(""). This is the WRONG end-state for a
+    // Live row but matches the documented fallback. If we ever change
+    // the fallback (e.g. to Idle/None) update the docstring on
+    // session_info_to_agent_session AND on the master handler
+    // comments — silently flipping defaults will mask future bugs.
+    let info = crate::session_registry::SessionInfo::new(
+        agent_client_protocol::schema::v1::SessionId::new("sid-bare"),
+        std::path::PathBuf::from("/repo"),
+    );
+    let s = crate::app::session_info_to_agent_session(&info);
+    assert_eq!(s.status, crate::agent_sessions::AgentStatus::Historical);
+    assert!(matches!(
+        s.cli_source,
+        crate::agent_sessions::CliSource::Unknown(ref v) if v.is_empty()
+    ));
+}
+
+/// The helper must NOT forward agent CLI hooks to master.
+///
+/// Master subscribes to the same COM `agent_event` broadcast and routes it
+/// itself, so a helper that also forwarded would make master apply one real
+/// hook once per live helper — the N-times amplification this architecture
+/// removes. What the helper still owes is its own pane->session binding, which
+/// the OSC 133;A agent-exit heuristic and the autofix target logic read
+/// synchronously and cannot wait on a master round-trip for.
+#[test]
+fn helper_agent_event_updates_local_binding_without_forwarding() {
+    let mut app = test_app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.set_session_hook_tx(tx);
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_event".to_string(),
+        pane_id: "pane-hook".to_string(),
+        tab_id: Some("tab-1".to_string()),
+        params: json!({
+            "event": "agent.session.start",
+            "cli_source": "copilot",
+            "agent_session_id": "sid-hook",
+            "payload": { "cwd": r#"C:\repo\hook"# }
+        }),
+    });
+
+    assert!(
+        app.agent_sessions.has_session(&"sid-hook".to_string()),
+        "the helper still needs the local row its pane-binding lookups read"
+    );
+    assert!(
+        app.agent_sessions.is_agent_pane("pane-hook"),
+        "the pane binding is the whole reason the helper routes this at all"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "an agent CLI hook must never be forwarded to master; master routes the \
+         same broadcast itself, so forwarding would apply it once per helper"
+    );
+}
+
+/// A hook for a session this helper has not seen still binds the pane locally,
+/// and still does not reach master.
+#[test]
+fn helper_agent_event_for_unknown_session_binds_locally_only() {
+    let mut app = test_app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.set_session_hook_tx(tx);
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_event".to_string(),
+        pane_id: "pane-tool".to_string(),
+        tab_id: Some("tab-1".to_string()),
+        params: json!({
+            "event": "agent.tool.starting",
+            "cli_source": "copilot",
+            "agent_session_id": "sid-tool",
+            "payload": { "cwd": r#"C:\repo\tool"#, "tool_name": "edit" }
+        }),
+    });
+
+    assert!(
+        app.agent_sessions.has_session(&"sid-tool".to_string()),
+        "the synthetic start still materializes the local row"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "neither the synthetic start nor the tool event may reach master"
+    );
+}
+
+/// Keep helper exit inference as a fallback while the master's listener is
+/// unavailable. Master also reconciles prompts in COM order; duplicate
+/// PaneClosed events are harmless once the binding has been removed.
+#[test]
+fn helper_still_publishes_events_it_originates() {
+    use crate::agent_sessions::{CliSource, SessionEvent};
+    use std::path::PathBuf;
+    let mut app = test_app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.set_session_hook_tx(tx);
+    let pane = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: "shell-sid".into(),
+        cli_source: CliSource::Gemini,
+        pane_session_id: pane.into(),
+        cwd: PathBuf::from("/work"),
+        title: "t".into(),
+    });
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "vt_sequence".to_string(),
+        pane_id: pane.to_string(),
+        tab_id: None,
+        params: json!({ "session_id": pane, "sequence": "osc:133;A" }),
+    });
+
+    assert!(
+        matches!(
+            rx.try_recv(),
+            Ok(SessionEvent::PaneClosed { ref pane_session_id }) if pane_session_id == pane
+        ),
+        "helper exit inference must remain available as a fallback"
+    );
+}
+
+pub(super) fn test_app_with_master_rx() -> (
+    App,
+    tokio::sync::mpsc::UnboundedReceiver<crate::protocol::acp::client::MasterExtRequest>,
+) {
+    let (prompt_tx, _prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (recommendation_tx, _recommendation_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (permission_tx, _permission_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (new_session_tx, _new_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (load_session_tx, _load_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (drop_session_tx, _drop_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (rename_session_tx, _rename_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (restart_tx, _restart_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (master_tx, master_rx) = tokio::sync::mpsc::unbounded_channel();
+    let debug_capture = Arc::new(AtomicBool::new(false));
+    let app = App::new(
+        prompt_tx,
+        recommendation_tx,
+        permission_tx,
+        new_session_tx,
+        load_session_tx,
+        drop_session_tx,
+        rename_session_tx,
+        restart_tx,
+        master_tx,
+        debug_capture,
+        true,
+        false,
+        Arc::new(crate::shell::ShellManager::new()),
+        Arc::new(Mutex::new(crate::app_contracts::YoloState::new(
+            false, false,
+        ))),
+    );
+    (app, master_rx)
+}
+
+// ─── word boundary helpers ──────────────────────────────────────────────
+
+#[test]
+fn next_word_jumps_to_end_of_current_then_next_word() {
+    let s = "hello world";
+    // Start of input → end of "hello".
+    assert_eq!(next_word_boundary(s, 0), 5);
+    // Inside "hello" → end of "hello".
+    assert_eq!(next_word_boundary(s, 2), 5);
+    // On the space → end of "world".
+    assert_eq!(next_word_boundary(s, 5), 11);
+    // End of input → stays.
+    assert_eq!(next_word_boundary(s, 11), 11);
+}
+
+#[test]
+fn prev_word_jumps_to_start_of_current_then_previous_word() {
+    let s = "hello world";
+    // End of input → start of "world".
+    assert_eq!(prev_word_boundary(s, 11), 6);
+    // On 'w' → start of "hello".
+    assert_eq!(prev_word_boundary(s, 6), 0);
+    // Inside "world" → start of "world".
+    assert_eq!(prev_word_boundary(s, 9), 6);
+    // Start of input → stays.
+    assert_eq!(prev_word_boundary(s, 0), 0);
+}
+
+#[test]
+fn word_boundary_skips_punctuation_runs() {
+    let s = "foo --bar baz";
+    // After "foo" → skip space + "--", land at end of "bar".
+    assert_eq!(next_word_boundary(s, 3), 9);
+    // From end of "bar" backwards → start of "bar".
+    assert_eq!(prev_word_boundary(s, 9), 6);
+}
+
+#[test]
+fn word_boundary_handles_multibyte_chars() {
+    // "你好 world" — each Chinese char is 3 bytes in UTF-8.
+    let s = "你好 world";
+    assert_eq!(s.len(), 12);
+    // Start → end of "你好" (after 2 CJK chars = byte 6).
+    assert_eq!(next_word_boundary(s, 0), 6);
+    // From end → start of "world" at byte 7.
+    assert_eq!(prev_word_boundary(s, 12), 7);
+    // From byte 7 (start of "world") → start of "你好" at byte 0.
+    assert_eq!(prev_word_boundary(s, 7), 0);
+}
+
+#[test]
+fn word_boundary_handles_newlines() {
+    let s = "foo\nbar";
+    // From start → end of "foo".
+    assert_eq!(next_word_boundary(s, 0), 3);
+    // On '\n' → end of "bar".
+    assert_eq!(next_word_boundary(s, 3), 7);
+    // From end → start of "bar".
+    assert_eq!(prev_word_boundary(s, 7), 4);
+}
+
+// ─── classify_wt_event ──────────────────────────────────────────────────
+
+#[test]
+fn classify_connection_failed_is_critical() {
+    let params = json!({"session_id": "3", "state": "failed"});
+    let n = classify_wt_event("connection_state", "3", None, &params);
+    assert_eq!(n.severity, WtEventSeverity::Critical);
+    assert!(n.summary.contains("failed"));
+    assert!(!n.acknowledged);
+}
+
+#[test]
+fn classify_connection_closed_is_actionable() {
+    let params = json!({"session_id": "5", "state": "closed"});
+    let n = classify_wt_event("connection_state", "5", None, &params);
+    assert_eq!(n.severity, WtEventSeverity::Actionable);
+    assert!(n.summary.contains("exited"));
+}
+
+#[test]
+fn classify_connection_connected_is_informational() {
+    let params = json!({"session_id": "1", "state": "connected"});
+    let n = classify_wt_event("connection_state", "1", None, &params);
+    assert_eq!(n.severity, WtEventSeverity::Informational);
+    assert!(n.summary.contains("connected"));
+}
+
+#[test]
+fn classify_osc133_command_failed_is_actionable() {
+    let params = json!({"session_id": "2", "sequence": "osc:133;D;1"});
+    let n = classify_wt_event("vt_sequence", "2", None, &params);
+    assert_eq!(n.severity, WtEventSeverity::Actionable);
+    assert!(n.summary.contains("Command failed"));
+    assert!(n.summary.contains("exit 1"));
+}
+
+#[test]
+fn classify_osc133_command_success_is_silent() {
+    let params = json!({"session_id": "2", "sequence": "osc:133;D;0"});
+    let n = classify_wt_event("vt_sequence", "2", None, &params);
+    assert!(n.acknowledged); // auto-dismissed
+}
+
+#[test]
+fn classify_osc133_high_exit_code() {
+    let params = json!({"session_id": "2", "sequence": "osc:133;D;127"});
+    let n = classify_wt_event("vt_sequence", "2", None, &params);
+    assert_eq!(n.severity, WtEventSeverity::Actionable);
+    assert!(n.summary.contains("exit 127"));
+}
+
+#[test]
+fn classify_osc133_prompt_marker_is_silent() {
+    // OSC 133;A is a prompt marker, not a command finish
+    let params = json!({"session_id": "2", "sequence": "osc:133;A"});
+    let n = classify_wt_event("vt_sequence", "2", None, &params);
+    assert!(n.acknowledged); // silenced
+}
+
+#[test]
+fn classify_normal_vt_sequence_is_silent() {
+    let params = json!({"session_id": "7", "sequence": "osc:0;title"});
+    let n = classify_wt_event("vt_sequence", "7", None, &params);
+    assert!(n.acknowledged); // silenced
+}
+
+#[test]
+fn classify_unknown_method_is_informational() {
+    let params = json!({"session_id": "1"});
+    let n = classify_wt_event("something_new", "1", None, &params);
+    assert_eq!(n.severity, WtEventSeverity::Informational);
+}
+
+// ─── tab_renamed (tab-drag rekeying) ────────────────────────────────────
+
+#[test]
+fn tab_renamed_rekeys_active_tab_and_session_map() {
+    let mut app = test_app();
+    // Seed: active tab is AAAA with a bound ACP session.
+    app.tab_id = Some("AAAA".to_string());
+    app.tab_sessions
+        .insert("AAAA".to_string(), TabSession::default());
+    app.session_to_tab
+        .insert("sess-1".to_string(), "AAAA".to_string());
+
+    // Drive the rename via the WtEvent dispatch path — same code path
+    // a real broadcast from the COM server takes.
+    app.handle_event(AppEvent::WtEvent {
+        method: "tab_renamed".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({"old_tab_id": "AAAA", "new_tab_id": "BBBB"}),
+    });
+
+    assert_eq!(
+        app.tab_id.as_deref(),
+        Some("BBBB"),
+        "active tab id must follow the rename"
+    );
+    assert!(
+        app.tab_sessions.contains_key("BBBB"),
+        "tab_sessions must contain the new key after rename"
+    );
+    assert!(
+        !app.tab_sessions.contains_key("AAAA"),
+        "tab_sessions must no longer contain the old key"
+    );
+    assert_eq!(
+        app.session_to_tab.get("sess-1").map(String::as_str),
+        Some("BBBB"),
+        "session_to_tab values pointing at the old id must be rewritten"
+    );
+}
+
+#[test]
+fn tab_renamed_appevent_variant_drives_same_handler() {
+    // Direct AppEvent::TabRenamed dispatch — used by callers that
+    // already deserialized the params (mirrors the WtEvent inline
+    // path).
+    let mut app = test_app();
+    app.tab_id = Some("AAAA".to_string());
+    app.tab_sessions
+        .insert("AAAA".to_string(), TabSession::default());
+
+    app.handle_event(AppEvent::TabRenamed {
+        old_tab_id: "AAAA".to_string(),
+        new_tab_id: "CCCC".to_string(),
+        new_window_id: None,
+    });
+
+    assert_eq!(app.tab_id.as_deref(), Some("CCCC"));
+    assert!(app.tab_sessions.contains_key("CCCC"));
+    assert!(!app.tab_sessions.contains_key("AAAA"));
+}
+
+#[test]
+fn tab_renamed_sends_rename_session_request_to_acp_client() {
+    // The chat-history side rekeys in-process, but tab_to_session
+    // lives in the ACP client task — it has to be told to rekey via
+    // the rename_session_tx channel. Without this signal, the next
+    // prompt on the dragged tab can't find the old SessionId.
+    let (prompt_tx, _prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (recommendation_tx, _recommendation_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (permission_tx, _permission_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (new_session_tx, _new_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (load_session_tx, _load_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (drop_session_tx, _drop_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (rename_session_tx, mut rename_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (restart_tx, _restart_rx) = tokio::sync::mpsc::unbounded_channel();
+    let debug_capture = Arc::new(AtomicBool::new(false));
+    let (master_tx, _master_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(
+        prompt_tx,
+        recommendation_tx,
+        permission_tx,
+        new_session_tx,
+        load_session_tx,
+        drop_session_tx,
+        rename_session_tx,
+        restart_tx,
+        master_tx,
+        debug_capture,
+        true,
+        false,
+        Arc::new(crate::shell::ShellManager::new()),
+        Arc::new(Mutex::new(crate::app_contracts::YoloState::new(
+            false, false,
+        ))),
+    );
+
+    app.tab_id = Some("AAAA".to_string());
+    app.tab_sessions
+        .insert("AAAA".to_string(), TabSession::default());
+
+    app.handle_event(AppEvent::TabRenamed {
+        old_tab_id: "AAAA".to_string(),
+        new_tab_id: "BBBB".to_string(),
+        new_window_id: None,
+    });
+
+    // The ACP client task should have received exactly one
+    // RenameSessionRequest with the old/new ids — that's what makes
+    // the dragged tab's chat history line up with the agent's turn
+    // context after the drag.
+    let req = rename_session_rx
+        .try_recv()
+        .expect("rename_session_tx must have received a request");
+    assert_eq!(req.old_tab_id, "AAAA");
+    assert_eq!(req.new_tab_id, "BBBB");
+    assert!(
+        rename_session_rx.try_recv().is_err(),
+        "exactly one request should have been sent"
+    );
+}
+
+#[test]
+fn tab_renamed_noop_does_not_send_rename_session_request() {
+    // A no-op rename (old == new) must not bother the ACP client —
+    // there's nothing to rekey, and a spurious request would
+    // needlessly grab the tab_to_session lock.
+    let (prompt_tx, _prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (recommendation_tx, _recommendation_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (permission_tx, _permission_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (new_session_tx, _new_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (load_session_tx, _load_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (drop_session_tx, _drop_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (rename_session_tx, mut rename_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (restart_tx, _restart_rx) = tokio::sync::mpsc::unbounded_channel();
+    let debug_capture = Arc::new(AtomicBool::new(false));
+    let (master_tx, _master_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(
+        prompt_tx,
+        recommendation_tx,
+        permission_tx,
+        new_session_tx,
+        load_session_tx,
+        drop_session_tx,
+        rename_session_tx,
+        restart_tx,
+        master_tx,
+        debug_capture,
+        true,
+        false,
+        Arc::new(crate::shell::ShellManager::new()),
+        Arc::new(Mutex::new(crate::app_contracts::YoloState::new(
+            false, false,
+        ))),
+    );
+
+    app.tab_id = Some("AAAA".to_string());
+    app.tab_sessions
+        .insert("AAAA".to_string(), TabSession::default());
+
+    app.handle_event(AppEvent::TabRenamed {
+        old_tab_id: "AAAA".to_string(),
+        new_tab_id: "AAAA".to_string(),
+        new_window_id: None,
+    });
+
+    assert!(
+        rename_session_rx.try_recv().is_err(),
+        "no-op rename must not send a RenameSessionRequest"
+    );
+}
+
+#[test]
+fn tab_renamed_with_missing_fields_is_dropped() {
+    let mut app = test_app();
+    app.tab_id = Some("AAAA".to_string());
+    app.tab_sessions
+        .insert("AAAA".to_string(), TabSession::default());
+
+    // Empty new_tab_id — must not corrupt state.
+    app.handle_event(AppEvent::WtEvent {
+        method: "tab_renamed".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({"old_tab_id": "AAAA", "new_tab_id": ""}),
+    });
+    assert_eq!(
+        app.tab_id.as_deref(),
+        Some("AAAA"),
+        "rename with empty new_tab_id must be dropped, leaving state untouched"
+    );
+    assert!(app.tab_sessions.contains_key("AAAA"));
+
+    // Missing field entirely — must not corrupt state.
+    app.handle_event(AppEvent::WtEvent {
+        method: "tab_renamed".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({"old_tab_id": "AAAA"}),
+    });
+    assert_eq!(app.tab_id.as_deref(), Some("AAAA"));
+    assert!(app.tab_sessions.contains_key("AAAA"));
+}
+
+#[test]
+fn tab_renamed_kept_tab_updates_only_its_helpers_window() {
+    let mut app = test_app();
+    app.tab_id = Some("kept-tab".into());
+    app.owner_tab_id = Some("kept-tab".into());
+    app.window_id = Some("old-window".into());
+    app.tab_sessions
+        .insert("kept-tab".into(), TabSession::default());
+    app.session_to_tab
+        .insert("acp-session".into(), "kept-tab".into());
+    let tab_count = app.tab_sessions.len();
+
+    for (tab, window, expected) in [
+        ("other-tab", Some("unrelated-window"), "old-window"),
+        ("kept-tab", None, "old-window"),
+        ("kept-tab", Some("new-window"), "new-window"),
+    ] {
+        app.handle_event(AppEvent::WtEvent {
+            method: "tab_renamed".into(),
+            pane_id: String::new(),
+            tab_id: None,
+            params: json!({
+                "old_tab_id": tab,
+                "new_tab_id": tab,
+                "window_id": window,
+            }),
+        });
+        assert_eq!(app.window_id.as_deref(), Some(expected));
+        assert_eq!(app.owner_tab_id.as_deref(), Some("kept-tab"));
+        assert_eq!(app.tab_id.as_deref(), Some("kept-tab"));
+        assert_eq!(app.tab_sessions.len(), tab_count);
+        assert_eq!(app.session_to_tab["acp-session"], "kept-tab");
+    }
+}
+
+#[test]
+fn kept_tab_reattachment_marks_only_the_owning_live_session() {
+    let mut app = test_app();
+    app.owner_tab_id = Some("owned-tab".into());
+    app.window_id = Some("owned-window".into());
+    app.tab_mut("owned-tab").session_id = Some("original".into());
+
+    for (tab, window) in [("other-tab", "owned-window"), ("owned-tab", "other-window")] {
+        app.handle_event(AppEvent::WtEvent {
+            method: "keep_running_reattached".into(),
+            pane_id: String::new(),
+            tab_id: None,
+            params: json!({"tab_id": tab, "window_id": window}),
+        });
+        assert!(app.tab_mut("owned-tab").reattached_session_id.is_none());
+    }
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "keep_running_reattached".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({"tab_id": "owned-tab", "window_id": "owned-window"}),
+    });
+    let tab = app.tab_mut("owned-tab");
+    assert_eq!(tab.reattached_session_id.as_deref(), Some("original"));
+    assert!(tab.is_reattached_session());
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: "owned-tab".into(),
+        session_id: "new-session".into(),
+        prompt_id: None,
+        available_models: Vec::new(),
+        current_model_id: None,
+    });
+    assert!(!app.tab_mut("owned-tab").is_reattached_session());
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: "owned-tab".into(),
+        session_id: "original".into(),
+        prompt_id: None,
+        available_models: Vec::new(),
+        current_model_id: None,
+    });
+    assert!(!app.tab_mut("owned-tab").is_reattached_session());
+}
+
+// ─── load_session owner_tab_id filter ───────────────────────────────────
+//
+// WT broadcasts `load_session` over shared COM, so every helper in every
+// window receives it. Pre-PR-B, every helper would respond regardless of
+// the target tab — the misroute at the heart of bug #1 (resume into a
+// newly-spawned agent pane landed in the wrong helper). The filter
+// ensures a helper only acts on a `load_session` whose `tab_id` matches
+// its `owner_tab_id`. The legacy single-helper flow (no owner_tab_id)
+// still works as before.
+
+fn make_app_with_load_session_channel() -> (
+    App,
+    tokio::sync::mpsc::UnboundedReceiver<crate::protocol::acp::client::LoadSessionForTab>,
+) {
+    let (prompt_tx, _prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (recommendation_tx, _recommendation_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (permission_tx, _permission_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (new_session_tx, _new_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (load_session_tx, load_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (drop_session_tx, _drop_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (rename_session_tx, _rename_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (restart_tx, _restart_rx) = tokio::sync::mpsc::unbounded_channel();
+    let debug_capture = Arc::new(AtomicBool::new(false));
+    let (master_tx, _master_rx) = tokio::sync::mpsc::unbounded_channel();
+    let app = App::new(
+        prompt_tx,
+        recommendation_tx,
+        permission_tx,
+        new_session_tx,
+        load_session_tx,
+        drop_session_tx,
+        rename_session_tx,
+        restart_tx,
+        master_tx,
+        debug_capture,
+        true,
+        false,
+        Arc::new(crate::shell::ShellManager::new()),
+        Arc::new(Mutex::new(crate::app_contracts::YoloState::new(
+            false, false,
+        ))),
+    );
+    (app, load_session_rx)
+}
+
+#[test]
+fn load_session_ignored_when_target_tab_differs_from_owner() {
+    let (mut app, mut load_session_rx) = make_app_with_load_session_channel();
+    app.owner_tab_id = Some("OWNER-TAB".to_string());
+
+    // Broadcast targeting a different tab — must NOT be forwarded
+    // through the load_session_tx channel (otherwise the ACP client
+    // would call session/load and bind the wrong tab).
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": "OTHER-TAB",
+            "session_id": "sess-xyz",
+            "cwd": "C:/foo",
+        }),
+    });
+
+    assert!(
+        load_session_rx.try_recv().is_err(),
+        "load_session for non-owner tab must be silently dropped"
+    );
+}
+
+#[test]
+fn closed_load_session_channel_rolls_back_replay_and_yolo_gate() {
+    let (mut app, load_session_rx) = make_app_with_load_session_channel();
+    drop(load_session_rx);
+    app.owner_tab_id = Some("OWNER-TAB".to_string());
+    app.tab_sessions
+        .insert("OWNER-TAB".to_string(), TabSession::default());
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": "OWNER-TAB",
+            "session_id": "loaded-session",
+            "cwd": "",
+        }),
+    });
+
+    let tab = &app.tab_sessions["OWNER-TAB"];
+    assert!(!tab.loading_session);
+    assert!(tab.loading_target_session_id.is_none());
+    assert!(!app.pending_yolo_session_tabs.contains("OWNER-TAB"));
+}
+
+#[test]
+fn load_session_applied_when_target_tab_matches_owner() {
+    let (mut app, mut load_session_rx) = make_app_with_load_session_channel();
+    app.owner_tab_id = Some("OWNER-TAB".to_string());
+    app.tab_sessions
+        .insert("OWNER-TAB".to_string(), TabSession::default());
+    app.tab_sessions.get_mut("OWNER-TAB").unwrap().session_id = Some("old-session".into());
+    app.session_model_configs.insert(
+        "old-session".into(),
+        (vec![model_info("gpt-5.6-sol")], Some("gpt-5.6-sol".into())),
+    );
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": "OWNER-TAB",
+            "session_id": "sess-abc",
+            "cwd": "C:/foo",
+        }),
+    });
+
+    let req = load_session_rx
+        .try_recv()
+        .expect("matching tab id must enqueue a LoadSessionForTab");
+    assert_eq!(req.tab_id, "OWNER-TAB");
+    assert_eq!(req.session_id, "sess-abc");
+    assert_eq!(req.cwd.as_deref(), Some("C:/foo"));
+    assert_eq!(
+        app.tab_sessions["OWNER-TAB"].session_id.as_deref(),
+        Some("old-session"),
+        "the previous session remains authoritative until load succeeds"
+    );
+    assert!(app.tab_sessions["OWNER-TAB"].has_meaningful_conversation);
+    assert_eq!(
+        app.tab_sessions["OWNER-TAB"].resumable_session_id(),
+        Some("sess-abc")
+    );
+    assert!(app.session_model_configs.contains_key("old-session"));
+
+    // The request is also retained. If the ACP client dies before it consumes
+    // this, `load_session_rx` is dropped with the request still in it and the
+    // reconnect gets a brand-new channel pair — so `try_start_acp` has to be
+    // able to re-issue it, or the replacement quietly opens a fresh session
+    // while the pane keeps saying "Resuming session …".
+    let pending = app
+        .pending_session_load
+        .as_ref()
+        .expect("an in-flight load must be retained for a possible reconnect");
+    assert_eq!(pending.tab_id, "OWNER-TAB");
+    assert_eq!(pending.session_id, "sess-abc");
+    assert_eq!(pending.cwd.as_deref(), Some("C:/foo"));
+}
+
+#[test]
+fn load_session_passes_through_when_owner_tab_id_unset() {
+    // Legacy mode: helper spawned without `--owner-tab-id` (the
+    // pre-multi-window code path). Filter must be transparent.
+    let (mut app, mut load_session_rx) = make_app_with_load_session_channel();
+    assert!(app.owner_tab_id.is_none());
+    app.tab_sessions
+        .insert("ANY-TAB".to_string(), TabSession::default());
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": "ANY-TAB",
+            "session_id": "sess-legacy",
+            "cwd": "",
+        }),
+    });
+
+    let req = load_session_rx
+        .try_recv()
+        .expect("legacy mode must still forward load_session");
+    assert_eq!(req.session_id, "sess-legacy");
+}
+
+#[test]
+fn set_agent_state_ignored_when_target_tab_differs_from_owner() {
+    let mut app = test_app();
+    app.owner_tab_id = Some("OWNER-TAB".to_string());
+    app.tab_id = Some("OWNER-TAB".to_string());
+    app.tab_sessions
+        .insert("OWNER-TAB".to_string(), TabSession::default());
+    app.tab_sessions
+        .get_mut("OWNER-TAB")
+        .unwrap()
+        .agent_pane_position = Some("left");
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "set_agent_state".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": "OTHER-TAB",
+            "view": "sessions",
+            "pane_open": true,
+        }),
+    });
+
+    assert!(
+        !app.tab_sessions.contains_key("OTHER-TAB"),
+        "non-owner helper must not create state or echo usage for another tab"
+    );
+    assert_eq!(app.tab_sessions["OWNER-TAB"].current_view, View::Chat);
+    assert!(!app.tab_sessions["OWNER-TAB"].pane_open);
+    assert_eq!(
+        app.tab_sessions["OWNER-TAB"].agent_pane_position,
+        Some("left"),
+        "non-owner helper must not overwrite the owner's pane position"
+    );
+}
+
+// ─── SessionAttached load-target gating (Plan-C race fix) ───────────────
+
+/// After a load_session sets the replay window open, an unrelated
+/// `SessionAttached` (e.g. the bootstrap `session/new` that the helper
+/// always runs at startup) MUST NOT close the window — otherwise
+/// subsequent replay chunks for the real load target get dropped at
+/// the chunk handlers' `if !loading_session { return; }` gate.
+/// This is the exact race the Plan-C
+/// `--initial-load-session-id` boot path was hitting (helper queued
+/// the load_session via AppEvent before bootstrap completed, then
+/// bootstrap SessionAttached arrived and prematurely closed the
+/// window).
+#[test]
+fn session_attached_for_bootstrap_does_not_close_load_replay_window() {
+    let (mut app, _load_session_rx) = make_app_with_load_session_channel();
+    app.owner_tab_id = Some("OWNER-TAB".to_string());
+    app.tab_sessions
+        .insert("OWNER-TAB".to_string(), TabSession::default());
+
+    // Open the replay window targeting "sess-target".
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": "OWNER-TAB",
+            "session_id": "sess-target",
+            "cwd": "",
+        }),
+    });
+    assert!(app.tab_sessions["OWNER-TAB"].loading_session);
+    assert_eq!(
+        app.tab_sessions["OWNER-TAB"]
+            .loading_target_session_id
+            .as_deref(),
+        Some("sess-target")
+    );
+
+    // Bootstrap `session/new` completes — SessionAttached for a
+    // DIFFERENT session id arrives.
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: "OWNER-TAB".to_string(),
+        session_id: "sess-bootstrap".to_string(),
+        prompt_id: None,
+        available_models: vec![],
+        current_model_id: None,
+    });
+
+    // Window MUST still be open so replay chunks for sess-target
+    // (which arrive after `session/load` actually runs) are accepted.
+    assert!(
+        app.tab_sessions["OWNER-TAB"].loading_session,
+        "unrelated SessionAttached must not close the load_session replay window"
+    );
+    assert_eq!(
+        app.tab_sessions["OWNER-TAB"]
+            .loading_target_session_id
+            .as_deref(),
+        Some("sess-target"),
+        "load target must persist across unrelated SessionAttached"
+    );
+}
+
+#[test]
+fn unrelated_session_attached_keeps_load_target_yolo_gate() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    let (load_session_tx, mut load_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.load_session_tx = load_session_tx;
+    app.owner_tab_id = Some("OWNER-TAB".to_string());
+    app.tab_sessions
+        .insert("OWNER-TAB".to_string(), TabSession::default());
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": "OWNER-TAB",
+            "session_id": "sess-target",
+            "cwd": "",
+        }),
+    });
+    load_session_rx
+        .try_recv()
+        .expect("load_session request must remain live");
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: "OWNER-TAB".to_string(),
+        session_id: "sess-unrelated".to_string(),
+        prompt_id: None,
+        available_models: vec![],
+        current_model_id: None,
+    });
+
+    assert!(app.pending_yolo_session_tabs.contains("OWNER-TAB"));
+    assert!(!app.session_to_tab.contains_key("sess-unrelated"));
+    assert!(
+        master_rx.try_recv().is_err(),
+        "an unrelated session must not reconcile while the load target is pending"
+    );
+}
+
+#[test]
+fn session_attached_reconciles_stale_client_yolo_target() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    let session_id = "lazy-session";
+    {
+        let mut state = app.yolo_state.lock().unwrap();
+        state.update_runtime(true, false);
+        state.mark_client_reconciled(session_id.to_string(), true);
+        state.update_runtime(false, false);
+    }
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: session_id.into(),
+        prompt_id: None,
+        available_models: Vec::new(),
+        current_model_id: None,
+    });
+
+    let MasterExtRequest::ReconcileSessionYolo { sessions, .. } = master_rx
+        .try_recv()
+        .expect("App must reconcile when the client-owned target is stale")
+    else {
+        panic!("expected ReconcileSessionYolo");
+    };
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].0.to_string(), session_id);
+    assert!(!sessions[0].1);
+}
+
+#[test]
+fn load_failure_then_fallback_attach_binds_the_fresh_session() {
+    let mut app = test_app();
+    let tab_id = DEFAULT_TAB_ID.to_string();
+    {
+        let tab = app.current_tab_mut();
+        tab.loading_session = true;
+        tab.loading_target_session_id = Some("missing-load-target".into());
+    }
+    app.pending_yolo_session_tabs.insert(tab_id.clone());
+
+    app.handle_event(AppEvent::TabError {
+        tab_id: tab_id.clone(),
+        message: "load failed; starting a fresh session".into(),
+    });
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: tab_id.clone(),
+        session_id: "fallback-session".into(),
+        prompt_id: None,
+        available_models: Vec::new(),
+        current_model_id: None,
+    });
+
+    let tab = &app.tab_sessions[&tab_id];
+    assert_eq!(tab.session_id.as_deref(), Some("fallback-session"));
+    assert!(!tab.loading_session);
+    assert!(tab.loading_target_session_id.is_none());
+    assert_eq!(
+        app.session_to_tab
+            .get("fallback-session")
+            .map(String::as_str),
+        Some(tab_id.as_str())
+    );
+    assert!(!app.pending_yolo_session_tabs.contains(&tab_id));
+}
+
+#[test]
+fn agent_connected_does_not_add_disclaimer_while_resuming() {
+    let (mut app, _load_session_rx) = make_app_with_load_session_channel();
+    app.tab_id = Some("OWNER-TAB".to_string());
+    app.owner_tab_id = Some("OWNER-TAB".to_string());
+    app.tab_sessions
+        .insert("OWNER-TAB".to_string(), TabSession::default());
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": "OWNER-TAB",
+            "session_id": "sess-target",
+            "cwd": "",
+        }),
+    });
+
+    app.handle_event(AppEvent::AgentConnected {
+        name: "Copilot".to_string(),
+        model: None,
+        version: None,
+        session_id: "sess-bootstrap".to_string(),
+        available_models: Vec::new(),
+        current_model_id: None,
+        load_session_supported: true,
+        image_supported: true,
+        session_capabilities_ready: true,
+        telemetry_byok_binding: None,
+    });
+
+    assert!(!app.tab_sessions["OWNER-TAB"]
+        .messages
+        .iter()
+        .any(|message| matches!(message, ChatMessage::Disclaimer)));
+}
+
+#[test]
+fn set_agent_state_preserves_owner_pane_position() {
+    let mut app = test_app();
+    app.window_id = Some("window-1".into());
+    app.owner_tab_id = Some("owner-tab".into());
+    app.tab_id = Some("owner-tab".into());
+    {
+        let tab = app.tab_mut("owner-tab");
+        tab.agent_pane_position = Some("left");
+        tab.pane_open = false;
+    }
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "set_agent_state".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "window_id": "window-1",
+            "tab_id": "owner-tab",
+            "pane_open": true,
+        }),
+    });
+
+    let tab = &app.tab_sessions["owner-tab"];
+    assert!(tab.pane_open);
+    assert_eq!(tab.agent_pane_position, Some("left"));
+}
+
+/// SessionAttached for the actual load target DOES close the window
+/// (the normal happy path — keep working).
+#[test]
+fn session_attached_for_load_target_closes_replay_window() {
+    let (mut app, _load_session_rx) = make_app_with_load_session_channel();
+    app.owner_tab_id = Some("OWNER-TAB".to_string());
+    app.tab_sessions
+        .insert("OWNER-TAB".to_string(), TabSession::default());
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": "OWNER-TAB",
+            "session_id": "sess-target",
+            "cwd": "",
+        }),
+    });
+    assert!(app.tab_sessions["OWNER-TAB"].loading_session);
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: "OWNER-TAB".to_string(),
+        session_id: "sess-target".to_string(),
+        prompt_id: None,
+        available_models: vec![],
+        current_model_id: None,
+    });
+
+    assert!(
+        !app.tab_sessions["OWNER-TAB"].loading_session,
+        "SessionAttached for the load target must close the window"
+    );
+    assert!(
+        app.tab_sessions["OWNER-TAB"]
+            .loading_target_session_id
+            .is_none(),
+        "target id must be cleared after window closes"
+    );
+}
+
+// The status row only gets height when `should_show_activity` says so, and
+// `render_activity` draws into whatever that allocates. A resume outlives the
+// `Connecting` state it starts in — `session/load` only runs once the
+// handshake is done, and can take tens of seconds — so leaving it out of the
+// gate collapsed the row the moment the connection completed: the resume
+// shimmer was drawn into a zero-height area and the pane went blank for the
+// rest of the load, with no way to tell a slow resume from a hang.
+#[test]
+fn a_resume_keeps_the_status_row_after_the_connection_completes() {
+    let (mut app, _load_session_rx) = make_app_with_load_session_channel();
+    app.owner_tab_id = Some("OWNER-TAB".to_string());
+    app.tab_id = Some("OWNER-TAB".to_string());
+    app.tab_sessions
+        .insert("OWNER-TAB".to_string(), TabSession::default());
+    app.state = ConnectionState::Connected;
+
+    assert!(
+        !crate::ui::chat::should_show_activity(&app),
+        "an idle connected pane needs no status row"
+    );
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": "OWNER-TAB",
+            "session_id": "sess-target",
+            "cwd": "",
+        }),
+    });
+
+    assert!(app.tab_sessions["OWNER-TAB"].loading_session);
+    assert!(
+        crate::ui::chat::should_show_activity(&app),
+        "a resume must hold the status row open for the whole session/load, \
+         not just while the connection is still being established"
+    );
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: "OWNER-TAB".to_string(),
+        session_id: "sess-target".to_string(),
+        prompt_id: None,
+        available_models: vec![],
+        current_model_id: None,
+    });
+    assert!(
+        !crate::ui::chat::should_show_activity(&app),
+        "and is released once the resume is done"
+    );
+}
+
+/// TabError must clear both flags so a subsequent load can re-open
+/// the window cleanly.
+#[test]
+fn tab_error_clears_load_target() {
+    let (mut app, _load_session_rx) = make_app_with_load_session_channel();
+    app.owner_tab_id = Some("OWNER-TAB".to_string());
+    app.tab_sessions
+        .insert("OWNER-TAB".to_string(), TabSession::default());
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": "OWNER-TAB",
+            "session_id": "sess-target",
+            "cwd": "",
+        }),
+    });
+    assert!(app.tab_sessions["OWNER-TAB"].loading_session);
+
+    app.handle_event(AppEvent::TabError {
+        tab_id: "OWNER-TAB".to_string(),
+        message: "agent rejected load_session".to_string(),
+    });
+
+    assert!(!app.tab_sessions["OWNER-TAB"].loading_session);
+    assert!(app.tab_sessions["OWNER-TAB"]
+        .loading_target_session_id
+        .is_none());
+    assert!(!app.tab_sessions["OWNER-TAB"].has_meaningful_conversation);
+}
+
+#[test]
+fn tab_error_restores_the_previous_meaningful_session() {
+    let (mut app, _load_session_rx) = make_app_with_load_session_channel();
+    app.owner_tab_id = Some("OWNER-TAB".to_string());
+    app.tab_sessions.insert(
+        "OWNER-TAB".to_string(),
+        TabSession {
+            session_id: Some("old-session".to_string()),
+            has_meaningful_conversation: true,
+            ..Default::default()
+        },
+    );
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": "OWNER-TAB",
+            "session_id": "replacement-session",
+            "cwd": "",
+        }),
+    });
+    app.handle_event(AppEvent::TabError {
+        tab_id: "OWNER-TAB".to_string(),
+        message: "load failed".to_string(),
+    });
+
+    assert_eq!(
+        app.tab_sessions["OWNER-TAB"].resumable_session_id(),
+        Some("old-session")
+    );
+}
+
+/// Replayed history must be packed into CompletedTurn rows after session/load
+/// completes. Each User message opens a new turn and WTA's composed prompt is
+/// reduced back to the original user request.
+#[test]
+fn pack_replayed_messages_groups_into_expanded_turns() {
+    let mut tab = TabSession::default();
+    tab.messages = vec![
+        ChatMessage::System("Resuming session abc...".to_string()),
+        ChatMessage::User(
+            r#"# Terminal Agent
+You are...
+
+## User Request
+get time"#
+                .to_string(),
+        ),
+        ChatMessage::Agent("Hello, I am ready.".to_string()),
+        ChatMessage::User("list files".to_string()),
+        ChatMessage::ToolCall {
+            id: "t1".to_string(),
+            query: None,
+            title: "ls".to_string(),
+            status: "done".to_string(),
+            kind: ToolCallKind::Other,
+            location: None,
+            location_is_command: false,
+            cwd: None,
+            output: None,
+            exit_code: None,
+            content: Vec::new(),
+            locations: Vec::new(),
+        },
+        ChatMessage::Agent("Here are the files...".to_string()),
+    ];
+
+    tab.pack_replayed_messages_into_turns();
+
+    // System marker stays — it's not anchored to a User.
+    assert_eq!(tab.messages.len(), 1);
+    assert!(matches!(&tab.messages[0], ChatMessage::System(s) if s.starts_with("Resuming")));
+
+    // Two turns: one per User prompt.
+    assert_eq!(tab.completed_turns.len(), 2);
+
+    let t0 = &tab.completed_turns[0];
+    // Header is the request the user actually typed, not the template wrapper.
+    assert_eq!(t0.prompt, "get time");
+    assert_eq!(t0.details.len(), 1);
+    assert!(matches!(&t0.details[0], ChatMessage::Agent(_)));
+    assert!(
+        t0.expanded,
+        "replayed turn must match live expanded rendering"
+    );
+    assert!(t0.trailing_marker.is_none());
+
+    let t1 = &tab.completed_turns[1];
+    // Short single-line prompt — no ellipsis.
+    assert_eq!(t1.prompt, "list files");
+    assert_eq!(t1.details.len(), 2);
+    assert!(matches!(&t1.details[0], ChatMessage::ToolCall { .. }));
+    assert!(matches!(&t1.details[1], ChatMessage::Agent(_)));
+    assert!(t1.expanded);
+}
+
+// A replayed turn is stored expanded, and expanded rendering reads
+// `turn.prompt` verbatim (`build_completed_turn_lines`), collapsing it only
+// when the turn is collapsed. Storing a preview here instead of the request
+// would make the truncation permanent: a restored turn could never show more
+// than the first line, however far the user expands it.
+#[test]
+fn pack_replayed_turns_keep_the_whole_prompt() {
+    let long_line = "x".repeat(200);
+    let request = format!("first line\nsecond line\n{long_line}");
+
+    let mut tab = TabSession::default();
+    tab.messages = vec![
+        ChatMessage::User(format!(
+            "# Terminal Agent\n...\n\n## User Request\n{request}"
+        )),
+        ChatMessage::Agent("done".to_string()),
+    ];
+
+    tab.pack_replayed_messages_into_turns();
+
+    assert_eq!(tab.completed_turns.len(), 1);
+    let turn = &tab.completed_turns[0];
+    assert!(turn.expanded);
+    assert_eq!(turn.prompt, request);
+    assert!(
+        !turn.prompt.ends_with('…'),
+        "the stored prompt must be the request, not its collapsed preview"
+    );
+    // The collapsed header is still a one-line preview — that is the
+    // renderer's job, not something baked into the stored turn.
+    assert_eq!(
+        collapsed_prompt_preview(&turn.prompt),
+        "first line…",
+        "collapsing stays available at render time"
+    );
+}
+
+#[test]
+fn pack_replayed_recommendation_reuses_live_turn_formatting() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut tab = TabSession::default();
+    tab.messages = vec![
+        ChatMessage::User(
+            r#"# Terminal Agent
+...
+
+## User Request
+get time"#
+                .to_string(),
+        ),
+        ChatMessage::Agent(
+            r#"```json
+{
+  "recommended_choice": 1,
+  "choices": [{
+    "choice": 1,
+    "title": "Get the current time",
+    "rationale": "Displays the current time.",
+    "actions": [{
+      "type": "send",
+      "parent": "old-pane-id",
+      "input": "Get-Date -Format 'HH:mm:ss'"
+    }]
+  }]
+}
+```"#
+                .to_string(),
+        ),
+    ];
+
+    tab.pack_replayed_messages_into_turns();
+
+    assert_eq!(tab.completed_turns.len(), 1);
+    let turn = &tab.completed_turns[0];
+    assert_eq!(turn.prompt, "get time");
+    assert!(turn.expanded);
+    assert_eq!(
+        turn.details,
+        vec![ChatMessage::Agent(
+            "Get-Date -Format 'HH:mm:ss'".to_string()
+        )]
+    );
+}
+
+#[test]
+fn render_replayed_turn_matches_live_expanded_conversation() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    let tab = app.current_tab_mut();
+    tab.messages = vec![
+        ChatMessage::User(
+            "# Terminal Agent\nSYSTEM_PROMPT_MUST_NOT_RENDER\n\n## User Request\nREAL_USER_REQUEST"
+                .to_string(),
+        ),
+        ChatMessage::Agent("RESTORED_AGENT_REPLY".to_string()),
+    ];
+    tab.pack_replayed_messages_into_turns();
+
+    let rendered = render_to_text(&mut app, 80, 24);
+    assert!(rendered.contains("REAL_USER_REQUEST"));
+    assert!(rendered.contains("RESTORED_AGENT_REPLY"));
+    assert!(!rendered.contains("SYSTEM_PROMPT_MUST_NOT_RENDER"));
+}
+
+/// Preview logic: huge single-line prompt must clip to the cap with
+/// a trailing ellipsis; short single-line prompts stay verbatim.
+#[test]
+fn collapsed_prompt_preview_clips_long_single_line() {
+    let long = "a".repeat(500);
+    let preview = collapsed_prompt_preview(&long);
+    // 80 chars + ellipsis.
+    assert_eq!(preview.chars().count(), 81);
+    assert!(preview.ends_with('…'));
+
+    let short = "hello world";
+    assert_eq!(collapsed_prompt_preview(short), "hello world");
+    assert!(!collapsed_prompt_preview(short).ends_with('…'));
+}
+
+/// Edge: messages that come BEFORE the first User must NOT be lost —
+/// they stay in `tab.messages`. Pre-User stray Agent dumps (rare but
+/// possible) should remain visible rather than being silently dropped.
+#[test]
+fn pack_replayed_messages_preserves_pre_user_orphans() {
+    let mut tab = TabSession::default();
+    tab.messages = vec![
+        ChatMessage::System("Resuming...".to_string()),
+        ChatMessage::Agent("stray context dump".to_string()),
+        ChatMessage::User("hi".to_string()),
+        ChatMessage::Agent("hello".to_string()),
+    ];
+
+    tab.pack_replayed_messages_into_turns();
+
+    assert_eq!(tab.messages.len(), 2);
+    assert!(matches!(&tab.messages[0], ChatMessage::System(_)));
+    assert!(matches!(&tab.messages[1], ChatMessage::Agent(s) if s == "stray context dump"));
+    assert_eq!(tab.completed_turns.len(), 1);
+    assert_eq!(tab.completed_turns[0].prompt, "hi");
+    assert!(tab.completed_turns[0].expanded);
+}
+
+/// Empty messages must no-op (no panic, no spurious turn).
+#[test]
+fn pack_replayed_messages_empty_is_noop() {
+    let mut tab = TabSession::default();
+    tab.pack_replayed_messages_into_turns();
+    assert!(tab.messages.is_empty());
+    assert!(tab.completed_turns.is_empty());
+}
+
+/// Integration: SessionAttached for the load target must trigger
+/// packing — replayed User/Agent rows must end up as expanded CompletedTurn
+/// entries, matching live chat rendering rather than loose ChatMessage rows.
+#[test]
+fn session_attached_for_load_target_packs_replayed_history() {
+    let (mut app, _load_session_rx) = make_app_with_load_session_channel();
+    app.owner_tab_id = Some("OWNER-TAB".to_string());
+    app.tab_sessions
+        .insert("OWNER-TAB".to_string(), TabSession::default());
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": "OWNER-TAB",
+            "session_id": "sess-target",
+            "cwd": "",
+        }),
+    });
+    // Simulate replay chunks landing in messages.
+    let tab = app.tab_sessions.get_mut("OWNER-TAB").unwrap();
+    tab.messages
+        .push(ChatMessage::User("first prompt".to_string()));
+    tab.messages
+        .push(ChatMessage::Agent("first reply".to_string()));
+    tab.messages
+        .push(ChatMessage::User("second prompt".to_string()));
+    tab.messages
+        .push(ChatMessage::Agent("second reply".to_string()));
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: "OWNER-TAB".to_string(),
+        session_id: "sess-target".to_string(),
+        prompt_id: None,
+        available_models: vec![],
+        current_model_id: None,
+    });
+
+    let tab = &app.tab_sessions["OWNER-TAB"];
+    assert!(!tab.loading_session);
+    assert_eq!(
+        tab.completed_turns.len(),
+        2,
+        "both replayed user prompts must become CompletedTurn rows"
+    );
+    for turn in &tab.completed_turns {
+        assert!(
+            turn.expanded,
+            "replayed turns must match live expanded rendering"
+        );
+    }
+    // Resume is silent now — no "Resuming…" marker is posted, so after
+    // packing the replayed User/Agent rows into turns nothing is left in
+    // `messages`.
+    assert!(
+        tab.messages.is_empty(),
+        "resume must not leave any loose chat messages, got {:?}",
+        tab.messages
+    );
+}
+
+#[test]
+fn replay_message_ids_preserve_user_only_recommendation_turns() {
+    let mut app = app_loading_replayed_session();
+
+    app.handle_event(AppEvent::UserMessageReplayChunk {
+        session_id: "sess-target".to_string(),
+        message_id: Some("recommendation-turn".to_string()),
+        text: "# Terminal Agent\n\n## User Request\nos ".to_string(),
+    });
+    app.handle_event(AppEvent::UserMessageReplayChunk {
+        session_id: "sess-target".to_string(),
+        message_id: Some("recommendation-turn".to_string()),
+        text: "version".to_string(),
+    });
+    app.handle_event(AppEvent::UserMessageReplayChunk {
+        session_id: "sess-target".to_string(),
+        message_id: Some("chat-turn".to_string()),
+        text: "## User Request\nHow is the day".to_string(),
+    });
+    app.handle_event(AppEvent::AgentMessageChunk {
+        session_id: "sess-target".to_string(),
+        text: "It is going well.".to_string(),
+    });
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: "OWNER-TAB".to_string(),
+        session_id: "sess-target".to_string(),
+        prompt_id: None,
+        available_models: vec![],
+        current_model_id: None,
+    });
+
+    let turns = &app.tab_sessions["OWNER-TAB"].completed_turns;
+    assert_eq!(turns.len(), 2);
+    assert_eq!(turns[0].prompt, "os version");
+    assert!(turns[0].details.is_empty());
+    assert_eq!(turns[1].prompt, "How is the day");
+    assert_eq!(
+        turns[1].details,
+        vec![ChatMessage::Agent("It is going well.".to_string())]
+    );
+}
+
+#[test]
+fn hidden_proposal_tool_calls_delimit_replayed_user_messages_without_ids() {
+    let mut app = app_loading_replayed_session();
+
+    app.handle_event(AppEvent::UserMessageReplayChunk {
+        session_id: "sess-target".to_string(),
+        message_id: None,
+        text: "## User Request\nHow are you".to_string(),
+    });
+    app.handle_event(AppEvent::AgentMessageChunk {
+        session_id: "sess-target".to_string(),
+        text: "I am doing well.".to_string(),
+    });
+    app.handle_event(AppEvent::UserMessageReplayChunk {
+        session_id: "sess-target".to_string(),
+        message_id: None,
+        text: "## User Request\nos version".to_string(),
+    });
+    app.handle_event(AppEvent::HideToolCall {
+        session_id: "sess-target".to_string(),
+        id: "proposal-os-version".to_string(),
+    });
+    app.handle_event(AppEvent::UserMessageReplayChunk {
+        session_id: "sess-target".to_string(),
+        message_id: None,
+        text: "## User Request\nlist file size".to_string(),
+    });
+    app.handle_event(AppEvent::HideToolCall {
+        session_id: "sess-target".to_string(),
+        id: "proposal-file-size".to_string(),
+    });
+    app.handle_event(AppEvent::UserMessageReplayChunk {
+        session_id: "sess-target".to_string(),
+        message_id: None,
+        text: "## User Request\nHow is the day".to_string(),
+    });
+    app.handle_event(AppEvent::AgentMessageChunk {
+        session_id: "sess-target".to_string(),
+        text: "It is going well.".to_string(),
+    });
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: "OWNER-TAB".to_string(),
+        session_id: "sess-target".to_string(),
+        prompt_id: None,
+        available_models: vec![],
+        current_model_id: None,
+    });
+
+    let turns = &app.tab_sessions["OWNER-TAB"].completed_turns;
+    assert_eq!(turns.len(), 4);
+    assert_eq!(turns[0].prompt, "How are you");
+    assert_eq!(
+        turns[0].details,
+        vec![ChatMessage::Agent("I am doing well.".to_string())]
+    );
+    assert_eq!(turns[1].prompt, "os version");
+    assert!(turns[1].details.is_empty());
+    assert_eq!(turns[2].prompt, "list file size");
+    assert!(turns[2].details.is_empty());
+    assert_eq!(turns[3].prompt, "How is the day");
+    assert_eq!(
+        turns[3].details,
+        vec![ChatMessage::Agent("It is going well.".to_string())]
+    );
+}
+
+fn app_loading_replayed_session() -> App {
+    let (mut app, _load_session_rx) = make_app_with_load_session_channel();
+    app.owner_tab_id = Some("OWNER-TAB".to_string());
+    app.tab_sessions
+        .insert("OWNER-TAB".to_string(), TabSession::default());
+    app.session_to_tab
+        .insert("sess-target".to_string(), "OWNER-TAB".to_string());
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": "OWNER-TAB",
+            "session_id": "sess-target",
+            "cwd": "",
+        }),
+    });
+    app
+}
+
+// ─── WtNotification auto-dismiss ────────────────────────────────────────
+
+#[test]
+fn informational_auto_dismisses_after_threshold() {
+    let mut n = WtNotification {
+        severity: WtEventSeverity::Informational,
+        pane_id: "1".to_string(),
+        tab_id: None,
+        summary: "test".to_string(),
+        acknowledged: false,
+        age_ticks: 0,
+    };
+    assert!(!n.should_auto_dismiss());
+    n.age_ticks = 42;
+    assert!(!n.should_auto_dismiss());
+    n.age_ticks = 43;
+    assert!(n.should_auto_dismiss());
+}
+
+#[test]
+fn critical_never_auto_dismisses() {
+    let n = WtNotification {
+        severity: WtEventSeverity::Critical,
+        pane_id: "1".to_string(),
+        tab_id: None,
+        summary: "crash".to_string(),
+        acknowledged: false,
+        age_ticks: 1000,
+    };
+    assert!(!n.should_auto_dismiss());
+}
+
+#[test]
+fn actionable_never_auto_dismisses() {
+    let n = WtNotification {
+        severity: WtEventSeverity::Actionable,
+        pane_id: "1".to_string(),
+        tab_id: None,
+        summary: "exited".to_string(),
+        acknowledged: false,
+        age_ticks: 1000,
+    };
+    assert!(!n.should_auto_dismiss());
+}
+
+// ─── App notification state ─────────────────────────────────────────────
+
+#[test]
+fn wt_event_critical_raises_banner_only_no_chat() {
+    // WT events route through the bottom bar / `wt_notifications` queue,
+    // never the agent's chat history. The chat is for agent dialogue;
+    // process-lifecycle noise belongs in the bar.
+    let mut app = test_app();
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: "3".to_string(),
+        tab_id: None,
+        params: json!({"session_id": "3", "state": "failed"}),
+    });
+    assert!(app.show_notification_banner);
+    assert_eq!(app.wt_notifications.len(), 1);
+    assert_eq!(app.wt_notifications[0].severity, WtEventSeverity::Critical);
+    assert!(
+        app.current_tab().messages.is_empty(),
+        "WT events must not pollute chat history with Error messages"
+    );
+}
+
+#[test]
+fn wt_event_actionable_raises_banner_only_no_chat() {
+    let mut app = test_app();
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: "5".to_string(),
+        tab_id: None,
+        params: json!({"session_id": "5", "state": "closed"}),
+    });
+    assert!(app.show_notification_banner);
+    assert!(
+        app.current_tab().messages.is_empty(),
+        "WT events must not pollute chat history with System messages"
+    );
+}
+
+#[test]
+fn wt_event_informational_no_banner_no_chat_message() {
+    let mut app = test_app();
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: "1".to_string(),
+        tab_id: None,
+        params: json!({"session_id": "1", "state": "connected"}),
+    });
+    assert!(!app.show_notification_banner);
+    assert!(app.current_tab().messages.is_empty());
+    assert_eq!(app.wt_notifications.len(), 1);
+}
+
+#[test]
+fn wt_event_from_own_pane_is_ignored() {
+    let mut app = test_app();
+    app.pane_id = Some("42".to_string());
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: "42".to_string(),
+        tab_id: None,
+        params: json!({"session_id": "42", "state": "failed"}),
+    });
+    // Events from our own pane should be completely ignored
+    assert!(!app.show_notification_banner);
+    assert!(app.wt_notifications.is_empty());
+    assert!(app.current_tab().messages.is_empty());
+}
+
+#[test]
+fn wt_event_critical_from_other_tab_does_not_surface_in_owner_tab() {
+    // Regression for the cross-tab "Pane …: connection failed" leak:
+    // helper A owns tab A; tab B's Copilot pane fails; WT broadcasts
+    // the `connection_state:failed` event to every helper. Helper A
+    // must drop it instead of writing a red Error into tab A's chat.
+    let mut app = test_app();
+    app.owner_tab_id = Some("{tab-A}".to_string());
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: "B-PANE".to_string(),
+        tab_id: Some("{tab-B}".to_string()),
+        params: json!({"pane_id": "B-PANE", "state": "failed", "tab_id": "{tab-B}"}),
+    });
+    assert!(!app.show_notification_banner);
+    assert!(app.wt_notifications.is_empty());
+    assert!(app.current_tab().messages.is_empty());
+}
+
+#[test]
+fn wt_event_critical_from_owner_tab_raises_banner_not_chat() {
+    // Same-tab event raises the banner but still does NOT push into chat
+    // — the bar is the user-visible surface for connection failures.
+    let mut app = test_app();
+    app.owner_tab_id = Some("{tab-A}".to_string());
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: "A-PANE".to_string(),
+        tab_id: Some("{tab-A}".to_string()),
+        params: json!({"pane_id": "A-PANE", "state": "failed", "tab_id": "{tab-A}"}),
+    });
+    assert!(app.show_notification_banner);
+    assert_eq!(app.wt_notifications.len(), 1);
+    assert!(
+        app.current_tab().messages.is_empty(),
+        "WT events must not pollute chat history"
+    );
+}
+
+#[test]
+fn dismiss_notifications_clears_banner_and_acknowledges() {
+    let mut app = test_app();
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: "3".to_string(),
+        tab_id: None,
+        params: json!({"session_id": "3", "state": "failed"}),
+    });
+    assert!(app.show_notification_banner);
+    assert_eq!(app.unacknowledged_count(), 1);
+
+    app.dismiss_notifications();
+    assert!(!app.show_notification_banner);
+    assert_eq!(app.unacknowledged_count(), 0);
+    assert!(app.wt_notifications[0].acknowledged);
+}
+
+#[test]
+fn notification_badge_returns_most_recent_unacknowledged() {
+    let mut app = test_app();
+    // First event
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: "1".to_string(),
+        tab_id: None,
+        params: json!({"session_id": "1", "state": "closed"}),
+    });
+    // Second event (more recent)
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: "2".to_string(),
+        tab_id: None,
+        params: json!({"session_id": "2", "state": "failed"}),
+    });
+
+    let (summary, severity) = app.notification_badge().unwrap();
+    assert!(summary.contains("Pane 2"));
+    assert_eq!(*severity, WtEventSeverity::Critical);
+    assert_eq!(app.unacknowledged_count(), 2);
+}
+
+#[test]
+fn notification_queue_caps_at_20() {
+    let mut app = test_app();
+    for i in 0..25 {
+        app.handle_event(AppEvent::WtEvent {
+            method: "connection_state".to_string(),
+            pane_id: format!("{}", i),
+            tab_id: None,
+            params: json!({"session_id": format!("{}", i), "state": "connected"}),
+        });
+    }
+    assert_eq!(app.wt_notifications.len(), 20);
+}
+
+#[test]
+fn tick_ages_and_auto_dismisses_informational() {
+    let mut app = test_app();
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: "1".to_string(),
+        tab_id: None,
+        params: json!({"session_id": "1", "state": "connected"}),
+    });
+    assert_eq!(app.wt_notifications.len(), 1);
+    assert_eq!(app.wt_notifications[0].age_ticks, 0);
+
+    // Simulate enough ticks to trigger auto-dismiss (43 ticks)
+    for _ in 0..43 {
+        app.handle_event(AppEvent::Tick);
+    }
+    // Informational notification should be auto-removed
+    assert_eq!(app.wt_notifications.len(), 0);
+}
+
+#[test]
+fn tick_does_not_dismiss_critical_notifications() {
+    let mut app = test_app();
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: "3".to_string(),
+        tab_id: None,
+        params: json!({"session_id": "3", "state": "failed"}),
+    });
+    // Simulate many ticks
+    for _ in 0..200 {
+        app.handle_event(AppEvent::Tick);
+    }
+    // Critical notification should persist
+    assert_eq!(app.wt_notifications.len(), 1);
+    assert!(app.show_notification_banner);
+}
+
+#[test]
+fn banner_hides_when_all_acknowledged() {
+    let mut app = test_app();
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: "3".to_string(),
+        tab_id: None,
+        params: json!({"session_id": "3", "state": "failed"}),
+    });
+    assert!(app.show_notification_banner);
+
+    // Acknowledge all
+    app.dismiss_notifications();
+
+    // One more tick to process the banner-hide logic
+    app.handle_event(AppEvent::Tick);
+    assert!(!app.show_notification_banner);
+}
+
+#[test]
+fn active_notification_returns_none_when_all_acknowledged() {
+    let mut app = test_app();
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: "3".to_string(),
+        tab_id: None,
+        params: json!({"session_id": "3", "state": "closed"}),
+    });
+    assert!(app.active_notification().is_some());
+
+    app.dismiss_notifications();
+    assert!(app.active_notification().is_none());
+}
+
+#[test]
+fn multiple_events_different_panes() {
+    let mut app = test_app();
+    // Informational from pane 1
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: "1".to_string(),
+        tab_id: None,
+        params: json!({"session_id": "1", "state": "connected"}),
+    });
+    // Critical from pane 2
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: "2".to_string(),
+        tab_id: None,
+        params: json!({"session_id": "2", "state": "failed"}),
+    });
+    // Actionable from pane 3
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: "3".to_string(),
+        tab_id: None,
+        params: json!({"session_id": "3", "state": "closed"}),
+    });
+
+    assert_eq!(app.wt_notifications.len(), 3);
+    // Unacknowledged count only counts actionable + critical
+    assert_eq!(app.unacknowledged_count(), 2);
+    // Banner should show (due to critical + actionable)
+    assert!(app.show_notification_banner);
+    // Chat must stay empty — WT events surface in the bar/banner, never
+    // in agent dialogue.
+    assert!(app.current_tab().messages.is_empty());
+}
+
+// ─── Task C: Agents snapshot viewer / master refetch ────────────────────
+
+#[test]
+fn agents_view_open_sends_sessions_list_request() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.open_agents_view_for_tab(DEFAULT_TAB_ID.to_string());
+    match master_rx
+        .try_recv()
+        .expect("open must request sessions/list")
+    {
+        crate::protocol::acp::client::MasterExtRequest::SessionsList { .. } => {}
+        other => panic!("expected SessionsList, got {other:?}"),
+    }
+    assert!(app.current_tab().agents_view.snapshot.is_some());
+    assert!(app.current_tab().agents_view.refetch_in_flight);
+}
+
+#[test]
+fn born_bound_registration_uses_current_master_request_sender() {
+    let (mut app, mut old_master_rx) = test_app_with_master_rx();
+    let (new_master_tx, mut new_master_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.master_request_tx = new_master_tx;
+    let event = crate::agent_sessions::SessionEvent::SessionStarted {
+        key: "sid".to_string(),
+        cli_source: crate::agent_sessions::CliSource::Copilot,
+        pane_session_id: "pane".to_string(),
+        cwd: std::path::PathBuf::from("C:\\repo"),
+        title: String::new(),
+    };
+
+    app.handle_event(AppEvent::RegisterBornBoundSession {
+        event: event.clone(),
+    });
+
+    assert!(old_master_rx.try_recv().is_err());
+    match new_master_rx
+        .try_recv()
+        .expect("registration should use the replacement sender")
+    {
+        crate::protocol::acp::client::MasterExtRequest::SessionBornBound { event: actual } => {
+            assert_eq!(actual, event)
+        }
+        other => panic!("expected SessionBornBound, got {other:?}"),
+    }
+}
+
+#[test]
+fn restored_shell_agent_session_registers_as_born_bound() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    let agent_session_id = "8f924227-22df-4e54-aa18-3471107b567b";
+    let pane_id = "F6BAB379-8942-4F5F-9E7F-078EA1AB9463";
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "session_born_bound".to_string(),
+        pane_id: pane_id.to_string(),
+        tab_id: None,
+        params: json!({
+            "agent_session_id": agent_session_id,
+            "agent": "copilot",
+            "cwd": r"C:\project",
+        }),
+    });
+
+    let session = app
+        .agent_sessions
+        .get(&agent_session_id.to_string())
+        .expect("restored session should be live locally");
+    assert_eq!(session.status, crate::agent_sessions::AgentStatus::Idle);
+    assert_eq!(
+        session.pane_session_id.as_deref(),
+        Some("f6bab379-8942-4f5f-9e7f-078ea1ab9463")
+    );
+    assert_eq!(
+        session.cli_source,
+        crate::agent_sessions::CliSource::Copilot
+    );
+
+    assert!(matches!(
+        master_rx.try_recv(),
+        Ok(crate::protocol::acp::client::MasterExtRequest::SessionBornBound {
+            event: crate::agent_sessions::SessionEvent::SessionStarted {
+                key,
+                pane_session_id,
+                ..
+            },
+        }) if key == agent_session_id && pane_session_id == pane_id
+    ));
+}
+
+#[test]
+fn sessions_changed_with_open_agents_view_schedules_refetch() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_view.snapshot = Some(Vec::new());
+    app.handle_event(AppEvent::SessionsChanged);
+    match master_rx.try_recv().expect("change must request refetch") {
+        crate::protocol::acp::client::MasterExtRequest::SessionsList { .. } => {}
+        other => panic!("expected SessionsList, got {other:?}"),
+    }
+    assert!(app.current_tab().agents_view.refetch_in_flight);
+}
+
+#[test]
+fn sessions_changed_with_closed_agents_view_is_noop() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.current_tab_mut().current_view = View::Chat;
+    app.current_tab_mut().agents_view.snapshot = None;
+    app.handle_event(AppEvent::SessionsChanged);
+    assert!(master_rx.try_recv().is_err(), "closed UI must not refetch");
+}
+
+#[test]
+fn installation_completion_broadcast_does_not_surface_a_helper_notification() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    let messages = app.current_tab().messages.len();
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_availability_changed".into(),
+        pane_id: String::new(),
+        tab_id: Some(DEFAULT_TAB_ID.into()),
+        params: json!({
+            "agent_id": "copilot",
+            "tab_id": DEFAULT_TAB_ID,
+            "installation_completed": true,
+        }),
+    });
+    assert!(app.wt_notifications.is_empty());
+    assert_eq!(app.current_tab().messages.len(), messages);
+    assert!(
+        master_rx.try_recv().is_err(),
+        "helpers must not repeat master's discovery request"
+    );
+}
+
+#[test]
+fn sessions_fallback_only_reads_open_helper_views_in_nonvertical_layouts() {
+    for in_sidebar in [false, true] {
+        for view_open in [false, true] {
+            let (mut app, mut master_rx) = test_app_with_master_rx();
+            app.sessions_in_sidebar = in_sidebar;
+            if view_open {
+                app.current_tab_mut().current_view = View::Agents;
+                app.current_tab_mut().agents_view.snapshot = Some(Vec::new());
+            }
+
+            app.handle_event(AppEvent::SessionsFallbackTick);
+            if view_open && !in_sidebar {
+                assert!(matches!(
+                    master_rx.try_recv(),
+                    Ok(
+                        crate::protocol::acp::client::MasterExtRequest::SessionsList {
+                            rescan: false,
+                            ..
+                        }
+                    )
+                ));
+            } else {
+                assert!(master_rx.try_recv().is_err());
+                assert!(!app.current_tab().agents_view.refetch_in_flight);
+            }
+        }
+    }
+}
+
+#[test]
+fn sessions_fallback_layout_updates_are_scoped_and_preserve_pushes() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.owner_tab_id = Some(DEFAULT_TAB_ID.into());
+    app.window_id = Some("42".into());
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_view.snapshot = Some(Vec::new());
+    let update = |window: &str, tab: &str, value: serde_json::Value| AppEvent::WtEvent {
+        method: "agent_config_changed".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "window_id": window,
+            "tab_id": tab,
+            "sessions_in_sidebar": value,
+        }),
+    };
+
+    app.handle_event(update("other-window", DEFAULT_TAB_ID, json!(true)));
+    app.handle_event(update("42", "other-tab", json!(true)));
+    assert!(!app.sessions_in_sidebar);
+    app.handle_event(update("42", "", json!(true)));
+    assert!(
+        app.sessions_in_sidebar,
+        "window layout applies to its own helper"
+    );
+    app.handle_event(AppEvent::SessionsFallbackTick);
+    assert!(master_rx.try_recv().is_err());
+
+    app.handle_event(update("42", DEFAULT_TAB_ID, json!("false")));
+    assert!(
+        app.sessions_in_sidebar,
+        "invalid optional fields do not reset layout"
+    );
+    app.handle_event(AppEvent::SessionsChanged);
+    assert!(
+        matches!(
+            master_rx.try_recv(),
+            Ok(crate::protocol::acp::client::MasterExtRequest::SessionsList { rescan: false, .. })
+        ),
+        "push notifications remain independent of the fallback layout gate"
+    );
+    app.current_tab_mut().agents_view.refetch_in_flight = false;
+
+    app.handle_event(update("42", DEFAULT_TAB_ID, json!(false)));
+    assert!(!app.sessions_in_sidebar);
+    assert!(
+        master_rx.try_recv().is_ok(),
+        "returning to helper layout refreshes an open view immediately"
+    );
+    app.current_tab_mut().agents_view.refetch_in_flight = false;
+    app.handle_event(AppEvent::SessionsFallbackTick);
+    assert!(
+        master_rx.try_recv().is_ok(),
+        "nonvertical fallback resumes without reconnecting ACP"
+    );
+}
+
+#[test]
+fn sessions_fallback_does_not_open_a_view_when_layout_changes() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.sessions_in_sidebar = true;
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_config_changed".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({"sessions_in_sidebar": false}),
+    });
+    assert!(!app.sessions_in_sidebar);
+    assert!(app.current_tab().agents_view.snapshot.is_none());
+    assert!(master_rx.try_recv().is_err());
+}
+
+// ─── /model and Settings model updates ──────────────────────────────────
+
+fn model_info(id: &str) -> AcpModelInfo {
+    AcpModelInfo {
+        id: id.to_string(),
+        name: id.to_uppercase(),
+        description: None,
+    }
+}
+
+#[test]
+fn model_config_update_refreshes_active_session_picker() {
+    let mut app = test_app();
+    app.current_tab_mut().session_id = Some("sid-1".into());
+    app.available_models = vec![model_info("claude-sonnet-5")];
+    app.current_model_id = Some("claude-sonnet-5".into());
+
+    app.handle_event(AppEvent::ModelConfigUpdated {
+        session_id: "sid-1".into(),
+        available_models: vec![model_info("claude-sonnet-5"), model_info("gpt-5.6-sol")],
+        current_model_id: Some("gpt-5.6-sol".into()),
+    });
+
+    assert_eq!(app.current_model_id.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(app.available_models.len(), 2);
+    app.open_model_picker();
+    assert_eq!(
+        app.current_tab().model_picker_selected,
+        1,
+        "the picker must highlight the model reported by the latest config update"
+    );
+}
+
+#[test]
+fn model_config_update_without_model_clears_active_session_picker() {
+    let mut app = test_app();
+    app.current_tab_mut().session_id = Some("sid-1".into());
+    app.available_models = vec![model_info("gpt-5.6-sol")];
+    app.current_model_id = Some("gpt-5.6-sol".into());
+
+    app.handle_event(AppEvent::ModelConfigUpdated {
+        session_id: "sid-1".into(),
+        available_models: Vec::new(),
+        current_model_id: None,
+    });
+
+    assert!(app.available_models.is_empty());
+    assert_eq!(app.current_model_id, None);
+}
+
+#[test]
+fn model_config_update_before_session_attach_is_applied_on_attach() {
+    let mut app = test_app();
+    app.available_models = vec![model_info("claude-sonnet-5")];
+    app.current_model_id = Some("claude-sonnet-5".into());
+
+    app.handle_event(AppEvent::ModelConfigUpdated {
+        session_id: "sid-later".into(),
+        available_models: vec![model_info("gpt-5.6-sol")],
+        current_model_id: Some("gpt-5.6-sol".into()),
+    });
+
+    assert_eq!(app.current_model_id.as_deref(), Some("claude-sonnet-5"));
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "sid-later".into(),
+        prompt_id: None,
+        available_models: vec![model_info("claude-sonnet-5")],
+        current_model_id: Some("claude-sonnet-5".into()),
+    });
+
+    assert_eq!(app.current_model_id.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(app.available_models[0].id, "gpt-5.6-sol");
+}
+
+#[test]
+fn initial_load_model_is_published_after_session_attach() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    let _capture = crate::wt_protocol_events::capture_test_published_events();
+    app.owner_tab_id = Some(DEFAULT_TAB_ID.into());
+    app.current_agent_id = "copilot".into();
+    app.acp_model = Some("other-model".into());
+    app.current_tab_mut().loading_session = true;
+    app.current_tab_mut().loading_target_session_id = Some("restored-session".into());
+
+    app.handle_event(AppEvent::AgentConnected {
+        name: "GitHub Copilot".into(),
+        model: None,
+        version: Some("v1.0.0".into()),
+        session_id: "restored-session".into(),
+        available_models: Vec::new(),
+        current_model_id: None,
+        load_session_supported: true,
+        image_supported: false,
+        session_capabilities_ready: false,
+        telemetry_byok_binding: None,
+    });
+
+    assert_eq!(app.confirmed_model_display(), None);
+    assert_eq!(
+        app.session_to_tab
+            .get("restored-session")
+            .map(String::as_str),
+        Some(DEFAULT_TAB_ID),
+        "the placeholder must still route replayed history to its owner tab"
+    );
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "restored-session".into(),
+        prompt_id: None,
+        available_models: vec![model_info("other-model"), model_info("saved-model")],
+        current_model_id: Some("saved-model".into()),
+    });
+
+    assert!(!app.current_tab().loading_session);
+    assert_eq!(app.agent_current_model_id.as_deref(), Some("saved-model"));
+    assert_eq!(app.current_model_id.as_deref(), Some("saved-model"));
+    assert_eq!(app.acp_model.as_deref(), Some("other-model"));
+    assert!(app.current_tab().model_override.is_none());
+    assert_eq!(
+        app.confirmed_model_display().as_deref(),
+        Some("SAVED-MODEL")
+    );
+    assert_eq!(app.available_models.len(), 2);
+    app.open_model_picker();
+    assert_eq!(app.current_tab().model_picker_selected, 1);
+    assert!(
+        master_rx.try_recv().is_err(),
+        "restoring model metadata must not request a model change"
+    );
+
+    let status = crate::wt_protocol_events::take_test_published_events()
+        .into_iter()
+        .map(|event| serde_json::from_str::<serde_json::Value>(&event).expect("valid WT event"))
+        .filter(|event| event["method"] == "agent_status")
+        .last()
+        .expect("loading the session must publish its model to the pane header");
+    assert_eq!(status["params"]["tab_id"], DEFAULT_TAB_ID);
+    assert_eq!(status["params"]["state"], "connected");
+    assert_eq!(status["params"]["name"], "GitHub Copilot");
+    assert_eq!(status["params"]["version"], "v1.0.0");
+    assert_eq!(status["params"]["model"], "SAVED-MODEL");
+    assert_eq!(status["params"]["current_model_id"], "saved-model");
+    assert_eq!(
+        status["params"]["available_models"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    app.cmd_model("other-model".into());
+    let MasterExtRequest::SetSessionModel {
+        session_id,
+        model,
+        pane_override,
+        ..
+    } = master_rx
+        .try_recv()
+        .expect("the configured default is not the loaded session's model and must be applied")
+    else {
+        panic!("expected SetSessionModel");
+    };
+    assert_eq!(session_id.unwrap().0.as_ref(), "restored-session");
+    assert_eq!(model, "other-model");
+    assert!(pane_override);
+}
+
+#[test]
+fn initial_load_model_preserves_config_updates_around_placeholder() {
+    for update_before_connection in [false, true] {
+        for updated_model in [Some("live-model"), None] {
+            let mut app = test_app();
+            app.current_tab_mut().loading_session = true;
+            app.current_tab_mut().loading_target_session_id = Some("restored-session".into());
+            let config_update = || AppEvent::ModelConfigUpdated {
+                session_id: "restored-session".into(),
+                available_models: updated_model.map(model_info).into_iter().collect(),
+                current_model_id: updated_model.map(str::to_string),
+            };
+            if update_before_connection {
+                app.handle_event(config_update());
+            }
+
+            app.handle_event(AppEvent::AgentConnected {
+                name: "Agent".into(),
+                model: None,
+                version: None,
+                session_id: "restored-session".into(),
+                available_models: Vec::new(),
+                current_model_id: None,
+                load_session_supported: true,
+                image_supported: false,
+                session_capabilities_ready: false,
+                telemetry_byok_binding: None,
+            });
+
+            if !update_before_connection {
+                app.handle_event(config_update());
+            }
+            app.handle_event(AppEvent::SessionAttached {
+                tab_id: DEFAULT_TAB_ID.into(),
+                session_id: "restored-session".into(),
+                prompt_id: None,
+                available_models: vec![model_info("saved-model")],
+                current_model_id: Some("saved-model".into()),
+            });
+
+            assert_eq!(app.agent_current_model_id.as_deref(), updated_model);
+            assert_eq!(app.current_model_id.as_deref(), updated_model);
+            assert_eq!(
+                app.available_models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
+                updated_model.into_iter().collect::<Vec<_>>(),
+                "a config update, including removal of the selector, must override the load response"
+            );
+        }
+    }
+}
+
+#[test]
+fn initial_load_model_follows_subsequent_settings_changes() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    let _capture = crate::wt_protocol_events::capture_test_published_events();
+    app.owner_tab_id = Some(DEFAULT_TAB_ID.into());
+    app.current_agent_id = "copilot".into();
+    app.follows_global_acp_model = true;
+    app.acp_model = Some("configured-default".into());
+    app.current_tab_mut().loading_session = true;
+    app.current_tab_mut().loading_target_session_id = Some("restored-session".into());
+    app.handle_event(AppEvent::AgentConnected {
+        name: "GitHub Copilot".into(),
+        model: None,
+        version: None,
+        session_id: "restored-session".into(),
+        available_models: Vec::new(),
+        current_model_id: None,
+        load_session_supported: true,
+        image_supported: false,
+        session_capabilities_ready: false,
+        telemetry_byok_binding: None,
+    });
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "restored-session".into(),
+        prompt_id: None,
+        available_models: vec![model_info("new-model"), model_info("saved-model")],
+        current_model_id: Some("saved-model".into()),
+    });
+    assert_eq!(
+        app.confirmed_model_display().as_deref(),
+        Some("SAVED-MODEL")
+    );
+    assert!(
+        master_rx.try_recv().is_err(),
+        "loading must preserve the saved model"
+    );
+    assert_eq!(app.current_model_id.as_deref(), Some("saved-model"));
+    assert_eq!(app.acp_model.as_deref(), Some("configured-default"));
+    assert!(app.current_tab().model_override.is_none());
+    app.open_model_picker();
+    assert_eq!(
+        app.current_tab().model_picker_selected,
+        1,
+        "a configured default missing from the catalog must not force selection to index zero"
+    );
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_config_changed".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "target_agent_id": "copilot",
+            "acp_model": "new-model"
+        }),
+    });
+    let MasterExtRequest::SetSessionModel {
+        request_id,
+        session_id,
+        model,
+        pane_override,
+    } = master_rx
+        .try_recv()
+        .expect("settings must target the restored session")
+    else {
+        panic!("expected SetSessionModel");
+    };
+    assert_eq!(session_id.unwrap().0.as_ref(), "restored-session");
+    assert_eq!(model, "new-model");
+    assert!(!pane_override);
+    assert_eq!(
+        app.confirmed_model_display().as_deref(),
+        Some("SAVED-MODEL")
+    );
+    assert_eq!(app.current_model_id.as_deref(), Some("saved-model"));
+    app.set_cloud_models(vec![model_info("new-model"), model_info("saved-model")]);
+    app.switch_tab_session(DEFAULT_TAB_ID.into());
+    app.open_model_picker();
+    assert_eq!(
+        app.current_tab().model_picker_selected,
+        1,
+        "catalog refresh and tab selection must retain the confirmed model while the switch is pending"
+    );
+
+    app.handle_event(AppEvent::ModelSetFailed {
+        request_id,
+        session_id: "restored-session".into(),
+        model: model.clone(),
+        pane_override,
+        message: "provider rejected the model".into(),
+    });
+    assert_eq!(app.current_model_id.as_deref(), Some("saved-model"));
+    assert!(app.current_tab().model_override.is_none());
+    app.set_cloud_models(vec![model_info("new-model"), model_info("saved-model")]);
+    assert_eq!(app.current_model_id.as_deref(), Some("saved-model"));
+
+    app.send_acp_model_update();
+    let MasterExtRequest::SetSessionModel { request_id, .. } = master_rx
+        .try_recv()
+        .expect("a failed Settings model switch must remain retryable")
+    else {
+        panic!("expected SetSessionModel");
+    };
+
+    app.handle_event(AppEvent::ModelSetCompleted {
+        request_id,
+        session_id: "restored-session".into(),
+        model,
+        pane_override,
+    });
+    assert_eq!(app.confirmed_model_display().as_deref(), Some("NEW-MODEL"));
+    assert_eq!(app.current_model_id.as_deref(), Some("new-model"));
+    app.open_model_picker();
+    assert_eq!(app.current_tab().model_picker_selected, 0);
+    assert!(app.current_tab().model_override.is_none());
+    assert_eq!(
+        app.current_tab().session_id.as_deref(),
+        Some("restored-session")
+    );
+    let status = crate::wt_protocol_events::take_test_published_events()
+        .into_iter()
+        .map(|event| serde_json::from_str::<serde_json::Value>(&event).expect("valid WT event"))
+        .filter(|event| event["method"] == "agent_status")
+        .last()
+        .expect("successful model change must refresh the pane header");
+    assert_eq!(status["params"]["tab_id"], DEFAULT_TAB_ID);
+    assert_eq!(status["params"]["model"], "NEW-MODEL");
+}
+
+#[test]
+fn session_attach_prunes_replaced_session_model_config() {
+    let mut app = test_app();
+    app.current_tab_mut().session_id = Some("sid-old".into());
+    app.session_to_tab
+        .insert("sid-old".into(), DEFAULT_TAB_ID.into());
+    app.session_model_configs.insert(
+        "sid-old".into(),
+        (
+            vec![model_info("claude-sonnet-5")],
+            Some("claude-sonnet-5".into()),
+        ),
+    );
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "sid-new".into(),
+        prompt_id: None,
+        available_models: vec![model_info("gpt-5.6-sol")],
+        current_model_id: Some("gpt-5.6-sol".into()),
+    });
+
+    assert!(!app.session_to_tab.contains_key("sid-old"));
+    assert!(!app.session_model_configs.contains_key("sid-old"));
+}
+
+#[test]
+fn background_session_attach_waits_for_tab_switch_to_update_picker() {
+    let mut app = test_app();
+    app.available_models = vec![model_info("claude-sonnet-5")];
+    app.current_model_id = Some("claude-sonnet-5".into());
+    app.tab_sessions
+        .insert("background".into(), TabSession::default());
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: "background".into(),
+        session_id: "sid-background".into(),
+        prompt_id: None,
+        available_models: vec![model_info("gpt-5.6-sol")],
+        current_model_id: Some("gpt-5.6-sol".into()),
+    });
+
+    assert_eq!(app.current_model_id.as_deref(), Some("claude-sonnet-5"));
+
+    app.switch_tab_session("background".into());
+
+    assert_eq!(app.current_model_id.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(app.available_models[0].id, "gpt-5.6-sol");
+}
+
+#[test]
+fn switching_to_tab_without_session_clears_model_picker() {
+    let mut app = test_app();
+    app.available_models = vec![model_info("gpt-5.6-sol")];
+    app.current_model_id = Some("gpt-5.6-sol".into());
+    app.tab_sessions
+        .insert("without-session".into(), TabSession::default());
+
+    app.switch_tab_session("without-session".into());
+
+    assert!(app.available_models.is_empty());
+    assert_eq!(app.current_model_id, None);
+}
+
+#[test]
+fn new_session_prunes_previous_model_config() {
+    let (mut app, _new_session_rx) = test_app_with_new_session_rx();
+    app.current_tab_mut().session_id = Some("sid-old".into());
+    app.session_model_configs.insert(
+        "sid-old".into(),
+        (vec![model_info("gpt-5.6-sol")], Some("gpt-5.6-sol".into())),
+    );
+
+    app.cmd_new(false);
+
+    assert!(!app.session_model_configs.contains_key("sid-old"));
+}
+
+#[test]
+fn new_session_dispatch_failure_preserves_current_session() {
+    let mut app = test_app();
+    app.current_tab_mut().session_id = Some("sid-old".into());
+    app.current_tab_mut()
+        .messages
+        .push(ChatMessage::System("keep this message".into()));
+
+    app.cmd_new(false);
+
+    assert_eq!(app.current_tab().session_id.as_deref(), Some("sid-old"));
+    assert_eq!(
+        app.current_tab().messages.first(),
+        Some(&ChatMessage::System("keep this message".into()))
+    );
+    assert!(matches!(
+        app.current_tab().messages.last(),
+        Some(ChatMessage::Error(_))
+    ));
+    assert!(!app.pending_yolo_session_tabs.contains(DEFAULT_TAB_ID));
+}
+
+/// `/model <id>` hot-applies a model within the current Settings-selected mode
+/// and does not restart the agent CLI.
+#[test]
+fn slash_model_hot_applies_cloud_model_to_live_session() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.set_cloud_models(vec![model_info("gpt-5.5"), model_info("gpt-5.4")]);
+    app.current_tab_mut().session_id = Some("sid-1".into());
+
+    app.cmd_model("gpt-5.4".into());
+
+    assert_eq!(app.current_tab().model_override, None);
+    match master_rx.try_recv().expect("live model switch request") {
+        crate::protocol::acp::client::MasterExtRequest::SetSessionModel {
+            session_id,
+            model,
+            pane_override,
+            ..
+        } => {
+            assert_eq!(session_id.expect("target session").0.as_ref(), "sid-1");
+            assert_eq!(model, "gpt-5.4");
+            assert!(pane_override);
+        }
+        other => panic!("expected SetSessionModel, got {other:?}"),
+    }
+
+    app.handle_event(AppEvent::ModelSetCompleted {
+        request_id: uuid::Uuid::new_v4(),
+        session_id: "sid-1".into(),
+        model: "gpt-5.4".into(),
+        pane_override: true,
+    });
+
+    assert_eq!(app.current_tab().model_override.as_deref(), Some("gpt-5.4"));
+    assert!(matches!(
+        app.current_tab().messages.last(),
+        Some(ChatMessage::Notice {
+            kind: NoticeKind::Success,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn failed_legacy_model_pick_preserves_confirmed_model() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.set_cloud_models(vec![model_info("gpt-5.5"), model_info("gpt-5.4")]);
+    app.current_model_id = Some("gpt-5.5".into());
+    app.current_tab_mut().session_id = Some("sid-1".into());
+
+    app.cmd_model("gpt-5.4".into());
+    let _ = master_rx.try_recv().expect("live model switch request");
+    app.handle_event(AppEvent::ModelSetFailed {
+        request_id: uuid::Uuid::new_v4(),
+        session_id: "sid-1".into(),
+        model: "gpt-5.4".into(),
+        pane_override: true,
+        message: "rejected".into(),
+    });
+
+    assert_eq!(app.current_tab().model_override, None);
+    assert_eq!(app.current_model_id.as_deref(), Some("gpt-5.5"));
+    assert!(matches!(
+        app.current_tab().messages.last(),
+        Some(ChatMessage::Notice {
+            kind: NoticeKind::Error,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn status_model_ignores_unconfirmed_global_selection() {
+    let mut app = test_app();
+    app.available_models = vec![model_info("confirmed"), model_info("requested")];
+    app.agent_current_model_id = Some("confirmed".into());
+    app.current_model_id = Some("requested".into());
+    app.acp_model = Some("requested".into());
+
+    assert_eq!(app.confirmed_model_display().as_deref(), Some("CONFIRMED"));
+}
+
+#[test]
+fn connected_byok_selection_is_available_for_status() {
+    let mut app = test_app();
+    app.set_custom_model_config(
+        vec![CustomModelCatalogEntry {
+            selection_id: "custom:provider:qwen".into(),
+            model_id: "qwen".into(),
+            ..Default::default()
+        }],
+        Some("custom:provider:qwen".into()),
+    );
+
+    assert_eq!(
+        app.confirmed_model_display().as_deref(),
+        Some("qwen (BYOK)")
+    );
+}
+
+/// A pane-local `/model` pick remains authoritative when the matching global
+/// agent changes its default model.
+#[test]
+fn global_settings_change_preserves_local_pick() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.current_agent_id = "copilot".into();
+    app.follows_global_acp_model = true;
+    app.available_models = vec![model_info("local"), model_info("globalv2")];
+    app.current_tab_mut().session_id = Some("sid-1".into());
+
+    // Preserve a preexisting pane override while applying a Settings update.
+    app.current_tab_mut().model_override = Some("local".into());
+    app.current_model_id = Some("local".into());
+    assert_eq!(app.current_tab().model_override.as_deref(), Some("local"));
+
+    app.apply_global_acp_model("copilot", Some("globalv2".into()));
+
+    assert_eq!(
+        app.current_tab().model_override.as_deref(),
+        Some("local"),
+        "a global change must preserve the per-pane override"
+    );
+    assert_eq!(
+        app.current_model_id.as_deref(),
+        Some("local"),
+        "the visible current model remains the pane override"
+    );
+    assert!(
+        master_rx.try_recv().is_err(),
+        "the global model must not be sent to a locally overridden pane"
+    );
+}
+
+#[test]
+fn fresh_session_model_replaces_stale_agent_default() {
+    let mut app = test_app();
+    app.current_model_id = Some("stale".into());
+    app.agent_current_model_id = Some("stale".into());
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "sid-fresh".into(),
+        prompt_id: None,
+        available_models: vec![model_info("stale"), model_info("fresh")],
+        current_model_id: Some("fresh".into()),
+    });
+
+    assert_eq!(
+        app.current_model_id.as_deref(),
+        Some("fresh"),
+        "a fresh agent-reported default must replace stale state when no override applies"
+    );
+}
+
+#[test]
+fn fresh_agent_connection_model_replaces_stale_agent_default() {
+    let mut app = test_app();
+    app.current_model_id = Some("stale".into());
+    app.agent_current_model_id = Some("stale".into());
+
+    app.handle_event(AppEvent::AgentConnected {
+        name: "Agent".into(),
+        model: None,
+        version: None,
+        session_id: "sid-fresh".into(),
+        available_models: vec![model_info("stale"), model_info("fresh")],
+        current_model_id: Some("fresh".into()),
+        load_session_supported: false,
+        image_supported: false,
+        session_capabilities_ready: true,
+        telemetry_byok_binding: None,
+    });
+
+    assert_eq!(app.current_model_id.as_deref(), Some("fresh"));
+}
+
+#[test]
+fn bootstrap_agent_connection_reconciles_global_yolo_state() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.yolo_state.lock().unwrap().update_runtime(true, false);
+
+    app.handle_event(AppEvent::AgentConnected {
+        name: "Agent".into(),
+        model: None,
+        version: None,
+        session_id: "bootstrap-yolo-session".into(),
+        available_models: Vec::new(),
+        current_model_id: None,
+        load_session_supported: false,
+        image_supported: false,
+        session_capabilities_ready: true,
+        telemetry_byok_binding: None,
+    });
+
+    let request = master_rx
+        .try_recv()
+        .expect("the bootstrap session must receive the global Yolo state");
+    let MasterExtRequest::ReconcileSessionYolo {
+        sessions,
+        fail_closed,
+        ..
+    } = request
+    else {
+        panic!("expected ReconcileSessionYolo");
+    };
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].0 .0.as_ref(), "bootstrap-yolo-session");
+    assert!(sessions[0].1);
+    assert!(!fail_closed);
+    assert!(app.yolo_reconcile_pending_for_tab(DEFAULT_TAB_ID));
+}
+
+#[test]
+fn failed_policy_yolo_reconcile_restarts_master() {
+    let (mut app, mut restart_rx) = test_app_with_restart_rx();
+
+    app.handle_event(AppEvent::RuntimeYoloReconcileCompleted {
+        reconcile_id: 0,
+        fail_closed: false,
+        restart_required: false,
+        result: Err("provider-native Yolo RPC timed out".into()),
+    });
+    assert!(restart_rx.try_recv().is_err());
+
+    app.handle_event(AppEvent::RuntimeYoloReconcileCompleted {
+        reconcile_id: 0,
+        fail_closed: true,
+        restart_required: false,
+        result: Err("provider-native Yolo RPC timed out".into()),
+    });
+    assert!(matches!(
+        restart_rx.try_recv().expect("policy failure must restart"),
+        crate::protocol::acp::client::AgentLifecycleRequest::RestartMaster
+    ));
+
+    app.handle_event(AppEvent::RuntimeYoloReconcileCompleted {
+        reconcile_id: 0,
+        fail_closed: false,
+        restart_required: true,
+        result: Err("provider-native Yolo RPC timed out".into()),
+    });
+    assert!(matches!(
+        restart_rx
+            .try_recv()
+            .expect("unknown provider outcome must restart"),
+        crate::protocol::acp::client::AgentLifecycleRequest::RestartMaster
+    ));
+}
+
+#[test]
+fn stale_fail_closed_yolo_reconcile_does_not_restart_master() {
+    let (mut app, mut restart_rx) = test_app_with_restart_rx();
+
+    app.handle_event(AppEvent::RuntimeYoloReconcileCompleted {
+        reconcile_id: 99,
+        fail_closed: true,
+        restart_required: true,
+        result: Err("stale provider outcome".into()),
+    });
+
+    assert!(restart_rx.try_recv().is_err());
+}
+
+#[test]
+fn runtime_policy_reconcile_gates_prompt_until_native_off_acknowledges() {
+    let mut app = test_app();
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.prompt_tx = prompt_tx;
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().session_id = Some("policy-gated-session".into());
+    app.session_to_tab
+        .insert("policy-gated-session".into(), DEFAULT_TAB_ID.to_string());
+    app.current_tab_mut().input = "must wait for native off".into();
+
+    app.apply_runtime_yolo_config(Some(false), Some(true));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.current_tab().input, "must wait for native off");
+    assert!(prompt_rx.try_recv().is_err());
+
+    let reconcile_id = *app.pending_yolo_reconciles.keys().next().unwrap();
+    app.handle_event(AppEvent::RuntimeYoloReconcileCompleted {
+        reconcile_id,
+        fail_closed: true,
+        restart_required: false,
+        result: Ok(()),
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.current_tab().input.is_empty());
+    assert_eq!(
+        prompt_rx.try_recv().expect("prompt after native off").text,
+        "must wait for native off"
+    );
+}
+
+#[test]
+fn global_on_session_attach_gates_prompt_until_native_yolo_enable_acknowledges() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.prompt_tx = prompt_tx;
+    app.state = ConnectionState::Connected;
+    app.yolo_state.lock().unwrap().update_runtime(true, false);
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "global-on-session".into(),
+        prompt_id: None,
+        available_models: Vec::new(),
+        current_model_id: None,
+    });
+    let MasterExtRequest::ReconcileSessionYolo { reconcile_id, .. } = master_rx
+        .try_recv()
+        .expect("global-on session must request native enable")
+    else {
+        panic!("expected ReconcileSessionYolo");
+    };
+    app.current_tab_mut().input = "wait for native on".into();
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.current_tab().input, "wait for native on");
+    assert!(prompt_rx.try_recv().is_err());
+
+    app.handle_event(AppEvent::RuntimeYoloReconcileCompleted {
+        reconcile_id,
+        fail_closed: false,
+        restart_required: false,
+        result: Ok(()),
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        prompt_rx.try_recv().expect("prompt after native on").text,
+        "wait for native on"
+    );
+}
+
+#[test]
+fn new_session_creation_gates_prompt_before_yolo_reconcile_can_start() {
+    let mut app = test_app();
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (new_session_tx, mut new_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.prompt_tx = prompt_tx;
+    app.new_session_tx = new_session_tx;
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().session_id = Some("old-session".into());
+
+    app.cmd_new(false);
+    new_session_rx
+        .try_recv()
+        .expect("/new must request a replacement session");
+    app.current_tab_mut().input = "wait for replacement mode".into();
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.current_tab().input, "wait for replacement mode");
+    assert!(prompt_rx.try_recv().is_err());
+}
+
+#[test]
+fn known_global_on_failure_releases_yolo_prompt_gate_for_interactive_fallback() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.prompt_tx = prompt_tx;
+    app.state = ConnectionState::Connected;
+    app.yolo_state.lock().unwrap().update_runtime(true, false);
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "unsupported-global-on".into(),
+        prompt_id: None,
+        available_models: Vec::new(),
+        current_model_id: None,
+    });
+    let MasterExtRequest::ReconcileSessionYolo { reconcile_id, .. } = master_rx
+        .try_recv()
+        .expect("global-on session must request native enable")
+    else {
+        panic!("expected ReconcileSessionYolo");
+    };
+
+    app.handle_event(AppEvent::RuntimeYoloReconcileCompleted {
+        reconcile_id,
+        fail_closed: false,
+        restart_required: false,
+        result: Err("provider does not support native Yolo".into()),
+    });
+    app.current_tab_mut().input = "continue interactively".into();
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        prompt_rx.try_recv().expect("interactive prompt").text,
+        "continue interactively"
+    );
+}
+
+#[test]
+fn unknown_yolo_enable_outcome_keeps_prompt_gate_until_agent_reset() {
+    let mut app = test_app();
+    let session_id = "unknown-enable-session";
+    app.current_tab_mut().session_id = Some(session_id.into());
+    app.pending_yolo_reconciles
+        .insert(17, (HashSet::from([session_id.to_string()]), false));
+
+    app.handle_event(AppEvent::RuntimeYoloReconcileCompleted {
+        reconcile_id: 17,
+        fail_closed: false,
+        restart_required: true,
+        result: Err("provider outcome unknown".into()),
+    });
+
+    assert!(app.pending_yolo_reconciles.contains_key(&17));
+    app.reset_agent_scoped_state();
+    assert!(app.pending_yolo_reconciles.is_empty());
+}
+
+#[test]
+fn superseded_native_config_clears_prompt_gate() {
+    let mut app = test_app();
+    let session_id = "superseded-config-session";
+    app.current_tab_mut().session_id = Some(session_id.into());
+    app.session_to_tab
+        .insert(session_id.into(), DEFAULT_TAB_ID.into());
+    app.current_tab_mut().config_pending_id = Some("mode".into());
+    app.current_tab_mut().native_yolo_config_pending = true;
+
+    app.handle_event(AppEvent::SessionConfigSetFailed {
+        session_id: session_id.into(),
+        config_id: "mode".into(),
+        message: "the config update was superseded by newer session state".into(),
+        restart_required: false,
+    });
+
+    assert!(!app.current_tab().native_yolo_config_pending);
+    assert!(app.current_tab().config_pending_id.is_none());
+}
+
+#[test]
+fn untracked_unknown_yolo_outcome_gates_sessions_until_agent_reset() {
+    let mut app = test_app();
+    let session_id = "lazy-unknown-session";
+    app.current_tab_mut().session_id = Some(session_id.into());
+    app.session_to_tab
+        .insert(session_id.into(), DEFAULT_TAB_ID.into());
+
+    app.handle_event(AppEvent::RuntimeYoloReconcileCompleted {
+        reconcile_id: 0,
+        fail_closed: true,
+        restart_required: true,
+        result: Err("provider outcome unknown".into()),
+    });
+
+    assert!(app.yolo_reconcile_pending_for_tab(DEFAULT_TAB_ID));
+    app.reset_agent_scoped_state();
+    assert!(!app.yolo_reconcile_pending_for_tab(DEFAULT_TAB_ID));
+}
+
+#[test]
+fn pending_yolo_reconcile_only_gates_its_target_session() {
+    let mut app = test_app();
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.prompt_tx = prompt_tx;
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().session_id = Some("current-session".into());
+    app.pending_yolo_reconciles.insert(
+        23,
+        (HashSet::from(["background-session".to_string()]), false),
+    );
+    app.current_tab_mut().input = "current tab remains available".into();
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        prompt_rx.try_recv().expect("current session prompt").text,
+        "current tab remains available"
+    );
+}
+
+#[test]
+fn pending_yolo_reconcile_blocks_manual_and_automatic_autofix_prompts() {
+    let mut manual = test_app();
+    let (manual_tx, mut manual_rx) = tokio::sync::mpsc::unbounded_channel();
+    manual.prompt_tx = manual_tx;
+    manual.state = ConnectionState::Connected;
+    manual.current_tab_mut().session_id = Some("manual-fix-session".into());
+    manual.pending_yolo_reconciles.insert(
+        29,
+        (HashSet::from(["manual-fix-session".to_string()]), false),
+    );
+
+    manual.cmd_fix(false, String::new());
+
+    assert!(manual_rx.try_recv().is_err());
+    assert!(manual.current_tab().turn.is_idle());
+
+    let mut automatic = test_app();
+    let (automatic_tx, mut automatic_rx) = tokio::sync::mpsc::unbounded_channel();
+    automatic.prompt_tx = automatic_tx;
+    automatic.state = ConnectionState::Connected;
+    automatic.autofix_enabled = true;
+    automatic.tab_mut("target-tab").session_id = Some("automatic-fix-session".into());
+    automatic.pending_yolo_reconciles.insert(
+        31,
+        (HashSet::from(["automatic-fix-session".to_string()]), false),
+    );
+    let notification = WtNotification {
+        severity: WtEventSeverity::Actionable,
+        pane_id: "failed-pane".into(),
+        tab_id: Some("target-tab".into()),
+        summary: "Command failed".into(),
+        acknowledged: false,
+        age_ticks: 0,
+    };
+
+    automatic.maybe_trigger_autofix(&notification);
+
+    assert!(automatic_rx.try_recv().is_err());
+    assert!(automatic.tab_mut("target-tab").turn.is_idle());
+}
+
+#[test]
+fn pending_config_update_blocks_normal_manual_and_automatic_prompts() {
+    let mut normal = test_app();
+    let (normal_tx, mut normal_rx) = tokio::sync::mpsc::unbounded_channel();
+    normal.prompt_tx = normal_tx;
+    normal.state = ConnectionState::Connected;
+    normal.current_tab_mut().session_id = Some("normal-config-session".into());
+    normal.current_tab_mut().config_pending_id = Some("mode".into());
+    normal.current_tab_mut().native_yolo_config_pending = true;
+    normal.current_tab_mut().input = "wait for native mode".into();
+
+    normal.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(normal_rx.try_recv().is_err());
+    assert_eq!(normal.current_tab().input, "wait for native mode");
+    assert!(normal.current_tab().turn.is_idle());
+
+    let mut manual = test_app();
+    let (manual_tx, mut manual_rx) = tokio::sync::mpsc::unbounded_channel();
+    manual.prompt_tx = manual_tx;
+    manual.state = ConnectionState::Connected;
+    manual.current_tab_mut().session_id = Some("manual-config-session".into());
+    manual.current_tab_mut().config_pending_id = Some("mode".into());
+    manual.current_tab_mut().native_yolo_config_pending = true;
+
+    manual.cmd_fix(false, String::new());
+
+    assert!(manual_rx.try_recv().is_err());
+    assert!(manual.current_tab().turn.is_idle());
+
+    let mut automatic = test_app();
+    let (automatic_tx, mut automatic_rx) = tokio::sync::mpsc::unbounded_channel();
+    automatic.prompt_tx = automatic_tx;
+    automatic.state = ConnectionState::Connected;
+    automatic.autofix_enabled = true;
+    let tab = automatic.tab_mut("target-tab");
+    tab.session_id = Some("automatic-config-session".into());
+    tab.config_pending_id = Some("mode".into());
+    tab.native_yolo_config_pending = true;
+    let notification = WtNotification {
+        severity: WtEventSeverity::Actionable,
+        pane_id: "failed-pane".into(),
+        tab_id: Some("target-tab".into()),
+        summary: "Command failed".into(),
+        acknowledged: false,
+        age_ticks: 0,
+    };
+
+    automatic.maybe_trigger_autofix(&notification);
+
+    assert!(automatic_rx.try_recv().is_err());
+    assert!(automatic.tab_mut("target-tab").turn.is_idle());
+}
+
+#[test]
+fn pending_non_yolo_config_does_not_block_normal_prompts() {
+    let mut app = test_app();
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.prompt_tx = prompt_tx;
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().session_id = Some("model-config-session".into());
+    app.current_tab_mut().config_pending_id = Some("model".into());
+    app.current_tab_mut().input = "continue while model config is pending".into();
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        prompt_rx.try_recv().expect("ordinary prompt").text,
+        "continue while model config is pending"
+    );
+}
+
+#[test]
+fn initial_load_waits_for_attach_then_preserves_provider_restored_yolo() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.prompt_tx = prompt_tx;
+    let tab = app.current_tab_mut();
+    tab.loading_session = true;
+    tab.loading_target_session_id = Some("loaded-session".into());
+
+    app.handle_event(AppEvent::AgentConnected {
+        name: "Agent".into(),
+        model: None,
+        version: None,
+        session_id: "loaded-session".into(),
+        available_models: Vec::new(),
+        current_model_id: None,
+        load_session_supported: true,
+        image_supported: false,
+        session_capabilities_ready: true,
+        telemetry_byok_binding: None,
+    });
+
+    assert!(
+        master_rx.try_recv().is_err(),
+        "a load placeholder must not reconcile before the restored session attaches"
+    );
+    app.current_tab_mut().input = "wait for loaded capabilities".into();
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().input, "wait for loaded capabilities");
+    assert!(prompt_rx.try_recv().is_err());
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "loaded-session".into(),
+        prompt_id: None,
+        available_models: Vec::new(),
+        current_model_id: None,
+    });
+    assert!(
+        master_rx.try_recv().is_err(),
+        "policy-allowed loaded sessions must preserve provider-restored Yolo state"
+    );
+    assert!(!app.pending_yolo_session_tabs.contains(DEFAULT_TAB_ID));
+    assert!(!app.yolo_reconcile_pending_for_tab(DEFAULT_TAB_ID));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        prompt_rx
+            .try_recv()
+            .expect("prompt after loaded session attach")
+            .text,
+        "wait for loaded capabilities"
+    );
+}
+
+#[test]
+fn policy_blocked_load_target_reconciles_provider_restored_yolo_off() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.yolo_state.lock().unwrap().update_runtime(false, true);
+    let tab = app.current_tab_mut();
+    tab.loading_session = true;
+    tab.loading_target_session_id = Some("loaded-session".into());
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "loaded-session".into(),
+        prompt_id: None,
+        available_models: Vec::new(),
+        current_model_id: None,
+    });
+
+    let MasterExtRequest::ReconcileSessionYolo {
+        sessions,
+        fail_closed,
+        ..
+    } = master_rx
+        .try_recv()
+        .expect("policy must force a loaded session off")
+    else {
+        panic!("expected ReconcileSessionYolo");
+    };
+    assert!(fail_closed);
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].0.to_string(), "loaded-session");
+    assert!(!sessions[0].1);
+}
+
+#[test]
+fn initial_load_placeholder_binds_and_gates_the_helper_owner_tab() {
+    let mut app = test_app();
+    app.owner_tab_id = Some("owner-tab".into());
+    app.tab_id = Some("active-other-tab".into());
+    app.tab_sessions
+        .insert("owner-tab".into(), TabSession::default());
+    app.tab_sessions
+        .insert("active-other-tab".into(), TabSession::default());
+
+    app.handle_event(AppEvent::AgentConnected {
+        name: "Agent".into(),
+        model: None,
+        version: None,
+        session_id: "loaded-session".into(),
+        available_models: Vec::new(),
+        current_model_id: None,
+        load_session_supported: true,
+        image_supported: false,
+        session_capabilities_ready: false,
+        telemetry_byok_binding: None,
+    });
+
+    assert_eq!(
+        app.session_to_tab.get("loaded-session").map(String::as_str),
+        Some("owner-tab")
+    );
+    assert!(app.pending_yolo_session_tabs.contains("owner-tab"));
+    assert!(!app.pending_yolo_session_tabs.contains("active-other-tab"));
+    assert_eq!(
+        app.tab_sessions["owner-tab"].session_id.as_deref(),
+        Some("loaded-session")
+    );
+}
+
+#[test]
+fn runtime_yolo_update_excludes_tabs_waiting_for_session_attach() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.tab_sessions
+        .insert("stable-tab".into(), TabSession::default());
+    app.tab_sessions
+        .insert("pending-tab".into(), TabSession::default());
+    app.tab_sessions.get_mut("stable-tab").unwrap().session_id = Some("stable-session".into());
+    app.tab_sessions.get_mut("pending-tab").unwrap().session_id = Some("old-session".into());
+    app.session_to_tab
+        .insert("stable-session".into(), "stable-tab".into());
+    app.session_to_tab
+        .insert("old-session".into(), "pending-tab".into());
+    app.pending_yolo_session_tabs.insert("pending-tab".into());
+
+    app.apply_runtime_yolo_config(Some(true), Some(false));
+
+    let MasterExtRequest::ReconcileSessionYolo { sessions, .. } = master_rx
+        .try_recv()
+        .expect("the stable session must reconcile")
+    else {
+        panic!("expected ReconcileSessionYolo");
+    };
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].0.to_string(), "stable-session");
+    assert!(sessions[0].1);
+    assert!(app.pending_yolo_session_tabs.contains("pending-tab"));
+}
+
+#[test]
+fn runtime_yolo_update_preserves_manual_and_provider_restored_sessions() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    for (session_id, tab_id) in [
+        ("automatic-session", "automatic-tab"),
+        ("manual-session", "manual-tab"),
+        ("restored-session", "restored-tab"),
+    ] {
+        app.session_to_tab
+            .insert(session_id.to_string(), tab_id.to_string());
+    }
+    {
+        let mut state = app.yolo_state.lock().unwrap();
+        state.mark_automatic("automatic-session");
+        state.mark_manual("manual-session");
+        state.mark_provider_restored("restored-session");
+    }
+
+    app.apply_runtime_yolo_config(Some(true), Some(false));
+
+    let MasterExtRequest::ReconcileSessionYolo { sessions, .. } = master_rx
+        .try_recv()
+        .expect("the automatic-owned session must reconcile")
+    else {
+        panic!("expected ReconcileSessionYolo");
+    };
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].0.to_string(), "automatic-session");
+    assert!(sessions[0].1);
+    assert!(
+        master_rx.try_recv().is_err(),
+        "manual and provider-restored sessions must not receive automatic operations"
+    );
+}
+
+#[test]
+fn runtime_yolo_update_disables_automatic_owned_session_when_target_turns_off() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.session_to_tab
+        .insert("automatic-session".into(), "automatic-tab".into());
+    {
+        let mut state = app.yolo_state.lock().unwrap();
+        state.update_runtime(true, false);
+        state.mark_automatic("automatic-session");
+    }
+
+    app.apply_runtime_yolo_config(Some(false), Some(false));
+
+    let MasterExtRequest::ReconcileSessionYolo {
+        sessions,
+        fail_closed,
+        ..
+    } = master_rx
+        .try_recv()
+        .expect("an automatic-owned session must follow the disabled target")
+    else {
+        panic!("expected ReconcileSessionYolo");
+    };
+    assert!(fail_closed);
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].0.to_string(), "automatic-session");
+    assert!(!sessions[0].1);
+}
+
+#[test]
+fn policy_block_overrides_manual_and_provider_restored_sessions() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    for (session_id, tab_id) in [
+        ("manual-session", "manual-tab"),
+        ("restored-session", "restored-tab"),
+    ] {
+        app.session_to_tab
+            .insert(session_id.to_string(), tab_id.to_string());
+    }
+    {
+        let mut state = app.yolo_state.lock().unwrap();
+        state.mark_manual("manual-session");
+        state.mark_provider_restored("restored-session");
+    }
+
+    app.apply_runtime_yolo_config(Some(false), Some(true));
+
+    let MasterExtRequest::ReconcileSessionYolo {
+        sessions,
+        fail_closed,
+        ..
+    } = master_rx
+        .try_recv()
+        .expect("policy must force every session off")
+    else {
+        panic!("expected ReconcileSessionYolo");
+    };
+    assert!(fail_closed);
+    assert_eq!(sessions.len(), 2);
+    assert!(sessions.iter().all(|(_, enabled)| !enabled));
+
+    {
+        let state = app.yolo_state.lock().unwrap();
+        assert_eq!(
+            state.owner("manual-session"),
+            Some(crate::app_contracts::YoloControlOwner::Manual)
+        );
+        assert_eq!(
+            state.owner("restored-session"),
+            Some(crate::app_contracts::YoloControlOwner::ProviderRestored)
+        );
+    }
+    app.apply_runtime_yolo_config(Some(false), Some(false));
+    assert!(
+        master_rx.try_recv().is_err(),
+        "removing policy must not let automatic Settings take ownership"
+    );
+}
+
+#[test]
+fn loaded_session_attach_preserves_provider_restored_yolo() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    let tab = app.current_tab_mut();
+    tab.loading_session = true;
+    tab.loading_target_session_id = Some("restored-session".into());
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "restored-session".into(),
+        prompt_id: None,
+        available_models: Vec::new(),
+        current_model_id: None,
+    });
+
+    assert_eq!(
+        app.yolo_state
+            .lock()
+            .unwrap()
+            .automatic_directive("restored-session"),
+        crate::app_contracts::AutomaticYoloDirective::NoOpinion
+    );
+    assert!(
+        master_rx.try_recv().is_err(),
+        "a loaded session must retain its provider-restored state when policy allows"
+    );
+}
+
+#[test]
+fn loaded_session_preserves_staged_automatic_owner() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.yolo_state
+        .lock()
+        .unwrap()
+        .mark_automatic("restored-session");
+    let tab = app.current_tab_mut();
+    tab.loading_session = true;
+    tab.loading_target_session_id = Some("restored-session".into());
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "restored-session".into(),
+        prompt_id: None,
+        available_models: Vec::new(),
+        current_model_id: None,
+    });
+
+    let MasterExtRequest::ReconcileSessionYolo { sessions, .. } = master_rx
+        .try_recv()
+        .expect("an automatic-owned restored session must follow the current target")
+    else {
+        panic!("expected ReconcileSessionYolo");
+    };
+    assert_eq!(sessions.len(), 1);
+    assert!(!sessions[0].1);
+}
+
+#[test]
+fn loaded_session_preserves_staged_manual_owner() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.yolo_state
+        .lock()
+        .unwrap()
+        .mark_manual("restored-session");
+    let tab = app.current_tab_mut();
+    tab.loading_session = true;
+    tab.loading_target_session_id = Some("restored-session".into());
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "restored-session".into(),
+        prompt_id: None,
+        available_models: Vec::new(),
+        current_model_id: None,
+    });
+
+    assert!(
+        master_rx.try_recv().is_err(),
+        "a manual-owned restored session must preserve provider state"
+    );
+    assert_eq!(
+        app.yolo_state
+            .lock()
+            .unwrap()
+            .automatic_directive("restored-session"),
+        crate::app_contracts::AutomaticYoloDirective::NoOpinion
+    );
+}
+
+#[test]
+fn load_request_stages_owner_for_target_and_failure_clears_it() {
+    let (mut app, _master_rx) = test_app_with_master_rx();
+    let (load_tx, mut load_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.load_session_tx = load_tx;
+    app.set_initial_yolo_control_owner(
+        Some("restored-session"),
+        Some(crate::app_contracts::YoloControlOwner::Manual),
+    );
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": DEFAULT_TAB_ID,
+            "session_id": "restored-session",
+            "cwd": ""
+        }),
+    });
+    load_rx.try_recv().expect("load request must remain queued");
+    assert_eq!(
+        app.yolo_state.lock().unwrap().owner("restored-session"),
+        Some(crate::app_contracts::YoloControlOwner::Manual)
+    );
+
+    app.handle_event(AppEvent::TabError {
+        tab_id: DEFAULT_TAB_ID.into(),
+        message: "load failed".into(),
+    });
+    assert_eq!(
+        app.yolo_state.lock().unwrap().owner("restored-session"),
+        None
+    );
+}
+
+#[test]
+fn load_request_with_closed_sender_without_reconnect_cleans_up() {
+    let mut app = test_app();
+    app.set_initial_yolo_control_owner(
+        Some("restored-session"),
+        Some(crate::app_contracts::YoloControlOwner::Manual),
+    );
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": DEFAULT_TAB_ID,
+            "session_id": "restored-session",
+            "cwd": ""
+        }),
+    });
+
+    assert!(app.pending_session_load.is_none());
+    assert!(!app.current_tab().loading_session);
+    assert!(app.current_tab().loading_target_session_id.is_none());
+    assert_eq!(
+        app.yolo_state.lock().unwrap().owner("restored-session"),
+        None
+    );
+    assert!(matches!(
+        app.current_tab().messages.last(),
+        Some(ChatMessage::Error(_))
+    ));
+}
+
+#[test]
+fn initial_yolo_owner_only_applies_to_matching_load_session() {
+    let mut app = test_app();
+    let (load_tx, mut load_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.load_session_tx = load_tx;
+    app.set_initial_yolo_control_owner(
+        Some("expected-session"),
+        Some(crate::app_contracts::YoloControlOwner::Automatic),
+    );
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": DEFAULT_TAB_ID,
+            "session_id": "other-session",
+            "cwd": ""
+        }),
+    });
+
+    load_rx
+        .try_recv()
+        .expect("unrelated load must remain queued");
+    assert_eq!(
+        app.yolo_state.lock().unwrap().owner("other-session"),
+        Some(crate::app_contracts::YoloControlOwner::ProviderRestored)
+    );
+    assert_eq!(
+        app.initial_yolo_control_owner
+            .as_ref()
+            .map(|initial| (initial.session_id.as_str(), initial.owner,)),
+        Some((
+            "expected-session",
+            crate::app_contracts::YoloControlOwner::Automatic,
+        ))
+    );
+}
+
+#[test]
+fn no_output_turn_projects_resumable_session_with_manual_owner() {
+    let mut app = test_app();
+    let _capture = crate::wt_protocol_events::capture_test_published_events();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().session_id = Some("manual-session".into());
+    app.session_to_tab
+        .insert("manual-session".into(), DEFAULT_TAB_ID.into());
+    app.yolo_state.lock().unwrap().mark_manual("manual-session");
+    submit_test_prompt(&mut app, "/allow_all");
+
+    crate::wt_protocol_events::take_test_published_events();
+    app.handle_event(AppEvent::YoloControlOwnerChanged {
+        session_id: "manual-session".into(),
+    });
+    let owner_projection = crate::wt_protocol_events::take_test_published_events()
+        .into_iter()
+        .filter_map(|event| serde_json::from_str::<serde_json::Value>(&event).ok())
+        .find(|event| event["method"] == "agent_state_changed")
+        .expect("manual ownership change must project tab state");
+    assert!(owner_projection["params"]["agent_session_id"].is_null());
+    assert!(owner_projection["params"]["yolo_control_owner"].is_null());
+
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: "manual-session".into(),
+    });
+    let end_projection = crate::wt_protocol_events::take_test_published_events()
+        .into_iter()
+        .filter_map(|event| serde_json::from_str::<serde_json::Value>(&event).ok())
+        .find(|event| event["method"] == "agent_state_changed")
+        .expect("the no-output turn boundary must reproject the now-resumable session");
+    assert_eq!(
+        end_projection["params"]["agent_session_id"],
+        serde_json::json!("manual-session")
+    );
+    assert_eq!(
+        end_projection["params"]["yolo_control_owner"],
+        serde_json::json!("manual")
+    );
+}
+
+#[test]
+fn master_disconnect_before_initial_load_preserves_saved_owner() {
+    let mut app = test_app();
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some(DEFAULT_TAB_ID.into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+    app.set_initial_yolo_control_owner(
+        Some("restored-session"),
+        Some(crate::app_contracts::YoloControlOwner::Automatic),
+    );
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": DEFAULT_TAB_ID,
+            "session_id": "restored-session",
+            "cwd": ""
+        }),
+    });
+
+    assert_eq!(
+        app.pending_session_load
+            .as_ref()
+            .map(|request| request.session_id.as_str()),
+        Some("restored-session"),
+        "a closed receiver on the retiring transport must retain the initial load"
+    );
+    assert_eq!(
+        app.yolo_state.lock().unwrap().owner("restored-session"),
+        Some(crate::app_contracts::YoloControlOwner::Automatic)
+    );
+
+    app.handle_event(AppEvent::MasterDisconnected);
+    app.handle_event(AppEvent::AgentTransportRetired);
+
+    assert_eq!(
+        app.pending_session_load
+            .as_ref()
+            .map(|request| request.session_id.as_str()),
+        Some("restored-session"),
+        "the retired sender must leave the initial load queued for reconnect"
+    );
+    assert!(app.current_tab().loading_session);
+    assert_eq!(
+        app.current_tab().loading_target_session_id.as_deref(),
+        Some("restored-session")
+    );
+    assert!(app.pending_acp_start);
+    assert_eq!(
+        app.yolo_state.lock().unwrap().owner("restored-session"),
+        Some(crate::app_contracts::YoloControlOwner::Automatic)
+    );
+}
+
+#[test]
+fn overlapping_fail_closed_reconciles_require_every_acknowledgement() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+
+    app.reconcile_session_yolo("session-a");
+    app.reconcile_session_yolo("session-b");
+
+    let first = master_rx.try_recv().expect("first reconcile");
+    let second = master_rx.try_recv().expect("second reconcile");
+    let MasterExtRequest::ReconcileSessionYolo {
+        reconcile_id: first_id,
+        ..
+    } = first
+    else {
+        panic!("expected first ReconcileSessionYolo");
+    };
+    let MasterExtRequest::ReconcileSessionYolo {
+        reconcile_id: second_id,
+        ..
+    } = second
+    else {
+        panic!("expected second ReconcileSessionYolo");
+    };
+
+    app.handle_event(AppEvent::RuntimeYoloReconcileCompleted {
+        reconcile_id: first_id,
+        fail_closed: true,
+        restart_required: false,
+        result: Ok(()),
+    });
+    assert!(!app.pending_yolo_reconciles.is_empty());
+
+    app.handle_event(AppEvent::RuntimeYoloReconcileCompleted {
+        reconcile_id: second_id,
+        fail_closed: true,
+        restart_required: false,
+        result: Ok(()),
+    });
+    assert!(app.pending_yolo_reconciles.is_empty());
+}
+
+#[test]
+fn agent_reset_clears_reconcile_state_before_reused_id_attaches() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    let session_id = "reused-after-agent-reset";
+    app.yolo_state
+        .lock()
+        .unwrap()
+        .mark_client_reconciled(session_id.to_string(), false);
+    app.pending_yolo_reconciles
+        .insert(7, (HashSet::from([session_id.to_string()]), true));
+
+    app.reset_agent_scoped_state();
+
+    assert_eq!(
+        app.yolo_state
+            .lock()
+            .unwrap()
+            .automatic_directive(session_id),
+        crate::app_contracts::AutomaticYoloDirective::Disable
+    );
+    assert!(app
+        .yolo_state
+        .lock()
+        .unwrap()
+        .take_client_reconciled(session_id)
+        .is_none());
+    assert!(app.pending_yolo_reconciles.is_empty());
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: session_id.into(),
+        prompt_id: None,
+        available_models: Vec::new(),
+        current_model_id: None,
+    });
+    let MasterExtRequest::ReconcileSessionYolo { sessions, .. } = master_rx
+        .try_recv()
+        .expect("the reused session must be reconciled after reset")
+    else {
+        panic!("expected ReconcileSessionYolo");
+    };
+    assert_eq!(sessions[0].0.to_string(), session_id);
+    assert!(!sessions[0].1);
+}
+
+#[test]
+fn fresh_session_applies_global_model_without_preempting_confirmation() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.acp_model = Some("global".into());
+    app.current_model_id = Some("global".into());
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "sid-fresh".into(),
+        prompt_id: None,
+        available_models: vec![model_info("agent-default"), model_info("global")],
+        current_model_id: Some("agent-default".into()),
+    });
+
+    assert_eq!(app.current_model_id.as_deref(), Some("agent-default"));
+    assert_eq!(app.acp_model.as_deref(), Some("global"));
+    let MasterExtRequest::SetSessionModel {
+        request_id,
+        session_id,
+        model,
+        pane_override,
+    } = master_rx
+        .try_recv()
+        .expect("the global override must be re-applied to the fresh session")
+    else {
+        panic!("expected SetSessionModel");
+    };
+    assert_eq!(session_id.unwrap().0.as_ref(), "sid-fresh");
+    assert_eq!(model, "global");
+    assert!(!pane_override);
+
+    app.handle_event(AppEvent::ModelSetCompleted {
+        request_id,
+        session_id: "sid-fresh".into(),
+        model,
+        pane_override,
+    });
+    assert_eq!(app.current_model_id.as_deref(), Some("global"));
+    assert_eq!(app.confirmed_model_display().as_deref(), Some("GLOBAL"));
+    assert!(app.current_tab().model_override.is_none());
+}
+
+#[test]
+fn model_selection_uses_global_default_only_until_agent_reports_model() {
+    let mut app = test_app();
+    app.acp_model = Some("configured".into());
+    app.set_cloud_models(vec![model_info("configured"), model_info("reported")]);
+    assert_eq!(app.current_model_id.as_deref(), Some("configured"));
+
+    app.current_tab_mut().session_id = Some("sid-reported".into());
+    app.handle_event(AppEvent::ModelConfigUpdated {
+        session_id: "sid-reported".into(),
+        available_models: vec![model_info("configured"), model_info("reported")],
+        current_model_id: Some("reported".into()),
+    });
+
+    assert_eq!(app.current_model_id.as_deref(), Some("reported"));
+    assert_eq!(app.acp_model.as_deref(), Some("configured"));
+    assert!(app.current_tab().model_override.is_none());
+    app.open_model_picker();
+    assert_eq!(app.current_tab().model_picker_selected, 1);
+}
+
+#[test]
+fn fresh_session_model_does_not_replace_pane_override_on_new() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.current_tab_mut().model_override = Some("pane-picked".into());
+    app.current_model_id = Some("pane-picked".into());
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "sid-new".into(),
+        prompt_id: None,
+        available_models: vec![model_info("agent-default"), model_info("pane-picked")],
+        current_model_id: Some("agent-default".into()),
+    });
+
+    assert_eq!(app.current_model_id.as_deref(), Some("pane-picked"));
+    assert_eq!(
+        app.current_tab().model_override.as_deref(),
+        Some("pane-picked"),
+        "/new must retain the pane's explicit model override"
+    );
+    match master_rx
+        .try_recv()
+        .expect("the pane override must be re-applied to the /new session")
+    {
+        MasterExtRequest::SetSessionModel {
+            session_id,
+            model,
+            pane_override,
+            ..
+        } => {
+            assert_eq!(session_id.unwrap().0.to_string(), "sid-new");
+            assert_eq!(model, "pane-picked");
+            assert!(!pane_override);
+        }
+        other => panic!("expected SetSessionModel, got {other:?}"),
+    }
+}
+
+#[test]
+fn fresh_session_model_does_not_replace_custom_selection() {
+    let mut app = test_app();
+    app.set_custom_model_config(
+        vec![CustomModelCatalogEntry {
+            selection_id: "custom:provider:model".into(),
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            ..Default::default()
+        }],
+        Some("custom:provider:model".into()),
+    );
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "sid-fresh".into(),
+        prompt_id: None,
+        available_models: vec![model_info("agent-default")],
+        current_model_id: Some("agent-default".into()),
+    });
+
+    assert_eq!(
+        app.current_model_id.as_deref(),
+        Some("custom:provider:model")
+    );
+}
+
+/// A pane with no local pick follows the global `acpModel` on hot-reload.
+#[test]
+fn non_overridden_pane_follows_global_model() {
+    use crate::protocol::acp::client::MasterExtRequest;
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.current_tab_mut().session_id = Some("sid-1".into());
+    app.acp_model = Some("global".into());
+
+    app.send_acp_model_update();
+
+    match master_rx
+        .try_recv()
+        .expect("non-overridden pane follows global")
+    {
+        MasterExtRequest::SetSessionModel {
+            session_id,
+            model,
+            pane_override,
+            ..
+        } => {
+            assert_eq!(model, "global");
+            assert_eq!(session_id.unwrap().0.to_string(), "sid-1");
+            assert!(!pane_override);
+        }
+        other => panic!("expected SetSessionModel, got {other:?}"),
+    }
+}
+
+#[test]
+fn settings_agent_rebind_targets_owner_and_resets_only_agent_state() {
+    let (mut app, mut restart_rx) = test_app_with_restart_rx();
+    app.owner_tab_id = Some("owner-tab".into());
+    app.window_id = Some("window-1".into());
+    app.tab_id = Some("owner-tab".into());
+    app.current_agent_id = "copilot".into();
+    app.agent_name = "GitHub Copilot".into();
+    app.agent_model = Some("old-model".into());
+    app.session_id = "old-session".into();
+    app.available_models = vec![model_info("old-model")];
+    app.current_model_id = Some("old-model".into());
+    app.mode = AppMode::Setup;
+    app.preflight_setup_active = true;
+    {
+        let tab = app.tab_mut("owner-tab");
+        tab.input = "keep this draft".into();
+        tab.cursor_pos = tab.input.len();
+        tab.messages.push(ChatMessage::Agent("old response".into()));
+        tab.session_id = Some("old-session".into());
+        tab.usage = Some(usage_snapshot());
+        tab.loading_session = true;
+        tab.loading_target_session_id = Some("loading-old-session".into());
+        tab.model_picker_open = true;
+        tab.model_picker_selected = 3;
+        tab.config_picker = ConfigPickerState::Values {
+            option_id: "old-config".into(),
+            selected: 2,
+            parent_selected: Some(1),
+        };
+        tab.config_pending_id = Some("old-config".into());
+        tab.agent_picker_open = true;
+        tab.agent_picker_selected = 2;
+        tab.pending_terminal_action_proposal = Some(PendingTerminalActionProposal {
+            proposal_id: "old-proposal".into(),
+            session_id: "old-session".into(),
+            prompt_id: 42,
+            is_autofix: false,
+            recommendations: RecommendationSet {
+                recommended_choice: None,
+                choices: Vec::new(),
+            },
+        });
+        tab.active_direct_proposal_id = Some("old-direct-proposal".into());
+        tab.autofix.generation = 7;
+        tab.autofix.pane_id = Some("failing-pane".into());
+        tab.autofix.suggested_pane_id = Some("failing-pane".into());
+        tab.autofix.bar_snapshot = AutofixBarSnapshot::Pending {
+            pane_id: "failing-pane".into(),
+            summary: "old failure".into(),
+        };
+    }
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        Some("old-model".into()),
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some("owner-tab".into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+
+    app.handle_event(agent_rebind_event("other-tab", 1, "claude"));
+    assert!(restart_rx.try_recv().is_err());
+    assert_eq!(app.current_agent_id, "copilot");
+
+    app.handle_event(agent_rebind_event("owner-tab", 1, "claude"));
+
+    match restart_rx
+        .try_recv()
+        .expect("matching helper should begin a controlled reconnect")
+    {
+        AgentLifecycleRequest::RebindAgent(request) => {
+            assert_eq!(request.agent_id, "claude");
+            assert_eq!(request.generation, 1);
+            assert!(request.acp_model.is_none());
+        }
+        other => panic!("expected RebindAgent, got {other:?}"),
+    }
+    assert_eq!(app.current_agent_id, "claude");
+    assert!(app.agent_name.is_empty());
+    assert!(app.agent_model.is_none());
+    assert!(app.session_id.is_empty());
+    assert!(app.available_models.is_empty());
+    assert!(app.current_model_id.is_none());
+    assert_eq!(app.current_tab().input, "keep this draft");
+    assert!(app.current_tab().messages.is_empty());
+    assert!(app.current_tab().session_id.is_none());
+    assert!(app.current_tab().usage.is_none());
+    assert!(!app.current_tab().loading_session);
+    assert!(app.current_tab().loading_target_session_id.is_none());
+    assert!(!app.current_tab().model_picker_open);
+    assert!(matches!(
+        app.current_tab().config_picker,
+        ConfigPickerState::Closed
+    ));
+    assert!(app.current_tab().config_pending_id.is_none());
+    assert!(!app.current_tab().agent_picker_open);
+    assert!(app.current_tab().pending_terminal_action_proposal.is_none());
+    assert!(app.current_tab().active_direct_proposal_id.is_none());
+    assert_eq!(app.current_tab().autofix.generation, 8);
+    assert!(app.current_tab().autofix.pane_id.is_none());
+    assert!(app.current_tab().autofix.suggested_pane_id.is_none());
+    assert!(matches!(
+        app.current_tab().autofix.bar_snapshot,
+        AutofixBarSnapshot::Idle
+    ));
+    assert_eq!(app.mode, AppMode::Chat);
+    assert!(!app.preflight_setup_active);
+    assert!(app.auth.is_none());
+    assert!(app.setup.is_none());
+    let deferred = app
+        .deferred_acp
+        .as_ref()
+        .expect("agent target should remain available for reconnect");
+    assert_eq!(deferred.agent_id.as_deref(), Some("claude"));
+    assert!(deferred.acp_model.is_none());
+
+    app.handle_event(AppEvent::PreflightComplete(PreflightResult {
+        agent_id: "copilot".into(),
+        display_name: "GitHub Copilot".into(),
+        cli_status: CheckStatus::Failed("stale result".into()),
+        cli_path: None,
+        auth_status: CheckStatus::Skipped,
+        install_hint: String::new(),
+        install_url: String::new(),
+        auth_hint: String::new(),
+    }));
+    assert_eq!(
+        app.mode,
+        AppMode::Chat,
+        "late setup results from the outgoing agent must be ignored"
+    );
+
+    app.handle_event(AppEvent::AgentClientFailed);
+    app.handle_event(AppEvent::AgentError {
+        session_id: None,
+        failure: crate::protocol::acp::failure::AgentFailure::HandshakeFailed {
+            stage: crate::protocol::acp::failure::HandshakeStage::Initialize,
+            detail: "outgoing client failed".into(),
+        },
+        message: "outgoing client failed".into(),
+    });
+    assert!(!app.pending_acp_start);
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Disconnecting(_)
+    ));
+    assert!(
+        app.current_tab().messages.is_empty(),
+        "the outgoing client's startup error must not leak into the new agent chat"
+    );
+
+    app.handle_event(AppEvent::AgentTransportRetired);
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Preflighting(_)
+    ));
+    app.handle_event(AppEvent::AgentReconnectPreflightComplete {
+        operation_id: "op-1".into(),
+        generation: 1,
+        result: passed_preflight("claude", "Claude"),
+    });
+    assert!(app.pending_acp_start);
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Idle
+    ));
+}
+
+#[test]
+fn agent_rebind_duplicate_retirement_notification_preserves_target_preflight() {
+    let (mut app, mut restart_rx) = test_app_with_restart_rx();
+    app.owner_tab_id = Some("owner-tab".into());
+    app.window_id = Some("window-1".into());
+    app.tab_id = Some("owner-tab".into());
+    app.current_agent_id = "copilot".into();
+    app.tab_mut("owner-tab");
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some("owner-tab".into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+
+    app.handle_event(agent_rebind_event("owner-tab", 1, "opencode"));
+    let request = match restart_rx
+        .try_recv()
+        .expect("agent rebind should retire the current transport")
+    {
+        AgentLifecycleRequest::RebindAgent(request) => request,
+        other => panic!("expected RebindAgent, got {other:?}"),
+    };
+
+    app.handle_event(AppEvent::AgentTransportRetired);
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Preflighting(pending)
+            if pending.agent_id == "opencode" && pending.generation == 1
+    ));
+
+    app.handle_event(AppEvent::AgentReconnectReady(request));
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Preflighting(pending)
+            if pending.agent_id == "opencode" && pending.generation == 1
+    ));
+
+    app.handle_event(AppEvent::AgentReconnectPreflightComplete {
+        operation_id: "op-1".into(),
+        generation: 1,
+        result: passed_preflight("opencode", "OpenCode"),
+    });
+    assert!(app.pending_acp_start);
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Idle
+    ));
+}
+
+#[test]
+fn agent_rebind_accepts_only_the_helpers_current_execution_source() {
+    let (mut app, mut restart_rx) = test_app_with_restart_rx();
+    app.owner_tab_id = Some("owner-tab".into());
+    app.window_id = Some("window-1".into());
+    app.tab_id = Some("owner-tab".into());
+    app.current_agent_id = "copilot".into();
+    app.current_agent_source = crate::agent_source::AgentSource::Wsl {
+        distro: "Ubuntu".into(),
+    };
+    app.tab_mut("owner-tab");
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        app.current_agent_source.clone(),
+        Some("/home/user/project".into()),
+        Some("owner-tab".into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+
+    app.handle_event(agent_rebind_event("owner-tab", 1, "claude"));
+    assert!(restart_rx.try_recv().is_err());
+    assert_eq!(app.current_agent_id, "copilot");
+
+    app.handle_event(agent_rebind_event_for_window(
+        "window-1",
+        "owner-tab",
+        1,
+        "claude",
+        &crate::agent_source::AgentSource::Wsl {
+            distro: "Debian".into(),
+        },
+    ));
+    assert!(restart_rx.try_recv().is_err());
+    assert_eq!(app.current_agent_id, "copilot");
+
+    app.handle_event(agent_rebind_event_for_window(
+        "window-1",
+        "owner-tab",
+        1,
+        "claude",
+        &crate::agent_source::AgentSource::Wsl {
+            distro: "Ubuntu".into(),
+        },
+    ));
+    let request = match restart_rx
+        .try_recv()
+        .expect("same-distro WSL rebind should reuse the helper")
+    {
+        AgentLifecycleRequest::RebindAgent(request) => request,
+        other => panic!("expected RebindAgent, got {other:?}"),
+    };
+    assert_eq!(
+        request.agent_source,
+        crate::agent_source::AgentSource::Wsl {
+            distro: "Ubuntu".into()
+        }
+    );
+    assert_eq!(app.current_agent_id, "claude");
+    assert_eq!(
+        app.deferred_acp
+            .as_ref()
+            .and_then(|params| params.source_cwd.as_deref()),
+        Some("/home/user/project")
+    );
+}
+
+#[test]
+fn settings_agent_rebind_missing_target_enters_install_setup_after_retirement() {
+    let (mut app, mut restart_rx) = test_app_with_restart_rx();
+    app.owner_tab_id = Some("owner-tab".into());
+    app.window_id = Some("window-1".into());
+    app.tab_id = Some("owner-tab".into());
+    app.current_agent_id = "claude".into();
+    app.tab_mut("owner-tab");
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "claude --acp".into(),
+        Some("claude".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some("owner-tab".into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+
+    app.handle_event(agent_rebind_event("owner-tab", 1, "copilot"));
+    let retired = match restart_rx
+        .try_recv()
+        .expect("the old transport should be retired before target preflight")
+    {
+        AgentLifecycleRequest::RebindAgent(request) => request,
+        other => panic!("expected RebindAgent, got {other:?}"),
+    };
+    assert_eq!(app.current_agent_id, "copilot");
+    assert!(!app.pending_acp_start);
+
+    app.handle_event(AppEvent::AgentReconnectReady(retired));
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Preflighting(_)
+    ));
+    assert!(!app.pending_acp_start);
+
+    app.handle_event(AppEvent::AgentReconnectPreflightComplete {
+        operation_id: "op-1".into(),
+        generation: 1,
+        result: PreflightResult {
+            agent_id: "copilot".into(),
+            display_name: "GitHub Copilot".into(),
+            cli_status: CheckStatus::Failed("Not found on PATH".into()),
+            cli_path: None,
+            auth_status: CheckStatus::Skipped,
+            install_hint: "Install GitHub Copilot".into(),
+            install_url: String::new(),
+            auth_hint: String::new(),
+        },
+    });
+
+    assert_eq!(app.current_agent_id, "copilot");
+    assert_eq!(app.mode, AppMode::Setup);
+    assert!(app.preflight_setup_active);
+    assert!(!app.pending_acp_start);
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Idle
+    ));
+    let setup = app
+        .setup
+        .as_ref()
+        .expect("missing target should show Setup");
+    assert_eq!(setup.reason, SetupReason::AgentMissing);
+    assert!(setup.options.iter().any(
+        |option| matches!(option, SetupOption::Install { agent_id, .. } if agent_id == "copilot")
+    ));
+}
+
+#[test]
+fn settings_agent_rebind_invalidates_completed_older_target_preflight() {
+    let (mut app, mut restart_rx) = test_app_with_restart_rx();
+    app.owner_tab_id = Some("owner-tab".into());
+    app.window_id = Some("window-1".into());
+    app.tab_id = Some("owner-tab".into());
+    app.current_agent_id = "copilot".into();
+    app.tab_mut("owner-tab");
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some("owner-tab".into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+
+    app.handle_event(agent_rebind_event("owner-tab", 1, "claude"));
+    let first = match restart_rx
+        .try_recv()
+        .expect("target A should retire the current transport")
+    {
+        AgentLifecycleRequest::RebindAgent(request) => request,
+        other => panic!("expected RebindAgent, got {other:?}"),
+    };
+    app.handle_event(AppEvent::AgentReconnectReady(first));
+    app.handle_event(AppEvent::AgentReconnectPreflightComplete {
+        operation_id: "op-1".into(),
+        generation: 1,
+        result: passed_preflight("claude", "Claude"),
+    });
+    assert!(app.pending_acp_start);
+
+    app.handle_event(agent_rebind_event("owner-tab", 2, "codex"));
+
+    assert!(
+        !app.pending_acp_start,
+        "accepting target B must invalidate target A's queued ACP startup"
+    );
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Disconnecting(request)
+            if request.agent_id == "codex" && request.generation == 2
+    ));
+    let second = match restart_rx
+        .try_recv()
+        .expect("target B must retire target A before its own preflight")
+    {
+        AgentLifecycleRequest::RebindAgent(request) => request,
+        other => panic!("expected RebindAgent, got {other:?}"),
+    };
+
+    app.handle_event(AppEvent::AgentReconnectPreflightComplete {
+        operation_id: "op-1".into(),
+        generation: 1,
+        result: passed_preflight("claude", "Claude"),
+    });
+    assert!(!app.pending_acp_start);
+    assert!(
+        matches!(
+            &app.agent_reconnect_state,
+            AgentReconnectState::Disconnecting(request)
+                if request.agent_id == "codex" && request.generation == 2
+        ),
+        "a stale target A completion must not consume target B",
+    );
+
+    app.handle_event(AppEvent::AgentReconnectReady(second));
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Preflighting(_)
+    ));
+    assert!(!app.pending_acp_start);
+
+    app.handle_event(AppEvent::AgentReconnectPreflightComplete {
+        operation_id: "op-2".into(),
+        generation: 2,
+        result: PreflightResult {
+            agent_id: "codex".into(),
+            display_name: "Codex".into(),
+            cli_status: CheckStatus::Failed("Not found on PATH".into()),
+            cli_path: None,
+            auth_status: CheckStatus::Skipped,
+            install_hint: "Install Codex".into(),
+            install_url: String::new(),
+            auth_hint: String::new(),
+        },
+    });
+
+    assert_eq!(app.current_agent_id, "codex");
+    assert_eq!(app.mode, AppMode::Setup);
+    assert_eq!(
+        app.setup.as_ref().map(|setup| &setup.reason),
+        Some(&SetupReason::AgentMissing)
+    );
+    assert!(app.preflight_setup_active);
+    assert!(!app.pending_acp_start);
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Idle
+    ));
+}
+
+#[test]
+fn model_follow_mode_tracks_valid_agent_rebinds() {
+    let (mut app, _restart_rx) = test_app_with_restart_rx();
+    app.owner_tab_id = Some("owner-tab".into());
+    app.window_id = Some("window-1".into());
+    app.tab_id = Some("owner-tab".into());
+    app.current_agent_id = "copilot".into();
+    app.tab_mut("owner-tab");
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some("owner-tab".into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+
+    for (generation, follows, expected) in [(1, true, true), (2, false, false), (1, true, false)] {
+        let mut event = agent_rebind_event("owner-tab", generation, "copilot");
+        if let AppEvent::WtEvent { params, .. } = &mut event {
+            params["follows_global_acp_model"] = json!(follows);
+        }
+        app.handle_event(event);
+        assert_eq!(
+            app.follows_global_acp_model, expected,
+            "a stale rebind must not restore an obsolete model-follow mode"
+        );
+    }
+}
+
+#[test]
+fn settings_model_rebind_preserves_custom_provider_selection() {
+    let (mut app, mut restart_rx) = test_app_with_restart_rx();
+    app.owner_tab_id = Some("owner-tab".into());
+    app.window_id = Some("window-1".into());
+    app.tab_id = Some("owner-tab".into());
+    app.current_agent_id = "copilot".into();
+    app.tab_mut("owner-tab");
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some("owner-tab".into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "rebind_agent".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "operation_id": "model-rebind",
+            "generation": 1,
+            "window_id": "window-1",
+            "tab_id": "owner-tab",
+            "agent_id": "copilot",
+            "agent_source": "host",
+            "acp_model": "",
+            "custom_model_selection": "custom:provider:model-a"
+        }),
+    });
+
+    let request = match restart_rx
+        .try_recv()
+        .expect("custom model selection should trigger a controlled reconnect")
+    {
+        AgentLifecycleRequest::RebindAgent(request) => request,
+        other => panic!("expected RebindAgent, got {other:?}"),
+    };
+    assert_eq!(
+        request.custom_model_selection.as_deref(),
+        Some("custom:provider:model-a")
+    );
+    assert_eq!(
+        app.deferred_acp
+            .as_ref()
+            .and_then(|params| params.custom_model_selection.as_deref()),
+        Some("custom:provider:model-a")
+    );
+}
+
+#[test]
+fn settings_agent_rebind_applies_resolved_yolo_before_new_session() {
+    let (mut app, mut restart_rx) = test_app_with_restart_rx();
+    app.owner_tab_id = Some("owner-tab".into());
+    app.window_id = Some("window-1".into());
+    app.tab_id = Some("owner-tab".into());
+    app.current_agent_id = "copilot".into();
+    app.tab_mut("owner-tab");
+    app.yolo_state.lock().unwrap().update_runtime(true, false);
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some("owner-tab".into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+
+    app.handle_event(agent_rebind_event_with_yolo(
+        "owner-tab",
+        1,
+        "claude",
+        false,
+    ));
+
+    assert!(
+        !app.yolo_state.lock().unwrap().automatic_target(),
+        "the rebind target must replace the old provider's inherited Yolo state before session/new"
+    );
+    assert!(matches!(
+        restart_rx.try_recv(),
+        Ok(AgentLifecycleRequest::RebindAgent(AgentReconnectRequest {
+            agent_id,
+            ..
+        })) if agent_id == "claude"
+    ));
+}
+
+#[test]
+fn settings_agent_rebind_yolo_target_is_generation_fenced_and_backward_compatible() {
+    let (mut app, mut restart_rx) = test_app_with_restart_rx();
+    app.owner_tab_id = Some("owner-tab".into());
+    app.window_id = Some("window-1".into());
+    app.tab_id = Some("owner-tab".into());
+    app.current_agent_id = "copilot".into();
+    app.tab_mut("owner-tab");
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some("owner-tab".into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+
+    app.handle_event(agent_rebind_event_with_yolo("owner-tab", 2, "claude", true));
+    assert!(app.yolo_state.lock().unwrap().automatic_target());
+    assert!(restart_rx.try_recv().is_ok());
+
+    app.handle_event(agent_rebind_event_with_yolo("owner-tab", 1, "codex", false));
+    assert!(
+        app.yolo_state.lock().unwrap().automatic_target(),
+        "a stale rebind must not replace the current Yolo target"
+    );
+
+    app.handle_event(agent_rebind_event_with_yolo(
+        "owner-tab",
+        3,
+        "gemini",
+        false,
+    ));
+    assert!(!app.yolo_state.lock().unwrap().automatic_target());
+
+    app.yolo_state.lock().unwrap().update_runtime(true, false);
+    app.handle_event(agent_rebind_event("owner-tab", 4, "copilot"));
+    assert!(
+        app.yolo_state.lock().unwrap().automatic_target(),
+        "an older host that omits Yolo fields must preserve the current setting"
+    );
+}
+
+#[test]
+fn settings_agent_rebind_prefers_automatic_yolo_target_over_legacy_field() {
+    let (mut app, mut restart_rx) = test_app_with_restart_rx();
+    app.owner_tab_id = Some("owner-tab".into());
+    app.window_id = Some("window-1".into());
+    app.tab_id = Some("owner-tab".into());
+    app.current_agent_id = "copilot".into();
+    app.tab_mut("owner-tab");
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some("owner-tab".into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+
+    let mut event = agent_rebind_event("owner-tab", 1, "claude");
+    if let AppEvent::WtEvent { params, .. } = &mut event {
+        params["automatic_yolo_target"] = json!(false);
+        params["yolo_enabled"] = json!(true);
+        params["yolo_policy_blocked"] = json!(false);
+    }
+    app.handle_event(event);
+
+    assert!(
+        !app.yolo_state.lock().unwrap().automatic_target(),
+        "the explicit automatic target must win over the legacy compatibility field"
+    );
+    assert!(restart_rx.try_recv().is_ok());
+}
+
+#[test]
+fn hot_config_prefers_automatic_yolo_target_and_accepts_legacy_field() {
+    let mut app = test_app();
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_config_changed".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "automatic_yolo_target": true,
+            "yolo_enabled": false,
+            "yolo_policy_blocked": false
+        }),
+    });
+    assert!(
+        app.yolo_state.lock().unwrap().automatic_target(),
+        "the explicit automatic target must win over the legacy field"
+    );
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_config_changed".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "yolo_enabled": false,
+            "yolo_policy_blocked": false
+        }),
+    });
+    assert!(
+        !app.yolo_state.lock().unwrap().automatic_target(),
+        "an older host's legacy field must remain supported"
+    );
+}
+
+#[test]
+fn settings_agent_rebind_ignores_stale_generation_and_converges_to_latest_target() {
+    let (mut app, mut restart_rx) = test_app_with_restart_rx();
+    app.owner_tab_id = Some("owner-tab".into());
+    app.window_id = Some("window-1".into());
+    app.tab_id = Some("owner-tab".into());
+    app.current_agent_id = "copilot".into();
+    app.tab_mut("owner-tab");
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some("owner-tab".into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+
+    app.handle_event(agent_rebind_event("owner-tab", 10, "claude"));
+    let first = match restart_rx
+        .try_recv()
+        .expect("first target should trigger transport retirement")
+    {
+        AgentLifecycleRequest::RebindAgent(request) => request,
+        other => panic!("expected RebindAgent, got {other:?}"),
+    };
+
+    app.handle_event(agent_rebind_event("owner-tab", 9, "codex"));
+    assert_eq!(app.current_agent_id, "claude");
+    assert!(restart_rx.try_recv().is_err());
+
+    app.handle_event(agent_rebind_event("owner-tab", 11, "gemini"));
+    assert_eq!(app.current_agent_id, "gemini");
+    assert!(restart_rx.try_recv().is_err());
+    assert_eq!(
+        app.deferred_acp
+            .as_ref()
+            .and_then(|params| params.agent_id.as_deref()),
+        Some("gemini")
+    );
+
+    app.handle_event(AppEvent::AgentReconnectReady(first));
+
+    assert!(!app.pending_acp_start);
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Preflighting(_)
+    ));
+    assert_eq!(
+        app.deferred_acp
+            .as_ref()
+            .and_then(|params| params.agent_id.as_deref()),
+        Some("gemini"),
+        "the reconnect must use the newest accepted Settings generation"
+    );
+
+    app.handle_event(AppEvent::AgentReconnectPreflightComplete {
+        operation_id: "op-11".into(),
+        generation: 11,
+        result: passed_preflight("gemini", "Gemini"),
+    });
+    assert!(app.pending_acp_start);
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Idle
+    ));
+
+    app.pending_acp_start = false;
+    app.handle_event(AppEvent::AgentReconnectPreflightComplete {
+        operation_id: "op-11".into(),
+        generation: 11,
+        result: passed_preflight("gemini", "Gemini"),
+    });
+    assert!(
+        !app.pending_acp_start,
+        "a duplicate target preflight must not start a second reconnect"
+    );
+
+    app.window_id = Some("window-2".into());
+    app.handle_event(agent_rebind_event_for_window(
+        "window-2",
+        "owner-tab",
+        1,
+        "codex",
+        &crate::agent_source::AgentSource::Host,
+    ));
+    assert_eq!(app.current_agent_id, "codex");
+    assert!(matches!(
+        restart_rx.try_recv(),
+        Ok(AgentLifecycleRequest::RebindAgent(AgentReconnectRequest {
+            window_id,
+            generation: 1,
+            ..
+        })) if window_id == "window-2"
+    ));
+
+    app.handle_event(agent_rebind_event("owner-tab", 12, "claude"));
+    assert_eq!(
+        app.current_agent_id, "codex",
+        "an event delayed from the helper's previous window must be ignored"
+    );
+}
+
+#[test]
+fn settings_model_updates_other_restored_panes_after_local_model_pick() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    for config_picker in [false, true] {
+        let mut panes = ["local-pane", "following-pane-a", "following-pane-b"].map(|tab_id| {
+            let (mut app, rx) = test_app_with_master_rx();
+            app.owner_tab_id = Some(tab_id.into());
+            app.tab_id = Some(tab_id.into());
+            app.window_id = Some("window-1".into());
+            app.current_agent_id = "copilot".into();
+            let session_id = format!("restored-{tab_id}");
+            app.current_tab_mut().loading_session = true;
+            app.current_tab_mut().loading_target_session_id = Some(session_id.clone());
+            app.handle_event(AppEvent::AgentConnected {
+                name: "Copilot".into(),
+                model: None,
+                version: None,
+                session_id: session_id.clone(),
+                available_models: Vec::new(),
+                current_model_id: None,
+                load_session_supported: true,
+                image_supported: false,
+                session_capabilities_ready: false,
+                telemetry_byok_binding: None,
+            });
+            app.handle_event(AppEvent::SessionAttached {
+                tab_id: tab_id.into(),
+                session_id,
+                prompt_id: None,
+                available_models: ["gpt-5.4", "gpt-5.5", "settings-model", "next-model"]
+                    .into_iter()
+                    .map(model_info)
+                    .collect(),
+                current_model_id: Some("gpt-5.4".into()),
+            });
+            (app, rx)
+        });
+        let (local, local_rx) = &mut panes[0];
+        if config_picker {
+            local.handle_event(AppEvent::SessionConfigSetCompleted {
+                session_id: "restored-local-pane".into(),
+                config_id: "model".into(),
+                value: "gpt-5.5".into(),
+                model_compat: true,
+            });
+        } else {
+            local.cmd_model("gpt-5.5".into());
+            let MasterExtRequest::SetSessionModel {
+                request_id,
+                session_id,
+                model,
+                pane_override,
+            } = local_rx.try_recv().expect("pane-local model request")
+            else {
+                panic!("expected SetSessionModel");
+            };
+            assert_eq!(session_id.unwrap().0.as_ref(), "restored-local-pane");
+            assert!(pane_override);
+            local.handle_event(AppEvent::ModelSetCompleted {
+                request_id,
+                session_id: "restored-local-pane".into(),
+                model,
+                pane_override,
+            });
+        }
+
+        for new_model in ["settings-model", "next-model"] {
+            for target in ["local-pane", "following-pane-a", "following-pane-b"] {
+                for (app, _) in &mut panes {
+                    app.handle_event(AppEvent::WtEvent {
+                        method: "agent_config_changed".into(),
+                        pane_id: String::new(),
+                        tab_id: Some(target.into()),
+                        params: json!({
+                            "window_id": "window-1",
+                            "tab_id": target,
+                            "target_agent_id": "copilot",
+                            "acp_model": new_model,
+                            "follows_global_acp_model": true
+                        }),
+                    });
+                }
+            }
+
+            for (index, (app, rx)) in panes.iter_mut().enumerate() {
+                if index == 0 {
+                    assert!(
+                        rx.try_recv().is_err(),
+                        "only the local model pick stays pinned"
+                    );
+                    assert_eq!(app.confirmed_model_display().as_deref(), Some("GPT-5.5"));
+                    continue;
+                }
+                let MasterExtRequest::SetSessionModel {
+                    request_id,
+                    session_id,
+                    model,
+                    pane_override,
+                } = rx.try_recv().expect("each other restored pane must update")
+                else {
+                    panic!("expected SetSessionModel");
+                };
+                let session_id = session_id.unwrap().to_string();
+                assert_eq!(
+                    Some(session_id.as_str()),
+                    app.current_tab().session_id.as_deref()
+                );
+                assert_eq!(model, new_model);
+                assert!(!pane_override);
+                assert!(
+                    rx.try_recv().is_err(),
+                    "another tab's event must not duplicate the update"
+                );
+                app.handle_event(AppEvent::ModelSetCompleted {
+                    request_id,
+                    session_id,
+                    model,
+                    pane_override,
+                });
+                assert_eq!(
+                    app.confirmed_model_display(),
+                    Some(new_model.to_uppercase())
+                );
+                assert!(app.current_tab().model_override.is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn model_follow_mode_requires_matching_tab_window_and_agent() {
+    let (mut app, mut rx) = test_app_with_master_rx();
+    app.owner_tab_id = Some("owner-tab".into());
+    app.tab_id = Some("owner-tab".into());
+    app.window_id = Some("window-1".into());
+    app.current_agent_id = "copilot".into();
+    app.current_tab_mut().session_id = Some("session-1".into());
+
+    for (window, tab, agent) in [
+        ("window-2", "owner-tab", "copilot"),
+        ("window-1", "other-tab", "copilot"),
+        ("window-1", "owner-tab", "claude"),
+        ("window-1", "", "copilot"),
+        ("", "owner-tab", "copilot"),
+    ] {
+        app.handle_event(AppEvent::WtEvent {
+            method: "agent_config_changed".into(),
+            pane_id: String::new(),
+            tab_id: None,
+            params: json!({
+                "window_id": window,
+                "tab_id": tab,
+                "target_agent_id": agent,
+                "acp_model": "new-model",
+                "follows_global_acp_model": true
+            }),
+        });
+        assert!(!app.follows_global_acp_model);
+        assert!(rx.try_recv().is_err());
+    }
+}
+
+#[test]
+fn global_model_hot_update_is_scoped_to_matching_global_followers() {
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.window_id = Some("window-1".into());
+    app.current_agent_id = "gemini".into();
+    app.follows_global_acp_model = true;
+    app.current_tab_mut().session_id = Some("gemini-session".into());
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        None,
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_config_changed".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: serde_json::json!({
+            "acp_model": "copilot-only-model",
+            "target_agent_id": "copilot"
+        }),
+    });
+    assert!(app.acp_model.is_none());
+    assert!(master_rx.try_recv().is_err());
+
+    app.current_agent_id = "copilot".into();
+    app.follows_global_acp_model = false;
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_config_changed".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: serde_json::json!({
+            "acp_model": "copilot-only-model",
+            "target_agent_id": "copilot"
+        }),
+    });
+    assert!(
+        app.acp_model.is_none(),
+        "a per-profile/per-tab pinned helper must not follow the global model"
+    );
+    assert!(master_rx.try_recv().is_err());
+
+    app.follows_global_acp_model = true;
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_config_changed".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: serde_json::json!({
+            "window_id": "window-2",
+            "acp_model": "wrong-window-model",
+            "target_agent_id": "copilot"
+        }),
+    });
+    assert!(
+        app.acp_model.is_none(),
+        "another window's settings event must be ignored"
+    );
+    assert!(master_rx.try_recv().is_err());
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_config_changed".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: serde_json::json!({
+            "window_id": "window-1",
+            "acp_model": "copilot-only-model",
+            "target_agent_id": "copilot"
+        }),
+    });
+    assert_eq!(app.acp_model.as_deref(), Some("copilot-only-model"));
+    assert_eq!(
+        app.deferred_acp
+            .as_ref()
+            .and_then(|params| params.acp_model.as_deref()),
+        Some("copilot-only-model"),
+        "a later transport reconnect must retain the hot-updated model"
+    );
+    match master_rx
+        .try_recv()
+        .expect("matching global-following helper should receive the model")
+    {
+        MasterExtRequest::SetSessionModel {
+            session_id,
+            model,
+            pane_override,
+            ..
+        } => {
+            assert_eq!(session_id.unwrap().0.to_string(), "gemini-session");
+            assert_eq!(model, "copilot-only-model");
+            assert!(!pane_override);
+        }
+        other => panic!("expected SetSessionModel, got {other:?}"),
+    }
+}
+
+#[test]
+fn custom_model_catalog_hot_update_rebuilds_picker_without_stale_rows() {
+    let mut app = test_app();
+    app.current_agent_id = "copilot".into();
+    app.handle_event(AppEvent::AgentConnected {
+        name: "Copilot".into(),
+        model: None,
+        version: None,
+        session_id: "sid-1".into(),
+        available_models: vec![model_info("cloud")],
+        current_model_id: Some("cloud".into()),
+        load_session_supported: false,
+        image_supported: false,
+        session_capabilities_ready: true,
+        telemetry_byok_binding: None,
+    });
+    app.set_custom_model_config(
+        vec![
+            CustomModelCatalogEntry {
+                selection_id: "custom:selected:model-a".into(),
+                provider_name: "Selected Provider".into(),
+                model_id: "model-a".into(),
+                name: "Selected Model".into(),
+                ..Default::default()
+            },
+            CustomModelCatalogEntry {
+                selection_id: "custom:old:model-b".into(),
+                provider_name: "Old Provider".into(),
+                model_id: "model-b".into(),
+                name: "Old Model".into(),
+                ..Default::default()
+            },
+        ],
+        Some("custom:selected:model-a".into()),
+    );
+    app.open_model_picker();
+    let stale_index = app.model_picker_models.len() - 1;
+    app.current_tab_mut().model_picker_selected = stale_index;
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_config_changed".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: serde_json::json!({
+            "custom_model_selection": "custom:selected:model-a",
+            "custom_models": [
+                {
+                    "selection_id": "custom:selected:model-a",
+                    "provider_id": "selected",
+                    "provider_name": "Selected Provider",
+                    "api_contract": "openai-compatible",
+                    "location": "cloud",
+                    "model_id": "model-a",
+                    "name": "Selected Model"
+                },
+                {
+                    "selection_id": "custom:new:model-c",
+                    "provider_id": "new",
+                    "provider_name": "Renamed Provider",
+                    "api_contract": "openai-compatible",
+                    "location": "local",
+                    "model_id": "model-c",
+                    "name": "Renamed Model"
+                }
+            ]
+        }),
+    });
+
+    assert_eq!(
+        app.custom_model_selection.as_deref(),
+        Some("custom:selected:model-a")
+    );
+    assert_eq!(
+        app.current_model_id.as_deref(),
+        Some("custom:selected:model-a")
+    );
+    assert!(app
+        .available_models
+        .iter()
+        .all(|model| model.id != "custom:old:model-b"));
+    assert!(app.available_models.iter().any(|model| {
+        model.id == "custom:new:model-c"
+            && model.name == "model-c (BYOK)"
+            && model.description.is_none()
+    }));
+    let new_provider = app
+        .custom_model_catalog
+        .iter()
+        .find(|model| model.selection_id == "custom:new:model-c")
+        .expect("hot update retains full provider metadata");
+    assert_eq!(new_provider.api_contract, "openai-compatible");
+    assert_eq!(new_provider.location, "local");
+    assert!(app.current_tab().model_picker_selected < app.model_picker_models.len());
+    assert_eq!(
+        app.model_picker_models[app.current_tab().model_picker_selected].id,
+        "custom:selected:model-a"
+    );
+}
+
+#[test]
+fn targeted_catalog_delivery_recomputes_stashed_helper_picker() {
+    let mut app = test_app();
+    app.current_agent_id = "copilot".into();
+    app.owner_tab_id = Some("tab-stashed".into());
+    app.current_tab_mut().pane_open = false;
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_config_changed".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: serde_json::json!({
+            "tab_id": "other-tab",
+            "target_agent_id": "copilot",
+            "cloud_models": [{"id":"ignored","name":"Ignored"}],
+            "custom_models": []
+        }),
+    });
+    assert!(app.available_models.is_empty());
+    assert!(!app.host_catalog_ready);
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_config_changed".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: serde_json::json!({
+            "tab_id": "tab-stashed",
+            "target_agent_id": "copilot",
+            "cloud_models": [{"id":"cloud","name":"Cloud"}],
+            "custom_model_selection": "custom:provider:byok",
+            "custom_models": [{
+                "selection_id": "custom:provider:byok",
+                "provider_id": "provider",
+                "provider_name": "Provider",
+                "api_contract": "openai-compatible",
+                "location": "cloud",
+                "model_id": "byok",
+                "name": "BYOK"
+            }]
+        }),
+    });
+
+    assert!(app.host_catalog_ready);
+    assert!(
+        !app.current_tab().pane_open,
+        "catalog delivery must not unstash the pane"
+    );
+    assert_eq!(
+        app.available_models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["cloud", "custom:provider:byok"]
+    );
+    assert_eq!(
+        app.current_model_id.as_deref(),
+        Some("custom:provider:byok")
+    );
+}
+
+#[test]
+fn custom_model_catalog_contract_parsing_normalizes_legacy_and_rejects_unsupported() {
+    let missing: Vec<CustomModelCatalogEntry> = serde_json::from_value(serde_json::json!([{
+        "selection_id": "custom:provider:model-a",
+        "model_id": "model-a"
+    }]))
+    .expect("legacy metadata without api_contract should remain valid");
+    assert_eq!(
+        missing[0].api_contract,
+        crate::custom_model_provider::CANONICAL_API_CONTRACT
+    );
+
+    let blank: Vec<CustomModelCatalogEntry> = serde_json::from_value(serde_json::json!([{
+        "selection_id": "custom:provider:model-a",
+        "api_contract": " \t ",
+        "model_id": "model-a"
+    }]))
+    .expect("blank legacy api_contract should normalize");
+    assert_eq!(
+        blank[0].api_contract,
+        crate::custom_model_provider::CANONICAL_API_CONTRACT
+    );
+
+    let unsupported = serde_json::from_value::<Vec<CustomModelCatalogEntry>>(serde_json::json!([{
+        "selection_id": "custom:provider:model-a",
+        "api_contract": "openai-responses",
+        "model_id": "model-a"
+    }]));
+    assert!(unsupported.is_err());
+
+    let padded = serde_json::from_value::<Vec<CustomModelCatalogEntry>>(serde_json::json!([{
+        "selection_id": "custom:provider:model-a",
+        "api_contract": " openai-compatible ",
+        "model_id": "model-a"
+    }]));
+    assert!(padded.is_err());
+}
+
+#[test]
+fn unsupported_custom_model_contract_cannot_be_selected() {
+    let mut app = test_app();
+    app.set_custom_model_config(
+        vec![CustomModelCatalogEntry {
+            selection_id: "custom:provider:model-a".into(),
+            api_contract: "openai-responses".into(),
+            model_id: "model-a".into(),
+            ..Default::default()
+        }],
+        Some("custom:provider:model-a".into()),
+    );
+
+    assert!(app.custom_model_catalog.is_empty());
+    assert!(app.custom_model_selection.is_none());
+    assert!(app.selected_custom_model_id().is_none());
+}
+
+#[test]
+fn same_agent_host_and_wsl_keep_host_catalogs_isolated() {
+    let connect = |app: &mut App| {
+        app.current_agent_id = "copilot".into();
+        app.handle_event(AppEvent::AgentConnected {
+            name: "Copilot".into(),
+            model: None,
+            version: None,
+            session_id: "sid".into(),
+            available_models: vec![model_info("agent-advertised")],
+            current_model_id: Some("agent-advertised".into()),
+            load_session_supported: false,
+            image_supported: false,
+            session_capabilities_ready: true,
+            telemetry_byok_binding: None,
+        });
+    };
+    let host_catalog = || AppEvent::WtEvent {
+        method: "agent_config_changed".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: serde_json::json!({
+            "target_agent_id": "copilot",
+            "cloud_models": [{"id":"host-cloud","name":"Host Cloud"}],
+            "custom_model_selection": "custom:provider:byok",
+            "custom_models": [{
+                "selection_id": "custom:provider:byok",
+                "provider_id": "provider",
+                "provider_name": "Provider",
+                "api_contract": "openai-compatible",
+                "location": "cloud",
+                "model_id": "byok",
+                "name": "BYOK"
+            }]
+        }),
+    };
+
+    let mut host = test_app();
+    host.current_agent_source = crate::agent_source::AgentSource::Host;
+    connect(&mut host);
+    host.handle_event(host_catalog());
+    assert_eq!(
+        host.available_models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["host-cloud", "agent-advertised", "custom:provider:byok"]
+    );
+    assert!(host.host_catalog_ready);
+    host.handle_event(AppEvent::CloudModelsAvailable(vec![AcpModelInfo {
+        id: "probe-cloud".into(),
+        name: "Probe Cloud".into(),
+        description: None,
+    }]));
+    assert_eq!(
+        host.available_models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["probe-cloud", "agent-advertised", "custom:provider:byok"],
+        "the asynchronous clean probe must recompute cloud+agent+BYOK rows"
+    );
+
+    let mut wsl = test_app();
+    wsl.current_agent_source = crate::agent_source::AgentSource::Wsl {
+        distro: "Ubuntu".into(),
+    };
+    connect(&mut wsl);
+    wsl.handle_event(host_catalog());
+    wsl.handle_event(AppEvent::CloudModelsAvailable(vec![AcpModelInfo {
+        id: "probe-cloud".into(),
+        name: "Probe Cloud".into(),
+        description: None,
+    }]));
+    assert_eq!(
+        wsl.available_models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["agent-advertised"],
+        "the WSL helper for the same agent must retain only its own ACP catalog"
+    );
+    assert!(wsl.cloud_models.is_empty());
+    assert!(wsl.custom_model_catalog.is_empty());
+    assert!(wsl.custom_model_selection.is_none());
+    assert!(!wsl.host_catalog_ready);
+}
+
+#[test]
+fn custom_model_hot_update_is_ignored_for_unsupported_profile_backend() {
+    let mut app = test_app();
+    app.current_agent_id = "claude".into();
+    app.handle_event(AppEvent::AgentConnected {
+        name: "Claude".into(),
+        model: None,
+        version: None,
+        session_id: "sid-1".into(),
+        available_models: vec![model_info("cloud")],
+        current_model_id: Some("cloud".into()),
+        load_session_supported: false,
+        image_supported: false,
+        session_capabilities_ready: true,
+        telemetry_byok_binding: None,
+    });
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_config_changed".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: serde_json::json!({
+            "custom_model_selection": "custom:provider:model",
+            "custom_models": [{
+                "selection_id": "custom:provider:model",
+                "model_id": "model"
+            }]
+        }),
+    });
+
+    assert!(app.custom_model_catalog.is_empty());
+    assert!(app.custom_model_selection.is_none());
+    assert_eq!(
+        app.available_models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["cloud"]
+    );
+}
+
+#[test]
+fn custom_model_hot_update_rejects_credential_fields() {
+    let mut app = test_app();
+    app.current_agent_id = "copilot".into();
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_config_changed".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: serde_json::json!({
+            "custom_model_selection": "custom:provider:model",
+            "custom_models": [{
+                "selection_id": "custom:provider:model",
+                "model_id": "model",
+                "credential_id": "must-not-enter-helper-contract"
+            }]
+        }),
+    });
+
+    assert!(app.custom_model_catalog.is_empty());
+    assert!(app.custom_model_selection.is_none());
+}
+
+/// `/model` with an unrecognized argument warns and changes nothing.
+#[test]
+fn model_pick_rejects_unknown_model() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.available_models = vec![model_info("known")];
+    app.current_tab_mut().session_id = Some("sid-1".into());
+
+    app.cmd_model("nope".into());
+
+    assert!(
+        app.current_tab().model_override.is_none(),
+        "an unknown model must not set an override"
+    );
+    assert!(
+        master_rx.try_recv().is_err(),
+        "an unknown model must not emit a set_session_model"
+    );
+}
+
+/// MVP sessions origin filter: with `ShellOnly`, agent-pane rows must
+/// be hidden from `agents_rows_for_tab` (the cursor / Enter
+/// dispatch source of truth) — *not just* from `agents_view::render`.
+/// A bug where render filtered but `agents_rows_for_tab` didn't
+/// would let Enter on visible row N activate hidden row M.
+#[test]
+fn shell_only_filter_hides_agent_pane_rows_from_cursor_model() {
+    use crate::agent_sessions::{OriginFilter, SessionOrigin};
+    let mut app = test_app();
+    app.sessions_origin_filter = OriginFilter::ShellOnly;
+    // Snapshot path: master pushed two rows — one tagged
+    // AgentPane (Class A, hidden under ShellOnly), one tagged
+    // Unknown (Class B, visible).
+    let mut pane = session_info_for_test("class-a");
+    pane.origin = Some(SessionOrigin::AgentPane);
+    pane.last_activity_at_ms = Some(200);
+    let mut shell = session_info_for_test("class-b");
+    shell.origin = Some(SessionOrigin::Unknown);
+    shell.last_activity_at_ms = Some(100);
+    app.current_tab_mut().agents_view.snapshot = Some(vec![pane, shell]);
+
+    let rows = app.agents_rows_for_tab(DEFAULT_TAB_ID);
+    assert_eq!(rows.len(), 1, "only the Class B row is visible: {rows:?}");
+    assert_eq!(rows[0].key, "class-b");
+
+    // Flip to All — both rows must reappear so the un-MVP toggle
+    // brings agent-pane rows back without any other code change.
+    app.sessions_origin_filter = OriginFilter::All;
+    let rows = app.agents_rows_for_tab(DEFAULT_TAB_ID);
+    assert_eq!(rows.len(), 2);
+
+    // AgentPaneOnly is the inverse — only Class A surfaces.
+    app.sessions_origin_filter = OriginFilter::AgentPaneOnly;
+    let rows = app.agents_rows_for_tab(DEFAULT_TAB_ID);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].key, "class-a");
+}
+
+/// Registry path (no snapshot): the same filter must apply when
+/// `agents_rows_for_tab` falls back to `agent_sessions` directly.
+/// Without this, helpers that haven't received a master snapshot
+/// yet would show every row regardless of the MVP filter.
+#[test]
+fn shell_only_filter_applies_to_registry_fallback_path() {
+    use crate::agent_sessions::{CliSource, OriginFilter, SessionEvent, SessionOrigin};
+    use std::path::PathBuf;
+    let mut app = test_app();
+    app.sessions_origin_filter = OriginFilter::ShellOnly;
+    // No snapshot primed — `agents_rows_for_tab` goes through
+    // `iter_sorted_with_filters` on the registry.
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: "shell-key".into(),
+        cli_source: CliSource::Claude,
+        pane_session_id: "00000000-0000-0000-0000-00000000aaaa".into(),
+        cwd: PathBuf::from("/x"),
+        title: "shell".into(),
+    });
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: "pane-key".into(),
+        cli_source: CliSource::Claude,
+        pane_session_id: "00000000-0000-0000-0000-00000000bbbb".into(),
+        cwd: PathBuf::from("/x"),
+        title: "pane".into(),
+    });
+    app.agent_sessions
+        .set_origin("pane-key", SessionOrigin::AgentPane);
+
+    let rows = app.agents_rows_for_tab(DEFAULT_TAB_ID);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].key, "shell-key");
+}
+
+/// A session view lists only rows from its own pane's execution source.
+///
+/// Host Copilot, Copilot in WSL Debian, and Copilot in WSL Ubuntu all report
+/// `CliSource::Copilot`, so before this every Copilot pane rendered one merged
+/// list — including rows whose transcripts live on another filesystem and which
+/// that pane's CLI cannot resume.
+#[test]
+fn sessions_view_lists_only_the_panes_own_execution_source() {
+    use crate::agent_sessions::{OriginFilter, SessionLocation};
+
+    let host_row = {
+        let mut info = session_info_for_test("host-row");
+        info.origin = Some(crate::agent_sessions::SessionOrigin::Unknown);
+        info.location = SessionLocation::Host;
+        info
+    };
+    let ubuntu_row = {
+        let mut info = session_info_for_test("ubuntu-row");
+        info.origin = Some(crate::agent_sessions::SessionOrigin::Unknown);
+        info.location = SessionLocation::Wsl {
+            distro: "Ubuntu".into(),
+        };
+        info
+    };
+    let debian_row = {
+        let mut info = session_info_for_test("debian-row");
+        info.origin = Some(crate::agent_sessions::SessionOrigin::Unknown);
+        info.location = SessionLocation::Wsl {
+            distro: "Debian".into(),
+        };
+        info
+    };
+    let snapshot = vec![host_row, ubuntu_row, debian_row];
+
+    let keys_for = |source: crate::agent_source::AgentSource| {
+        let mut app = test_app();
+        app.sessions_origin_filter = OriginFilter::All;
+        app.current_agent_source = source;
+        app.current_tab_mut().current_view = View::Agents;
+        app.current_tab_mut().agents_view.snapshot = Some(snapshot.clone());
+        app.agents_rows_for_tab(DEFAULT_TAB_ID)
+            .into_iter()
+            .map(|r| r.key)
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        keys_for(crate::agent_source::AgentSource::Host),
+        vec!["host-row".to_string()]
+    );
+    assert_eq!(
+        keys_for(crate::agent_source::AgentSource::Wsl {
+            distro: "Ubuntu".into()
+        }),
+        vec!["ubuntu-row".to_string()]
+    );
+    assert_eq!(
+        keys_for(crate::agent_source::AgentSource::Wsl {
+            distro: "Debian".into()
+        }),
+        vec!["debian-row".to_string()]
+    );
+}
+
+/// The PRODUCTION snapshot path (master pushed `sessions/list` response
+/// into `agents_view.snapshot`) must preserve the `Wsl` location in every
+/// `AgentSession` produced by `agents_rows_for_tab`.
+///
+/// This is the regression test that would have caught the original bug:
+/// `session_info_to_agent_session` hardcoded `location: Host`, so WSL
+/// rows crossing the master→helper boundary silently lost their distro
+/// stamp.  The fix carries `location` through `SessionInfo`; this test
+/// guards that fix forever.
+///
+/// The pane is a WSL pane because a session view only lists rows from its
+/// own execution source — the distro stamp is exactly what the filter keys
+/// on, so a host pane would (correctly) render nothing here.
+#[test]
+fn agents_rows_snapshot_preserves_wsl_location() {
+    use crate::agent_sessions::{OriginFilter, SessionLocation};
+
+    let mut app = test_app();
+    app.current_agent_source = crate::agent_source::AgentSource::Wsl {
+        distro: "Ubuntu".into(),
+    };
+    // Use `All` to bypass the MVP ShellOnly filter — we want to confirm
+    // location preservation regardless of origin filtering.
+    app.sessions_origin_filter = OriginFilter::All;
+
+    let mut info = session_info_for_test("wsl-1");
+    info.origin = Some(crate::agent_sessions::SessionOrigin::Unknown);
+    info.location = SessionLocation::Wsl {
+        distro: "Ubuntu".into(),
+    };
+
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_view.snapshot = Some(vec![info]);
+
+    let rows = app.agents_rows_for_tab(DEFAULT_TAB_ID);
+    assert_eq!(rows.len(), 1, "expected one row; got: {rows:?}");
+    assert!(
+        rows[0].location.is_wsl(),
+        "snapshot path must preserve WSL location; got: {:?}",
+        rows[0].location
+    );
+    assert_eq!(
+        rows[0].location,
+        SessionLocation::Wsl {
+            distro: "Ubuntu".into()
+        },
+        "distro name must round-trip through session_info_to_agent_session"
+    );
+}
+
+/// End-to-end render proof: a WSL `SessionInfo` in the `/sessions`
+/// snapshot must actually paint its distro on screen.
+/// `agents_rows_snapshot_preserves_wsl_location` proves the data path and
+/// `cli_suffix_appends_the_wsl_distro` proves the suffix builder; this closes
+/// the loop through `crate::ui::render` so a regression in
+/// `agents_view::render`'s own `session_info_to_agent_session` conversion (a
+/// *second* call site, separate from `agents_rows_for_tab`) can't silently
+/// drop it.
+#[test]
+fn render_sessions_view_paints_wsl_distro_tag() {
+    use crate::agent_sessions::{OriginFilter, SessionLocation};
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_agent_source = crate::agent_source::AgentSource::Wsl {
+        distro: "Ubuntu".into(),
+    };
+    app.sessions_origin_filter = OriginFilter::All;
+
+    let mut info = session_info_for_test("wsl-render-1");
+    info.title = Some("hack on wsl".into());
+    info.origin = Some(crate::agent_sessions::SessionOrigin::Unknown);
+    info.location = SessionLocation::Wsl {
+        distro: "Ubuntu".into(),
+    };
+
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_view.snapshot = Some(vec![info]);
+    // Opening the view for real selects row 0 (`toggle_agents_view`); this test
+    // installs the snapshot directly, so select it here — the distro rides the
+    // CLI suffix, which only surfaces on the selected or active row.
+    app.current_tab_mut().agents_list_state.select(Some(0));
+
+    let text = render_to_text(&mut app, 80, 24);
+    assert!(
+        // `session_info_for_test` reports Claude; the distro must ride the same
+        // suffix, right after the provider.
+        text.contains("· claude · Ubuntu"),
+        "the /sessions view must paint the WSL distro beside the CLI; rendered:\n{text}"
+    );
+}
+
+/// `resolve_sessions_origin_filter` reads the `WTA_SESSIONS_SHOW_AGENT_PANE`
+/// env var. With it unset (or 0/false) the MVP default
+/// (`ShellOnly`) wins; with it set to a truthy value we flip to
+/// `All` so a single debug helper can see everything without a
+/// rebuild.
+///
+/// Env vars are process-global, so this test serializes via the
+/// `WTA_SESSIONS_SHOW_AGENT_PANE_TEST_LOCK` mutex shared with any other
+/// future test that touches the same var.
+#[test]
+fn resolve_sessions_origin_filter_respects_env_override() {
+    use crate::agent_sessions::OriginFilter;
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    std::env::remove_var("WTA_SESSIONS_SHOW_AGENT_PANE");
+    assert_eq!(
+        crate::app::resolve_sessions_origin_filter(),
+        MVP_SESSIONS_ORIGIN_FILTER
+    );
+    assert_eq!(MVP_SESSIONS_ORIGIN_FILTER, OriginFilter::ShellOnly);
+
+    std::env::set_var("WTA_SESSIONS_SHOW_AGENT_PANE", "1");
+    assert_eq!(
+        crate::app::resolve_sessions_origin_filter(),
+        OriginFilter::All
+    );
+
+    std::env::set_var("WTA_SESSIONS_SHOW_AGENT_PANE", "true");
+    assert_eq!(
+        crate::app::resolve_sessions_origin_filter(),
+        OriginFilter::All
+    );
+
+    std::env::set_var("WTA_SESSIONS_SHOW_AGENT_PANE", "0");
+    assert_eq!(
+        crate::app::resolve_sessions_origin_filter(),
+        MVP_SESSIONS_ORIGIN_FILTER
+    );
+
+    std::env::remove_var("WTA_SESSIONS_SHOW_AGENT_PANE");
+}
+
+#[test]
+fn snapshot_refetch_preserves_focused_sid() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.open_agents_view_for_tab(DEFAULT_TAB_ID.to_string());
+    let first_req = match master_rx.try_recv().unwrap() {
+        crate::protocol::acp::client::MasterExtRequest::SessionsList { request_id, .. } => {
+            request_id
+        }
+        other => panic!("expected SessionsList, got {other:?}"),
+    };
+    app.handle_event(AppEvent::AgentsSnapshotLoaded {
+        request_id: first_req,
+        sessions: vec![
+            session_info_for_test("a"),
+            session_info_for_test("b"),
+            session_info_for_test("c"),
+        ],
+    });
+    app.current_tab_mut().agents_list_state.select(Some(1));
+    app.current_tab_mut().agents_view.focused_sid =
+        Some(agent_client_protocol::schema::v1::SessionId::new("b"));
+    app.handle_event(AppEvent::SessionsChanged);
+    let second_req = match master_rx.try_recv().unwrap() {
+        crate::protocol::acp::client::MasterExtRequest::SessionsList { request_id, .. } => {
+            request_id
+        }
+        other => panic!("expected SessionsList, got {other:?}"),
+    };
+    app.handle_event(AppEvent::AgentsSnapshotLoaded {
+        request_id: second_req,
+        sessions: vec![
+            session_info_for_test("c"),
+            session_info_for_test("a"),
+            session_info_for_test("b"),
+        ],
+    });
+    assert_eq!(app.current_tab().agents_list_state.selected(), Some(2));
+    assert_eq!(
+        app.current_tab()
+            .agents_view
+            .focused_sid
+            .as_ref()
+            .map(|s| s.0.as_ref()),
+        Some("b")
+    );
+}
+
+#[test]
+fn sessions_changed_coalesces_rapid_pushes() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_view.snapshot = Some(Vec::new());
+    for _ in 0..100 {
+        app.handle_event(AppEvent::SessionsChanged);
+    }
+    let first_req = match master_rx.try_recv().expect("one in-flight refetch") {
+        crate::protocol::acp::client::MasterExtRequest::SessionsList { request_id, .. } => {
+            request_id
+        }
+        other => panic!("expected SessionsList, got {other:?}"),
+    };
+    assert!(
+        master_rx.try_recv().is_err(),
+        "rapid pushes coalesce while in flight"
+    );
+    assert!(app.current_tab().agents_view.refetch_in_flight);
+    assert!(app.current_tab().agents_view.dirty);
+    app.handle_event(AppEvent::AgentsSnapshotLoaded {
+        request_id: first_req,
+        sessions: Vec::new(),
+    });
+    match master_rx.try_recv().expect("dirty trailing refetch") {
+        crate::protocol::acp::client::MasterExtRequest::SessionsList { .. } => {}
+        other => panic!("expected SessionsList, got {other:?}"),
+    }
+    assert!(
+        master_rx.try_recv().is_err(),
+        "at most one trailing refetch"
+    );
+}
+
+/// Failure / timeout path must unblock `refetch_in_flight` so the
+/// next `SessionsChanged` (from a broadcast or the 5s tick) can
+/// retry, while keeping the existing snapshot rendered. Without
+/// this, an `ext_method` future that never resolves (the ACP-0.10
+/// cancellation-safety bug) would freeze the view forever.
+#[test]
+fn agents_snapshot_failed_unblocks_refetch_without_dropping_snapshot() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.open_agents_view_for_tab(DEFAULT_TAB_ID.to_string());
+    let first_req = match master_rx.try_recv().unwrap() {
+        crate::protocol::acp::client::MasterExtRequest::SessionsList { request_id, .. } => {
+            request_id
+        }
+        other => panic!("expected SessionsList, got {other:?}"),
+    };
+    // Land a real snapshot first so we can assert it is preserved
+    // across the subsequent failure.
+    app.handle_event(AppEvent::AgentsSnapshotLoaded {
+        request_id: first_req,
+        sessions: vec![session_info_for_test("a"), session_info_for_test("b")],
+    });
+    assert!(!app.current_tab().agents_view.refetch_in_flight);
+    let before_len = app
+        .current_tab()
+        .agents_view
+        .snapshot
+        .as_ref()
+        .map(|v| v.len())
+        .unwrap_or(0);
+    assert_eq!(before_len, 2);
+
+    // Kick a second refetch and report it as failed.
+    app.handle_event(AppEvent::SessionsChanged);
+    let second_req = match master_rx.try_recv().expect("second refetch sent") {
+        crate::protocol::acp::client::MasterExtRequest::SessionsList { request_id, .. } => {
+            request_id
+        }
+        other => panic!("expected SessionsList, got {other:?}"),
+    };
+    assert!(app.current_tab().agents_view.refetch_in_flight);
+    app.handle_event(AppEvent::AgentsSnapshotFailed {
+        request_id: second_req,
+    });
+
+    // refetch_in_flight must clear; snapshot must NOT be wiped.
+    assert!(
+        !app.current_tab().agents_view.refetch_in_flight,
+        "failure path must unblock the gate"
+    );
+    let after_len = app
+        .current_tab()
+        .agents_view
+        .snapshot
+        .as_ref()
+        .map(|v| v.len())
+        .unwrap_or(0);
+    assert_eq!(
+        after_len, 2,
+        "failure path must not overwrite the existing snapshot"
+    );
+    assert!(
+        master_rx.try_recv().is_err(),
+        "no spurious immediate retry without dirty coalescing"
+    );
+}
+
+/// If pushes arrive while the in-flight `sessions/list` is doomed
+/// to fail, the trailing-refetch behaviour must still fire on
+/// `AgentsSnapshotFailed` — otherwise the user would have to wait
+/// for the next 5s tick after every failure even when state has
+/// already changed since the request went out.
+#[test]
+fn agents_snapshot_failed_fires_dirty_trailing_refetch() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.open_agents_view_for_tab(DEFAULT_TAB_ID.to_string());
+    let req_id = match master_rx.try_recv().unwrap() {
+        crate::protocol::acp::client::MasterExtRequest::SessionsList { request_id, .. } => {
+            request_id
+        }
+        other => panic!("expected SessionsList, got {other:?}"),
+    };
+    // While the request is in-flight, more pushes arrive and
+    // coalesce into `dirty=true`.
+    for _ in 0..5 {
+        app.handle_event(AppEvent::SessionsChanged);
+    }
+    assert!(app.current_tab().agents_view.dirty);
+    assert!(
+        master_rx.try_recv().is_err(),
+        "additional pushes must coalesce while in flight"
+    );
+
+    app.handle_event(AppEvent::AgentsSnapshotFailed { request_id: req_id });
+    match master_rx
+        .try_recv()
+        .expect("dirty trailing refetch after failure")
+    {
+        crate::protocol::acp::client::MasterExtRequest::SessionsList { .. } => {}
+        other => panic!("expected SessionsList, got {other:?}"),
+    }
+    assert!(app.current_tab().agents_view.refetch_in_flight);
+    assert!(!app.current_tab().agents_view.dirty);
+}
+
+/// `AgentsSnapshotFailed` for a stale `request_id` (e.g. arrives
+/// after the tab was closed and reopened) must be a no-op — it
+/// must not clobber a fresh in-flight refetch's
+/// `refetch_in_flight=true` flag.
+#[test]
+fn agents_snapshot_failed_ignores_stale_request_id() {
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    app.open_agents_view_for_tab(DEFAULT_TAB_ID.to_string());
+    let _stale = match master_rx.try_recv().unwrap() {
+        crate::protocol::acp::client::MasterExtRequest::SessionsList { request_id, .. } => {
+            request_id
+        }
+        other => panic!("expected SessionsList, got {other:?}"),
+    };
+    // Resolve the first request, then kick another so latest_request_id
+    // moves on.
+    app.handle_event(AppEvent::AgentsSnapshotLoaded {
+        request_id: _stale,
+        sessions: vec![session_info_for_test("a")],
+    });
+    app.handle_event(AppEvent::SessionsChanged);
+    let _fresh = match master_rx.try_recv().unwrap() {
+        crate::protocol::acp::client::MasterExtRequest::SessionsList { request_id, .. } => {
+            request_id
+        }
+        other => panic!("expected SessionsList, got {other:?}"),
+    };
+    assert!(app.current_tab().agents_view.refetch_in_flight);
+
+    // A stale failure must NOT touch the fresh in-flight state.
+    app.handle_event(AppEvent::AgentsSnapshotFailed { request_id: _stale });
+    assert!(
+        app.current_tab().agents_view.refetch_in_flight,
+        "stale failure must not clear the fresh in-flight gate"
+    );
+}
+
+/// A resume drives its own indicator, so the shimmer has to keep ticking for
+/// the whole `session/load` — including the part that runs once the connection
+/// is established and the per-tab turn counter has gone idle.
+#[test]
+fn resume_in_flight_keeps_the_activity_shimmer_ticking() {
+    let (mut app, _master_rx) = test_app_with_master_rx();
+    app.state = ConnectionState::Connected;
+    assert!(!app.resume_in_flight());
+
+    let before = app.activity_frame;
+    app.handle_event(AppEvent::Tick);
+    assert_eq!(
+        app.activity_frame, before,
+        "a connected, idle pane has nothing to animate"
+    );
+    assert!(
+        !app.event_requires_redraw(&AppEvent::Tick),
+        "an idle pane must not repaint on every tick"
+    );
+
+    app.current_tab_mut().loading_session = true;
+    assert!(app.resume_in_flight());
+
+    let before = app.activity_frame;
+    app.handle_event(AppEvent::Tick);
+    assert_ne!(
+        app.activity_frame, before,
+        "the resuming indicator must keep animating while session/load runs"
+    );
+    // Advancing the counter is useless on its own: a tick that does not ask
+    // for a repaint leaves the shimmer frozen on screen.
+    assert!(
+        app.event_requires_redraw(&AppEvent::Tick),
+        "a resuming pane must repaint so the shimmer actually moves"
+    );
+    assert!(app.has_activity_indicator());
+}
+
+/// The loading-shimmer signal: true only while the agents view is open
+/// and waiting on its first `session/list` reply (empty placeholder
+/// snapshot + in-flight refetch). Replaces the removed on-disk-scan
+/// `HistoryLoadState::Loading` signal.
+#[test]
+fn agents_view_awaiting_snapshot_tracks_first_session_list() {
+    let (mut app, _master_rx) = test_app_with_master_rx();
+    // Chat view → never awaiting (the shimmer is agents-view only).
+    assert!(!app.agents_view_awaiting_snapshot());
+
+    // Opening the agents view primes an empty placeholder snapshot and an
+    // in-flight refetch — exactly the loading-shimmer window.
+    app.open_agents_view_for_tab(DEFAULT_TAB_ID.to_string());
+    assert!(
+        app.agents_view_awaiting_snapshot(),
+        "awaiting the first session/list snapshot right after open"
+    );
+
+    // A non-empty snapshot (master replied with rows) ends the awaiting
+    // state even while a follow-up refetch is in flight.
+    app.current_tab_mut().agents_view.snapshot = Some(vec![session_info_for_test("a")]);
+    assert!(!app.agents_view_awaiting_snapshot());
+
+    // An empty reply with the refetch finished is the genuine empty
+    // state, not loading.
+    app.current_tab_mut().agents_view.snapshot = Some(Vec::new());
+    app.current_tab_mut().agents_view.refetch_in_flight = false;
+    assert!(!app.agents_view_awaiting_snapshot());
+}
+
+#[test]
+fn agents_view_loading_shows_during_f5_rescan() {
+    let (mut app, _master_rx) = test_app_with_master_rx();
+    app.open_agents_view_for_tab(DEFAULT_TAB_ID.to_string());
+    // First snapshot landed: rows present, fetch settled — not loading.
+    app.current_tab_mut().agents_view.snapshot = Some(vec![session_info_for_test("a")]);
+    app.current_tab_mut().agents_view.refetch_in_flight = false;
+    assert!(
+        !app.agents_view_awaiting_snapshot(),
+        "a settled list is not loading"
+    );
+
+    // F5 dispatches a rescan: the loading shimmer must show even though the
+    // list already has rows, so the refresh is visible.
+    app.current_tab_mut().agents_view.pending_rescan = true;
+    app.schedule_agents_refetch_for_tab(DEFAULT_TAB_ID);
+    assert!(
+        app.agents_view_awaiting_snapshot(),
+        "F5 rescan must show the loading shimmer even with rows present"
+    );
+
+    // The rescan response clears it back to the settled list.
+    let rid = app
+        .current_tab()
+        .agents_view
+        .latest_request_id
+        .expect("a request was dispatched");
+    app.handle_agents_snapshot_loaded(rid, vec![session_info_for_test("a")]);
+    assert!(
+        !app.agents_view_awaiting_snapshot(),
+        "loading clears once the rescan response lands"
+    );
+}
+
+fn session_info_for_test(id: &str) -> crate::session_registry::SessionInfo {
+    let mut info = crate::session_registry::SessionInfo::new(
+        agent_client_protocol::schema::v1::SessionId::new(id),
+        std::path::PathBuf::from(format!("/repo/{id}")),
+    );
+    info.title = Some(id.to_string());
+    info.status = Some(crate::agent_sessions::AgentStatus::Idle);
+    info.cli_source = Some(crate::agent_sessions::CliSource::Claude);
+    info.provider_id = Some("claude".to_string());
+    info.location = crate::agent_sessions::SessionLocation::Host;
+    info.last_activity_at_ms = Some(1);
+    info
+}
+
+// ─── agent session view: Enter dispatch ────────────────────────────────────
+
+#[test]
+fn enter_on_live_row_dispatches_focus_command() {
+    use crate::agent_sessions::{CliSource, SessionEvent};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+    let mut app = test_app();
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: "a".into(),
+        cli_source: CliSource::Claude,
+        pane_session_id: "00000000-0000-0000-0000-0000000000aa".into(),
+        cwd: PathBuf::from("/x"),
+        title: "t".into(),
+    });
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_list_state.select(Some(0));
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let cmd = app
+        .last_dispatched_command_for_test()
+        .expect("a command was dispatched");
+    assert_eq!(cmd.kind, DispatchedCommandKind::FocusPane);
+    assert_eq!(cmd.session_id.as_deref(), Some("a"));
+}
+
+// F5 in the session-management view refetches the session list (footer
+// hint: "F5 to refresh"). When no fetch is in flight it dispatches a
+// fresh sessions/list request to master.
+#[test]
+fn f5_in_session_view_refetches_sessions() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (mut app, mut master_rx) = test_app_with_master_rx();
+    let tab_id = app.active_tab_key().to_string();
+    app.open_agents_view_for_tab(tab_id);
+
+    // The open-time refetch must be snapshot-only (no disk rescan).
+    match master_rx.try_recv().expect("open requests sessions/list") {
+        crate::protocol::acp::client::MasterExtRequest::SessionsList { rescan, .. } => {
+            assert!(!rescan, "view-open refetch must not rescan");
+        }
+        other => panic!("expected SessionsList, got {other:?}"),
+    }
+    // Clear the in-flight flag so the F5 refetch dispatches fresh.
+    app.current_tab_mut().agents_view.refetch_in_flight = false;
+    app.current_tab_mut().agents_view.search_query = "active search".into();
+    app.current_tab_mut().agents_view.search_focused = true;
+
+    app.handle_key(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE));
+
+    match master_rx.try_recv().expect("F5 must request sessions/list") {
+        crate::protocol::acp::client::MasterExtRequest::SessionsList { rescan, .. } => {
+            assert!(rescan, "F5 must request a master-side disk rescan");
+        }
+        other => panic!("expected SessionsList, got {other:?}"),
+    }
+    assert_eq!(app.current_tab().agents_view.search_query, "active search");
+    assert!(app.current_tab().agents_view.search_focused);
+}
+
+#[test]
+fn session_search_filters_navigation_and_enter_dispatch() {
+    use crate::agent_sessions::SessionOrigin;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    app.current_tab_mut().current_view = View::Agents;
+
+    let mut title_match = session_info_for_test("title-match");
+    title_match.title = Some("PowerShell repair".into());
+    title_match.cwd = std::path::PathBuf::from(r"C:\Windows");
+    title_match.pane_session_id = Some("00000000-0000-0000-0000-0000000000a1".into());
+    title_match.origin = Some(SessionOrigin::Unknown);
+    title_match.last_activity_at_ms = Some(300);
+
+    let mut unrelated = session_info_for_test("unrelated");
+    unrelated.title = Some("fix the build".into());
+    unrelated.cwd = std::path::PathBuf::from(r"C:\Windows");
+    unrelated.pane_session_id = Some("00000000-0000-0000-0000-0000000000b2".into());
+    unrelated.origin = Some(SessionOrigin::Unknown);
+    unrelated.last_activity_at_ms = Some(200);
+
+    let mut second_title_match = session_info_for_test("second-title-match");
+    second_title_match.title = Some("portal review".into());
+    second_title_match.cwd = std::path::PathBuf::from(r"C:\repos\portal");
+    second_title_match.pane_session_id = Some("00000000-0000-0000-0000-0000000000c3".into());
+    second_title_match.origin = Some(SessionOrigin::Unknown);
+    second_title_match.last_activity_at_ms = Some(100);
+
+    app.current_tab_mut().agents_view.snapshot =
+        Some(vec![title_match, unrelated, second_title_match]);
+    app.current_tab_mut().agents_list_state.select(Some(0));
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    assert!(app.current_tab().agents_view.search_focused);
+    app.handle_key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT));
+    app.handle_key(KeyEvent::new(KeyCode::Char('O'), KeyModifiers::SHIFT));
+
+    assert_eq!(app.current_tab().agents_view.search_query, "PO");
+    assert_eq!(
+        app.agents_rows_for_tab(DEFAULT_TAB_ID)
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["title-match", "second-title-match"]
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().agents_list_state.selected(), Some(1));
+    assert!(
+        app.current_tab().agents_view.search_focused,
+        "arrow navigation must keep the search input active"
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let cmd = app
+        .last_dispatched_command_for_test()
+        .expect("the selected filtered row must dispatch");
+    assert_eq!(cmd.kind, DispatchedCommandKind::FocusPane);
+    assert_eq!(cmd.session_id.as_deref(), Some("second-title-match"));
+}
+
+#[test]
+fn session_search_is_hidden_until_slash_and_escape_clears_it() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_view.snapshot =
+        Some(vec![session_info_for_test("visible-session")]);
+
+    let before = render_to_text(&mut app, 80, 24);
+    assert!(
+        !before.contains('▏'),
+        "the search cursor must be hidden before / is pressed; rendered:\n{before}"
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    let active = render_to_text(&mut app, 80, 24);
+    assert!(
+        active.contains('▏'),
+        "pressing / must reveal the search input; rendered:\n{active}"
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.current_tab().agents_view.search_query.is_empty());
+    assert!(!app.current_tab().agents_view.search_focused);
+    assert_eq!(
+        app.current_tab().current_view,
+        View::Agents,
+        "the first Esc dismisses search instead of closing session management"
+    );
+}
+
+// Esc out of the session-management (Agents) view restores the pane
+// visibility the user had *before* they entered it, rather than always
+// leaving an open chat pane behind. Two cases mirror the two ways the
+// view is reached (see `open_agents_view_for_tab` + the Esc handler).
+
+#[test]
+fn esc_from_session_view_refolds_when_entered_from_folded_pane() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    let tab_id = app.active_tab_key().to_string();
+
+    // Pane starts folded (stashed): pane_open == false.
+    app.tab_mut(&tab_id).pane_open = false;
+
+    // Reproduce the C++ "unstash into sessions" request, which applies
+    // `view` before `pane_open`: the view switch snapshots the pre-message
+    // `pane_open=false`, then the pane is marked open while sessions show.
+    app.open_agents_view_for_tab(tab_id.clone());
+    app.tab_mut(&tab_id).pane_open = true;
+    assert_eq!(app.current_tab().current_view, View::Agents);
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    // Re-folds: pane hidden. The view is intentionally left on Agents
+    // (not switched to Chat) so the pane stashes straight from the
+    // session list without flashing the chat view for a frame first.
+    assert!(
+        !app.current_tab().pane_open,
+        "Esc from a pane that was folded before session management must re-fold it"
+    );
+    assert_eq!(
+        app.current_tab().current_view,
+        View::Agents,
+        "fold-restore must not switch to chat (would flash before stashing)"
+    );
+    assert_eq!(
+        app.current_tab().agents_view_prev_pane_open,
+        None,
+        "the snapshot must be cleared after Esc so a re-entry re-captures"
+    );
+}
+
+#[test]
+fn esc_from_session_view_keeps_pane_open_when_entered_from_chat() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    let tab_id = app.active_tab_key().to_string();
+
+    // Pane is already an expanded chat pane: pane_open == true. The
+    // chat->sessions request keeps pane_open=true, so the snapshot is
+    // Some(true) and Esc must leave the pane open.
+    app.tab_mut(&tab_id).pane_open = true;
+    app.open_agents_view_for_tab(tab_id.clone());
+    assert_eq!(app.current_tab().current_view, View::Agents);
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert_eq!(app.current_tab().current_view, View::Chat);
+    assert!(
+        app.current_tab().pane_open,
+        "Esc from an expanded chat pane must return to it (stay open)"
+    );
+}
+
+// Checklist C085 "View switch preserves input": a typed-but-unsubmitted chat draft must
+// survive a round-trip through the session (Agents) view. This is the deterministic coverage
+// for the item whose E2E form is not harness-reliable (opening the session view input-free and
+// reading it back races the per-tab pre-warm's extra pane; the slash `/sessions` trigger would
+// itself type into the draft; Esc is overloaded chat-clear vs view-exit). Here we drive the
+// REAL Esc key handler — the exact path where an accidental input-clear on view exit would
+// live — not just the open/close_agents_view helpers.
+#[test]
+fn view_switch_preserves_chat_draft_input() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    let tab_id = app.active_tab_key().to_string();
+
+    // A user is composing a prompt in the chat view (pane open, draft typed, not submitted).
+    app.tab_mut(&tab_id).pane_open = true;
+    let draft = "unsubmitted draft prompt";
+    app.current_tab_mut().input = draft.into();
+    app.current_tab_mut().cursor_pos = draft.len();
+
+    // Switch chat -> sessions view (the chat->sessions request keeps pane_open=true).
+    app.open_agents_view_for_tab(tab_id.clone());
+    assert_eq!(app.current_tab().current_view, View::Agents);
+    assert_eq!(
+        app.current_tab().input,
+        draft,
+        "the draft must be untouched while the session view is shown"
+    );
+
+    // Esc back to chat (the round-trip return path).
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().current_view, View::Chat);
+
+    // The draft AND the cursor position must still be there after the round-trip.
+    assert_eq!(
+        app.current_tab().input,
+        draft,
+        "returning to chat after a view switch must preserve the unsubmitted draft"
+    );
+    assert_eq!(
+        app.current_tab().cursor_pos,
+        draft.len(),
+        "the cursor position in the draft must be preserved across the view round-trip"
+    );
+}
+
+// A pane folded *from within* the sessions view (fold keeps current_view ==
+// Agents) and then reopened must re-snapshot the now-folded state, so a
+// later Esc re-folds instead of using a stale "was open" snapshot.
+#[test]
+fn esc_reuses_latest_snapshot_after_fold_from_session_view() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    let tab_id = app.active_tab_key().to_string();
+
+    // 1. Enter sessions from an open chat pane -> snapshot Some(true).
+    app.tab_mut(&tab_id).pane_open = true;
+    app.open_agents_view_for_tab(tab_id.clone());
+
+    // 2. Fold while staying in the sessions view (current_view unchanged).
+    app.tab_mut(&tab_id).pane_open = false;
+
+    // 3. Reopen sessions (C++ unstash echo) -> must re-snapshot Some(false).
+    app.open_agents_view_for_tab(tab_id.clone());
+    app.tab_mut(&tab_id).pane_open = true;
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(
+        !app.current_tab().pane_open,
+        "the second entry must capture the folded state, so Esc re-folds"
+    );
+}
+
+#[test]
+fn enter_on_history_row_dispatches_new_tab_with_resume() {
+    use crate::agent_sessions::{CliSource, SessionEvent};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    // Use a real existing directory so cwd_util::validate_starting_directory
+    // accepts it. A missing path would (correctly) be dropped from
+    // the argv — that behaviour is covered by
+    // `enter_on_history_row_with_missing_cwd_omits_d_flag` below.
+    let real_cwd = std::env::temp_dir();
+    let real_cwd_str = real_cwd.to_string_lossy().to_string();
+    let mut app = test_app();
+    app.window_id = Some("42".into());
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: "abc-123".into(),
+        cli_source: CliSource::Claude,
+        pane_session_id: "p".into(),
+        cwd: real_cwd.clone(),
+        title: "Fix the build".into(),
+    });
+    app.agent_sessions.apply(SessionEvent::SessionStopped {
+        key: "abc-123".into(),
+        reason: "user_exit".into(),
+    });
+
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_list_state.select(Some(0));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let cmd = app
+        .last_dispatched_command_for_test()
+        .expect("a command was dispatched");
+    assert_eq!(cmd.kind, DispatchedCommandKind::NewTabResume);
+    let argv = cmd.argv.join(" ");
+    // The dispatch must use `wtcli new-tab` (not `split-pane`) so the
+    // resumed CLI lands in its own WT tab instead of carving up the
+    // originating tab.
+    assert!(argv.contains("new-tab"), "argv: {}", argv);
+    assert!(
+        argv.contains("--window-id 42"),
+        "resume must target the owning window: {argv}"
+    );
+    assert!(
+        !argv.contains("split-pane"),
+        "argv must NOT use split-pane: {}",
+        argv
+    );
+    assert!(
+        cmd.argv
+            .windows(2)
+            .any(|args| args == ["--title", "Fix the build"]),
+        "resume tab must use the session title: {:?}",
+        cmd.argv
+    );
+    // The CLI invocation is still wrapped in `cmd /c` so .cmd shims
+    // resolve via PATHEXT, but the legacy `cd /d` prefix is gone —
+    // cwd is threaded through wtcli's `-d` flag now. Issue #135:
+    // a muted "Resuming … session …" banner is prepended so the
+    // user sees immediate feedback while the CLI cold-starts; the
+    // CLI's alt-screen TUI overwrites it on success. (Previously
+    // SGR 1;36;5 — bold + cyan + slow-blink — was used, but the
+    // blink + bold were too noisy. Now SGR 2;37 = dim + white, a
+    // low-contrast tone similar to the cwd line in a typical
+    // Copilot-CLI shell prompt.)
+    assert!(
+        argv.contains("cmd /c echo \x1b[2;37mResuming claude session abc-123...\x1b[0m"),
+        "expected dim-white Resuming banner echo; argv: {:?}",
+        argv
+    );
+    assert!(
+        argv.contains("&& claude --resume abc-123"),
+        "expected resume command chained after banner; argv: {}",
+        argv
+    );
+    assert!(
+        !argv.contains("cd /d"),
+        "argv must NOT contain cd /d (cwd is now passed via -d): {}",
+        argv
+    );
+    // Resume is keyed off the session's project cwd — the new tab's
+    // primary pane must start in that directory so the CLI's session
+    // store lookup (`~/.claude/projects/<encoded-cwd>/...`) succeeds.
+    let expected = format!("-d {}", real_cwd_str);
+    assert!(
+        argv.contains(&expected),
+        "expected `{}` in argv: {}",
+        expected,
+        argv
+    );
+}
+
+/// When the stored cwd no longer exists on disk (e.g. user deleted
+/// the project), `dispatch_resume` must omit `-d <cwd>` entirely so
+/// wtcli falls back to the profile's startingDirectory. Without
+/// this guard, `CreateProcessW` would fail with `ERROR_DIRECTORY`
+/// and produce a visibly-broken pane.
+#[test]
+fn enter_on_history_row_with_missing_cwd_omits_d_flag() {
+    use crate::agent_sessions::{CliSource, SessionEvent};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+    let missing = {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "wta-missing-cwd-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        p
+    };
+    assert!(!missing.exists());
+    let mut app = test_app();
+    app.window_id = Some("42".into());
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: "abc-stale".into(),
+        cli_source: CliSource::Claude,
+        pane_session_id: "p".into(),
+        cwd: PathBuf::from(&missing),
+        title: "t".into(),
+    });
+    app.agent_sessions.apply(SessionEvent::SessionStopped {
+        key: "abc-stale".into(),
+        reason: "user_exit".into(),
+    });
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_list_state.select(Some(0));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let cmd = app
+        .last_dispatched_command_for_test()
+        .expect("a command was dispatched");
+    assert_eq!(cmd.kind, DispatchedCommandKind::NewTabResume);
+    let argv = cmd.argv.join(" ");
+    assert!(argv.contains("new-tab"), "argv: {}", argv);
+    // The stale cwd must NOT have leaked through as `-d`.
+    assert!(
+        !argv.contains("-d "),
+        "argv must omit -d when cwd is missing: {}",
+        argv
+    );
+    assert!(
+        !argv.contains(&missing.to_string_lossy().to_string()),
+        "argv must not embed the stale cwd: {}",
+        argv
+    );
+}
+
+#[test]
+fn modified_enter_on_live_row_dispatches_nothing() {
+    // Only a bare Enter activates a row. A modified Enter (Shift, Alt,
+    // ...) must not focus or resume, and must not leak out of the picker.
+    use crate::agent_sessions::{CliSource, SessionEvent};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+    let mut app = test_app();
+    app.window_id = Some("42".into());
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: "a".into(),
+        cli_source: CliSource::Claude,
+        pane_session_id: "00000000-0000-0000-0000-0000000000aa".into(),
+        cwd: PathBuf::from("/x"),
+        title: "t".into(),
+    });
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_list_state.select(Some(0));
+
+    for modifiers in [
+        KeyModifiers::SHIFT,
+        KeyModifiers::ALT,
+        KeyModifiers::CONTROL,
+    ] {
+        app.handle_key(KeyEvent::new(KeyCode::Enter, modifiers));
+        assert!(
+            app.last_dispatched_command_for_test().is_none(),
+            "{modifiers:?}+Enter must not dispatch anything",
+        );
+        // The key is swallowed by the picker, which stays open.
+        assert_eq!(app.current_tab().current_view, View::Agents);
+    }
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let cmd = app
+        .last_dispatched_command_for_test()
+        .expect("bare Enter dispatches");
+    assert_eq!(cmd.kind, DispatchedCommandKind::FocusPane);
+}
+
+// -------- state-machine-driven Enter dispatch --------
+//
+// Pure routing rules are exhaustively tested in
+// `session_mgmt::tests`. Here we verify the *integration* — that the
+// key-handler path actually constructs a RowSnapshot from the
+// selected AgentSession, hands it to `decide_enter_action`, and
+// dispatches each EnterAction variant through the correct side
+// effect (or NotResumable hint). One or two representative cases
+// per variant is enough; session_mgmt holds the truth table.
+
+/// A Class A row selected from a cross-provider history surface routes to
+/// ResumeInAgentPane using the selected row's provider and location.
+#[test]
+fn cross_provider_class_a_row_dispatches_resume_in_agent_pane() {
+    use crate::agent_sessions::{
+        CliSource, OriginFilter, SessionEvent, SessionLocation, SessionOrigin,
+    };
+    use std::path::PathBuf;
+    let mut app = test_app();
+    let _capture = crate::wt_protocol_events::capture_test_published_events();
+    app.window_id = Some("42".into());
+    app.current_agent_id = "copilot".into();
+    app.current_agent_source = crate::agent_source::AgentSource::Host;
+    app.acp_model = Some("caller-model-must-not-leak".into());
+    // This test exercises the Class A (AgentPane) Enter routing,
+    // which the MVP sessions filter hides. Opt out so the row is
+    // visible to the cursor; the dispatch logic under test is
+    // unchanged by the filter.
+    app.sessions_origin_filter = OriginFilter::All;
+    app.agent_supports_load_session = false;
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: "abc-class-a".into(),
+        cli_source: CliSource::Claude,
+        pane_session_id: "p".into(),
+        cwd: PathBuf::from("/work/cls-a"),
+        title: "t".into(),
+    });
+    app.agent_sessions.apply(SessionEvent::SessionStopped {
+        key: "abc-class-a".into(),
+        reason: "user_exit".into(),
+    });
+    app.agent_sessions
+        .set_origin("abc-class-a", SessionOrigin::AgentPane);
+    app.agent_sessions
+        .set_location("abc-class-a", SessionLocation::Host);
+
+    let row = app
+        .agent_sessions
+        .get(&"abc-class-a".to_string())
+        .expect("row exists")
+        .clone();
+    app.activate_agent_session_routed(&row);
+
+    let cmd = app
+        .last_dispatched_command_for_test()
+        .expect("a command was dispatched");
+    assert_eq!(cmd.kind, DispatchedCommandKind::ResumeInAgentPane);
+    let argv = cmd.argv.join(" ");
+    assert!(argv.contains("resume_in_new_agent_tab"), "argv: {}", argv);
+    assert!(argv.contains("--window-id 42"), "argv: {}", argv);
+    assert!(argv.contains("--session-id abc-class-a"), "argv: {}", argv);
+    let event = crate::wt_protocol_events::take_test_published_events()
+        .into_iter()
+        .filter_map(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .find(|event| event["method"] == "resume_in_new_agent_tab")
+        .expect("resume event should be published");
+    assert_eq!(event["params"]["agent_id"], "claude");
+    assert_eq!(event["params"]["agent_source"], "host");
+    assert!(event["params"].get("wsl_distro").is_none());
+    assert!(event["params"].get("agent_model").is_none());
+}
+
+#[test]
+fn same_target_without_load_session_capability_is_rejected() {
+    use crate::agent_sessions::{
+        CliSource, OriginFilter, SessionEvent, SessionLocation, SessionOrigin,
+    };
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+
+    let mut app = test_app();
+    let _capture = crate::wt_protocol_events::capture_test_published_events();
+    app.window_id = Some("42".into());
+    app.current_agent_id = "claude".into();
+    app.current_agent_source = crate::agent_source::AgentSource::Host;
+    app.agent_supports_load_session = false;
+    app.sessions_origin_filter = OriginFilter::All;
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: "same-target-unsupported".into(),
+        cli_source: CliSource::Claude,
+        pane_session_id: "p".into(),
+        cwd: PathBuf::from("/work/project"),
+        title: "t".into(),
+    });
+    app.agent_sessions.apply(SessionEvent::SessionStopped {
+        key: "same-target-unsupported".into(),
+        reason: "user_exit".into(),
+    });
+    app.agent_sessions
+        .set_origin("same-target-unsupported", SessionOrigin::AgentPane);
+    app.agent_sessions
+        .set_location("same-target-unsupported", SessionLocation::Host);
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_list_state.select(Some(0));
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let command = app
+        .last_dispatched_command_for_test()
+        .expect("not-resumable result should be recorded");
+    assert_eq!(command.kind, DispatchedCommandKind::NotResumable);
+    assert!(
+        crate::wt_protocol_events::take_test_published_events()
+            .into_iter()
+            .all(|raw| !raw.contains("resume_in_new_agent_tab")),
+        "unsupported same-target restore must not publish a resume event"
+    );
+}
+
+#[test]
+fn dead_row_without_owner_window_does_not_dispatch_resume() {
+    use crate::agent_sessions::{CliSource, SessionEvent};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+    let mut app = test_app();
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: "missing-window".into(),
+        cli_source: CliSource::Claude,
+        pane_session_id: "p".into(),
+        cwd: PathBuf::from("/work/project"),
+        title: "t".into(),
+    });
+    app.agent_sessions.apply(SessionEvent::SessionStopped {
+        key: "missing-window".into(),
+        reason: "user_exit".into(),
+    });
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_list_state.select(Some(0));
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(
+        app.last_dispatched_command_for_test().is_none(),
+        "resume must fail closed without an owning window"
+    );
+}
+
+/// Class A (AgentPane origin) dead row + modified Enter: no dispatch.
+/// The row's only resume style is reachable through a bare Enter.
+#[test]
+fn modified_enter_on_class_a_dead_row_dispatches_nothing() {
+    use crate::agent_sessions::{
+        CliSource, OriginFilter, SessionEvent, SessionLocation, SessionOrigin,
+    };
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+    let mut app = test_app();
+    app.window_id = Some("42".into());
+    // See enter_on_class_a_dead_row_dispatches_resume_in_agent_pane
+    // for the OriginFilter::All rationale — the MVP filter hides
+    // Class A rows from the cursor model; this test exercises the
+    // routing logic that fires when they ARE visible.
+    app.sessions_origin_filter = OriginFilter::All;
+    app.agent_supports_load_session = true;
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: "abc-class-a-shift".into(),
+        cli_source: CliSource::Claude,
+        pane_session_id: "p".into(),
+        cwd: PathBuf::from("/work/cls-a"),
+        title: "t".into(),
+    });
+    app.agent_sessions.apply(SessionEvent::SessionStopped {
+        key: "abc-class-a-shift".into(),
+        reason: "user_exit".into(),
+    });
+    app.agent_sessions
+        .set_origin("abc-class-a-shift", SessionOrigin::AgentPane);
+    app.agent_sessions
+        .set_location("abc-class-a-shift", SessionLocation::Host);
+
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_list_state.select(Some(0));
+    for modifiers in [KeyModifiers::SHIFT, KeyModifiers::ALT] {
+        app.handle_key(KeyEvent::new(KeyCode::Enter, modifiers));
+        assert!(
+            app.last_dispatched_command_for_test().is_none(),
+            "{modifiers:?}+Enter must not resume a Class A row",
+        );
+    }
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let cmd = app
+        .last_dispatched_command_for_test()
+        .expect("bare Enter dispatches");
+    assert_eq!(cmd.kind, DispatchedCommandKind::ResumeInAgentPane);
+}
+
+/// Class B (Unknown origin) dead row + modified Enter: no dispatch.
+/// This is the row class the picker shows by default, so it is the
+/// case a user would notice if a modifier ever regained a meaning.
+#[test]
+fn modified_enter_on_class_b_dead_row_dispatches_nothing() {
+    use crate::agent_sessions::{CliSource, SessionEvent};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+    let mut app = test_app();
+    app.window_id = Some("42".into());
+    // loadSession IS advertised: a modifier must not divert a Class B
+    // row into an agent pane, nor resume it in a shell pane.
+    app.agent_supports_load_session = true;
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: "abc-class-b-shift".into(),
+        cli_source: CliSource::Claude,
+        pane_session_id: "p".into(),
+        cwd: PathBuf::from("/work/cls-b"),
+        title: "t".into(),
+    });
+    app.agent_sessions.apply(SessionEvent::SessionStopped {
+        key: "abc-class-b-shift".into(),
+        reason: "user_exit".into(),
+    });
+
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_list_state.select(Some(0));
+    for modifiers in [KeyModifiers::SHIFT, KeyModifiers::ALT] {
+        app.handle_key(KeyEvent::new(KeyCode::Enter, modifiers));
+        assert!(
+            app.last_dispatched_command_for_test().is_none(),
+            "{modifiers:?}+Enter must not resume a Class B row",
+        );
+    }
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let cmd = app
+        .last_dispatched_command_for_test()
+        .expect("bare Enter dispatches");
+    assert_eq!(cmd.kind, DispatchedCommandKind::NewTabResume);
+}
+
+/// Class B (Unknown origin) + plain Enter on a Live row preserves
+/// the legacy focus behavior — this exercises the most common
+/// session management path (user-started `copilot` in a normal pane via hooks).
+#[test]
+fn enter_on_class_b_live_row_focuses() {
+    use crate::agent_sessions::{CliSource, SessionEvent};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+    let mut app = test_app();
+    // SessionStarted defaults origin to Unknown (Class B).
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: "live-class-b".into(),
+        cli_source: CliSource::Copilot,
+        pane_session_id: "00000000-0000-0000-0000-0000000000cc".into(),
+        cwd: PathBuf::from("/x"),
+        title: "t".into(),
+    });
+
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_list_state.select(Some(0));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let cmd = app
+        .last_dispatched_command_for_test()
+        .expect("a command was dispatched");
+    assert_eq!(cmd.kind, DispatchedCommandKind::FocusPane);
+}
+
+// ─── Phantom-session prune ───────────────────────────────────────
+
+#[test]
+fn agents_view_state_is_isolated_per_tab() {
+    // Regression: opening the Agents picker in tab A should not show
+    // up as opened (or with the same selection) when the user switches
+    // to tab B. `current_view` and `agents_list_state` live on
+    // TabSession exactly to keep these states independent.
+    use crate::agent_sessions::{CliSource, SessionEvent};
+    use std::path::PathBuf;
+    let mut app = test_app();
+    for k in ["a", "b", "c"] {
+        app.agent_sessions.apply(SessionEvent::SessionStarted {
+            key: k.into(),
+            cli_source: CliSource::Claude,
+            pane_session_id: format!("p-{}", k),
+            cwd: PathBuf::from("/x"),
+            title: format!("t-{}", k),
+        });
+    }
+
+    // Tab "0" (the seeded default): open picker, select row 2.
+    app.tab_id = Some("0".into());
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_list_state.select(Some(2));
+
+    // Switch to tab "1" — its TabSession is lazily created with
+    // defaults: View::Chat and no selection.
+    app.tab_id = Some("1".into());
+    let tab1 = app.current_tab_mut();
+    assert_eq!(tab1.current_view, View::Chat, "new tab must start in Chat");
+    assert_eq!(tab1.agents_list_state.selected(), None);
+
+    // Mutating tab 1 must not bleed back into tab 0.
+    tab1.current_view = View::Agents;
+    tab1.agents_list_state.select(Some(0));
+
+    app.tab_id = Some("0".into());
+    let tab0 = app.current_tab();
+    assert_eq!(tab0.current_view, View::Agents);
+    assert_eq!(tab0.agents_list_state.selected(), Some(2));
+}
+
+#[test]
+fn closing_other_tab_preserves_per_tab_view_when_tab_changed_follows() {
+    // Reproduces the user-reported bug:
+    //   tab1 has the session list (agent session view) open. User opens
+    //   tab2, then closes tab2. Focus returns to tab1, the agent
+    //   pane is still visible, but the session list has vanished
+    //   — the user has to press the shortcut again to bring it
+    //   back.
+    //
+    // Root cause was on the C++ side: `_OnTabSelectionChanged`
+    // is suppressed during tab removal, so the
+    // `_NotifyAgentTabChanged(tab1)` that normally follows the
+    // auto-selection of the previous tab never fired. wta's
+    // `tab_id` got nulled by `tab_closed` and never restored, so
+    // `current_tab()` silently fell back to the empty
+    // `DEFAULT_TAB_ID` slot. After the C++ fix
+    // (explicit `_ReconcileAgentPaneForActiveTab` post-removal),
+    // wta receives the missing `tab_changed { tab_id: tab1 }`
+    // event and `current_tab()` resolves back to tab1's
+    // preserved TabSession with `View::Agents` intact.
+    //
+    // This test simulates the full wta-side event sequence:
+    //   1. tab1 active, picker open with selection at row 2.
+    //   2. user clicks tab2 → tab_changed { tab_id: tab2 }.
+    //   3. user closes tab2 → tab_closed { tab_id: tab2 }.
+    //   4. C++ fires the post-removal reconcile →
+    //      tab_changed { tab_id: tab1 }.
+    // After (4), `current_tab()` must return tab1's TabSession
+    // with View::Agents and the row-2 selection preserved.
+    use crate::agent_sessions::{CliSource, SessionEvent};
+    use std::path::PathBuf;
+    let mut app = test_app();
+    for k in ["a", "b", "c"] {
+        app.agent_sessions.apply(SessionEvent::SessionStarted {
+            key: k.into(),
+            cli_source: CliSource::Claude,
+            pane_session_id: format!("p-{}", k),
+            cwd: PathBuf::from("/x"),
+            title: format!("t-{}", k),
+        });
+    }
+
+    // (1) tab1 active, agent session view, selection at row 2.
+    let tab1 = "tab1-stable-id";
+    let tab2 = "tab2-stable-id";
+    app.tab_id = Some(tab1.into());
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_list_state.select(Some(2));
+
+    // (2) User clicks tab2: switch_tab_session simulates the
+    // arrival of `tab_changed { tab_id: tab2 }`.
+    app.switch_tab_session(tab2.into());
+    // tab2 starts at defaults; tab1 entry is untouched in the map.
+    assert_eq!(app.current_tab().current_view, View::Chat);
+
+    // (3) User closes tab2: drop_tab_session simulates
+    // `tab_closed { tab_id: tab2 }`. tab2's entry is removed and
+    // tab_id is nulled (DEFAULT_TAB_ID slot lazily created).
+    app.drop_tab_session(tab2);
+    assert!(
+        app.tab_id.is_none(),
+        "drop of active tab must null tab_id pending the next tab_changed"
+    );
+
+    // Critical: BEFORE the C++ fix, this is where wta is left
+    // stranded — no further `tab_changed` ever arrives. The user
+    // sees the agent pane stuck on DEFAULT_TAB_ID's empty Chat
+    // view even though tab1's state is still in the map.
+    // Demonstrate the bug shape:
+    assert_eq!(
+        app.current_tab().current_view,
+        View::Chat,
+        "without the follow-up tab_changed, current_tab falls back to DEFAULT_TAB_ID"
+    );
+
+    // (4) The C++ fix: post-removal reconcile fires
+    // `_NotifyAgentTabChanged(tab1)` which lands here as
+    // `switch_tab_session(tab1)`.
+    app.switch_tab_session(tab1.into());
+
+    // Now current_tab resolves back to tab1's preserved state.
+    assert_eq!(
+        app.current_tab().current_view,
+        View::Agents,
+        "tab1's View::Agents must be preserved across tab2's open/close"
+    );
+    assert_eq!(
+        app.current_tab().agents_list_state.selected(),
+        Some(2),
+        "tab1's list selection must be preserved"
+    );
+}
+
+#[test]
+fn autofix_still_triggers_for_non_agent_pane() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.autofix_enabled = true;
+    // No SessionStarted apply -> pane is not an agent pane.
+    let pane = "non-agent-pane-guid";
+
+    let notification = WtNotification {
+        severity: WtEventSeverity::Actionable,
+        pane_id: pane.to_string(),
+        tab_id: Some("test-tab".to_string()),
+        summary: "Command failed (exit 1)".to_string(),
+        acknowledged: false,
+        age_ticks: 0,
+    };
+    app.maybe_trigger_autofix(&notification);
+
+    assert_eq!(
+        app.tab_mut("test-tab").autofix.pane_id.as_deref(),
+        Some(pane),
+        "autofix must still arm normal panes when a command fails"
+    );
+    // The target tab's turn (not the active tab's) should be in-flight.
+    assert!(
+        !app.tab_mut("test-tab").turn.is_idle(),
+        "autofix prompt should be in-flight on the target tab"
+    );
+}
+
+#[test]
+fn typed_pipe_connect_failure_survives_classify_anyhow() {
+    use crate::protocol::acp::failure::{AgentFailure, HandshakeStage};
+
+    let err = anyhow::Error::new(AgentFailure::HandshakeFailed {
+        stage: HandshakeStage::PipeConnect,
+        detail: "connect to master pipe after 3 attempts: missing".into(),
+    });
+
+    assert_eq!(
+        crate::protocol::acp::failure::classify_anyhow(&err, HandshakeStage::Initialize),
+        AgentFailure::HandshakeFailed {
+            stage: HandshakeStage::PipeConnect,
+            detail: "connect to master pipe after 3 attempts: missing".into(),
+        }
+    );
+}
+
+#[test]
+fn post_login_recovery_route_covers_pipe_connect_without_external_auth_gate() {
+    use crate::protocol::acp::failure::{AgentFailure, HandshakeStage};
+
+    let pipe_connect = AgentFailure::HandshakeFailed {
+        stage: HandshakeStage::PipeConnect,
+        detail: "pipe missing".to_string(),
+    };
+    assert!(
+        should_trigger_post_login_recovery(true, false, &pipe_connect),
+        "post-login master-unavailable recovery must not be gated on External auth flow"
+    );
+    assert!(
+        !should_trigger_post_login_recovery(false, false, &pipe_connect),
+        "non-post-login pipe failures should surface normally"
+    );
+
+    let auth_required = AgentFailure::AuthRequired {
+        message: "auth".to_string(),
+    };
+    assert!(
+        should_trigger_post_login_recovery(true, true, &auth_required),
+        "external post-login auth failures should recover via a fresh master"
+    );
+    assert!(
+        !should_trigger_post_login_recovery(true, false, &auth_required),
+        "non-external auth failures should route to sign-in"
+    );
+
+    let still_auth = AgentFailure::HandshakeFailed {
+        stage: HandshakeStage::NewSession,
+        detail: "still auth".to_string(),
+    };
+    assert!(
+        should_trigger_post_login_recovery(true, true, &still_auth),
+        "external post-login auth failures still recover via fresh master"
+    );
+    assert!(
+        !should_trigger_post_login_recovery(true, false, &still_auth),
+        "non-external auth failures should not use auth-stale recovery"
+    );
+
+    let authenticate_failed = AgentFailure::HandshakeFailed {
+        stage: HandshakeStage::Authenticate,
+        detail: "authenticate rejected".to_string(),
+    };
+    assert!(
+        !should_trigger_post_login_recovery(true, true, &authenticate_failed),
+        "authenticate failures should route to sign-in instead of restarting master"
+    );
+}
+
+/// `PostLoginAuthRecovery` shows a transient "Reconnecting…" (NOT the
+/// sign-in screen, so there is no flash), and the `AuthRecoveryTimedOut`
+/// dead-man only falls back to the sign-in screen if the restart never
+/// took effect (this helper survived the window).
+#[test]
+fn post_login_auth_recovery_shows_reconnecting_then_signin_fallback() {
+    let mut app = test_app();
+    app.current_agent_id = "copilot".into();
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some("owner-tab".into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+    app.handle_event(AppEvent::PostLoginAuthRecovery {
+        failure: crate::protocol::acp::failure::AgentFailure::AuthRequired {
+            message: "auth".to_string(),
+        },
+        tab_id: None,
+        agent_id: "copilot".to_string(),
+    });
+    let restart_request_id = match &app.auth_recovery_state {
+        AuthRecoveryState::WaitingForMaster { request_id } => request_id.clone(),
+        _ => panic!("auth recovery should wait for its replacement master"),
+    };
+    // Common case: transient Reconnecting, NOT the setup screen (no flash).
+    assert!(
+        !matches!(app.mode, AppMode::Setup),
+        "recovery must NOT flash the sign-in screen"
+    );
+    assert!(
+        matches!(app.state, ConnectionState::Connecting(_)),
+        "recovery must show a transient Reconnecting state"
+    );
+    let generation = app.auth_recovery_generation;
+    app.handle_event(AppEvent::MasterDisconnected);
+    assert!(
+        !app.pending_acp_start,
+        "auth recovery must wait until C++ confirms the replacement master"
+    );
+    assert_eq!(
+        app.auth_recovery_generation, generation,
+        "master disconnect must not invalidate the auth-recovery dead-man"
+    );
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_master_restarted".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({ "operation_id": "unrelated-restart" }),
+    });
+    assert!(
+        !app.pending_acp_start,
+        "another restart must not release this auth-recovery barrier"
+    );
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_master_restarted".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({ "operation_id": restart_request_id }),
+    });
+    assert!(!app.pending_acp_start);
+    assert!(app.reconnect_after_transport_retired);
+    app.handle_event(AppEvent::AgentTransportRetired);
+    assert!(app.pending_acp_start);
+    assert!(matches!(
+        &app.auth_recovery_state,
+        AuthRecoveryState::Connecting
+    ));
+    let connecting_generation = app.auth_recovery_generation;
+    assert_ne!(
+        connecting_generation, generation,
+        "master readiness must start a separately correlated connection phase"
+    );
+    app.pending_acp_start = false;
+    app.handle_event(AppEvent::MasterDisconnected);
+    assert!(
+        !app.pending_acp_start,
+        "a late disconnect from the replaced master must not start a duplicate ACP client"
+    );
+    // The master-readiness timer is stale after the matching restart event.
+    app.handle_event(AppEvent::AuthRecoveryTimedOut {
+        agent_id: "copilot".to_string(),
+        generation,
+    });
+    assert!(
+        !matches!(app.mode, AppMode::Setup),
+        "a stale-generation timeout must be ignored"
+    );
+    // The connection-phase dead-man still surfaces the sign-in screen.
+    app.handle_event(AppEvent::AuthRecoveryTimedOut {
+        agent_id: "copilot".to_string(),
+        generation: connecting_generation,
+    });
+    assert!(
+        matches!(app.mode, AppMode::Setup),
+        "timeout fallback must surface the sign-in screen"
+    );
+}
+
+fn start_timed_auth_recovery() -> (App, String) {
+    let mut app = test_app();
+    app.current_agent_id = "copilot".into();
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some("owner-tab".into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+    app.handle_event(AppEvent::PostLoginAuthRecovery {
+        failure: crate::protocol::acp::failure::AgentFailure::AuthRequired {
+            message: "auth".to_string(),
+        },
+        tab_id: None,
+        agent_id: "copilot".to_string(),
+    });
+    let request_id = match &app.auth_recovery_state {
+        AuthRecoveryState::WaitingForMaster { request_id } => request_id.clone(),
+        _ => panic!("auth recovery should wait for its replacement master"),
+    };
+    (app, request_id)
+}
+
+#[test]
+fn auth_recovery_accepts_master_readiness_after_connection_timeout_window() {
+    let (mut app, request_id) = start_timed_auth_recovery();
+    let readiness_generation = app.auth_recovery_generation;
+    assert!(
+        super::app_events::AUTH_RECOVERY_MASTER_READY_TIMEOUT
+            > super::app_events::AUTH_RECOVERY_CONNECTION_TIMEOUT,
+        "waiting for master must extend beyond the eight-second connection timeout"
+    );
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_master_restarted".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({ "operation_id": request_id }),
+    });
+
+    assert!(!app.pending_acp_start);
+    assert!(app.reconnect_after_transport_retired);
+    app.handle_event(AppEvent::AgentTransportRetired);
+    assert!(app.pending_acp_start);
+    assert!(matches!(
+        app.auth_recovery_state,
+        AuthRecoveryState::Connecting
+    ));
+    assert_ne!(
+        app.auth_recovery_generation, readiness_generation,
+        "master readiness must invalidate the readiness deadline"
+    );
+}
+
+#[test]
+fn auth_recovery_missing_master_readiness_times_out_after_retirement_budget() {
+    let (mut app, _) = start_timed_auth_recovery();
+    assert_eq!(
+        super::app_events::AUTH_RECOVERY_MASTER_READY_TIMEOUT,
+        std::time::Duration::from_secs(18),
+        "readiness deadline must cover the 17-second retirement path plus margin"
+    );
+    let generation = app.auth_recovery_generation;
+    app.handle_event(AppEvent::AuthRecoveryTimedOut {
+        agent_id: "copilot".into(),
+        generation,
+    });
+
+    assert!(matches!(app.mode, AppMode::Setup));
+    assert!(matches!(app.auth_recovery_state, AuthRecoveryState::Idle));
+}
+
+#[test]
+fn auth_recovery_connection_timeout_starts_when_master_is_ready() {
+    let (mut app, request_id) = start_timed_auth_recovery();
+    let readiness_generation = app.auth_recovery_generation;
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_master_restarted".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({ "operation_id": request_id }),
+    });
+    let connection_generation = app.auth_recovery_generation;
+    assert_eq!(
+        super::app_events::AUTH_RECOVERY_CONNECTION_TIMEOUT,
+        std::time::Duration::from_secs(8)
+    );
+    assert_ne!(connection_generation, readiness_generation);
+
+    app.handle_event(AppEvent::AuthRecoveryTimedOut {
+        agent_id: "copilot".into(),
+        generation: connection_generation,
+    });
+
+    assert!(matches!(app.mode, AppMode::Setup));
+    assert!(matches!(app.auth_recovery_state, AuthRecoveryState::Idle));
+}
+
+#[test]
+fn master_disconnect_reconnects_retained_custom_wsl_helper() {
+    let mut app = test_app();
+    app.current_agent_id = "custom:local".into();
+    app.current_agent_source = crate::agent_source::AgentSource::Wsl {
+        distro: "Ubuntu".into(),
+    };
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "custom-agent --serve".into(),
+        Some("custom:local".into()),
+        Some("custom-model".into()),
+        None,
+        app.current_agent_source.clone(),
+        Some("/home/user/project".into()),
+        Some("owner-tab".into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+    app.agent_reconnect_state = AgentReconnectState::Preflighting(AgentReconnectRequest {
+        operation_id: "stale-rebind".into(),
+        window_id: "window-1".into(),
+        generation: 1,
+        agent_id: "copilot".into(),
+        acp_model: None,
+        custom_model_selection: None,
+        agent_source: crate::agent_source::AgentSource::Wsl {
+            distro: "Ubuntu".into(),
+        },
+    });
+    assert!(!app.should_quit);
+
+    app.handle_event(AppEvent::MasterDisconnected);
+
+    assert!(!app.should_quit);
+    assert!(
+        !app.pending_acp_start,
+        "replacement client must wait until the old transport is retired"
+    );
+    assert!(app.reconnect_after_transport_retired);
+    app.handle_event(AppEvent::AgentTransportRetired);
+    assert!(app.pending_acp_start);
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Idle
+    ));
+    assert_eq!(
+        app.deferred_acp
+            .as_ref()
+            .and_then(|params| params.agent_id.as_deref()),
+        Some("custom:local")
+    );
+    let deferred = app.deferred_acp.as_ref().unwrap();
+    assert_eq!(deferred.agent_cmd, "custom-agent --serve");
+    assert_eq!(deferred.acp_model.as_deref(), Some("custom-model"));
+    assert_eq!(deferred.source_cwd.as_deref(), Some("/home/user/project"));
+    assert_eq!(
+        deferred.agent_source,
+        crate::agent_source::AgentSource::Wsl {
+            distro: "Ubuntu".into()
+        }
+    );
+}
+
+#[test]
+fn master_disconnect_preserves_in_flight_session_load_for_reconnect() {
+    let mut app = test_app();
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some(DEFAULT_TAB_ID.into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+    let pending = LoadSessionForTab {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "historical-session".into(),
+        cwd: Some("C:\\work".into()),
+    };
+    app.pending_session_load = Some(pending.clone());
+    app.current_tab_mut().loading_session = true;
+    app.current_tab_mut().loading_target_session_id = Some(pending.session_id.clone());
+    app.yolo_state
+        .lock()
+        .unwrap()
+        .mark_manual(pending.session_id.clone());
+
+    app.handle_event(AppEvent::MasterDisconnected);
+
+    assert_eq!(
+        app.pending_session_load
+            .as_ref()
+            .map(|request| request.session_id.as_str()),
+        Some("historical-session")
+    );
+    assert!(app.current_tab().loading_session);
+    assert_eq!(
+        app.current_tab().loading_target_session_id.as_deref(),
+        Some("historical-session")
+    );
+    assert_eq!(
+        app.yolo_state.lock().unwrap().owner("historical-session"),
+        Some(crate::app_contracts::YoloControlOwner::Manual)
+    );
+    assert!(app.reconnect_after_transport_retired);
+}
+
+#[test]
+fn master_disconnect_does_not_resurrect_abandoned_session_load() {
+    let mut app = test_app();
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some(DEFAULT_TAB_ID.into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+    app.pending_session_load = Some(LoadSessionForTab {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "abandoned-session".into(),
+        cwd: None,
+    });
+
+    app.handle_event(AppEvent::MasterDisconnected);
+
+    assert!(app.pending_session_load.is_none());
+    assert!(!app.current_tab().loading_session);
+    assert!(app.current_tab().loading_target_session_id.is_none());
+}
+
+#[test]
+fn prompt_error_settles_only_the_matching_background_tab() {
+    let mut app = test_app();
+    app.tab_sessions
+        .insert("background-tab".into(), TabSession::default());
+    let prompt = PromptSubmission::new("background autofix".into(), None);
+    let prompt_id = prompt.id;
+    let cancellation = prompt.cancellation_token();
+    app.turn_submit_prompt_for_tab_with_cancellation(
+        "background-tab",
+        SubmittedPrompt {
+            id: prompt_id,
+            text: prompt.text,
+            submitted_at_unix_s: prompt.submitted_at_unix_s,
+            context: TurnContext::default(),
+            autofix: Some(AutofixContext { generation: 0 }),
+        },
+        cancellation,
+    );
+
+    app.handle_event(AppEvent::PromptError {
+        tab_id: "background-tab".into(),
+        prompt_id,
+        message: "lazy session failed".into(),
+    });
+
+    assert!(app.tab_sessions["background-tab"].turn.is_idle());
+    assert!(app.tab_sessions["background-tab"]
+        .active_prompt_cancellation
+        .is_none());
+    assert!(matches!(
+        app.tab_sessions["background-tab"].messages.last(),
+        Some(ChatMessage::Error(message)) if message == "lazy session failed"
+    ));
+    assert!(app.current_tab().messages.is_empty());
+}
+
+#[test]
+fn master_disconnect_without_binding_terminates_helper() {
+    let mut app = test_app();
+
+    app.handle_event(AppEvent::MasterDisconnected);
+
+    assert!(app.should_quit);
+}
+
+#[test]
+fn tab_rename_updates_all_persisted_reconnect_identity() {
+    let mut app = test_app();
+    app.tab_id = Some(DEFAULT_TAB_ID.into());
+    app.owner_tab_id = Some(DEFAULT_TAB_ID.into());
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some(DEFAULT_TAB_ID.into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+    app.pending_session_load = Some(LoadSessionForTab {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "historical-session".into(),
+        cwd: None,
+    });
+
+    app.handle_event(AppEvent::TabRenamed {
+        old_tab_id: DEFAULT_TAB_ID.into(),
+        new_tab_id: "renamed-tab".into(),
+        new_window_id: None,
+    });
+
+    assert_eq!(app.owner_tab_id.as_deref(), Some("renamed-tab"));
+    assert_eq!(
+        app.deferred_acp
+            .as_ref()
+            .and_then(|params| params.owner_tab_id.as_deref()),
+        Some("renamed-tab")
+    );
+    assert_eq!(
+        app.pending_session_load
+            .as_ref()
+            .map(|request| request.tab_id.as_str()),
+        Some("renamed-tab")
+    );
+}
+
+#[test]
+fn replacement_master_recovers_helper_failed_during_session_retirement() {
+    let mut app = test_app();
+    app.current_agent_id = "copilot".into();
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some("owner-tab".into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+    app.state = ConnectionState::Failed("old master retired the startup session".into());
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_master_restarted".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({ "operation_id": "normal-restart" }),
+    });
+
+    assert!(!app.pending_acp_start);
+    assert!(app.reconnect_after_transport_retired);
+    app.handle_event(AppEvent::AgentTransportRetired);
+    assert!(app.pending_acp_start);
+    assert!(matches!(app.state, ConnectionState::Connecting(_)));
+    assert!(matches!(&app.auth_recovery_state, AuthRecoveryState::Idle));
+}
+
+#[test]
+fn replacement_master_does_not_duplicate_connected_helper() {
+    let mut app = test_app();
+    app.current_agent_id = "copilot".into();
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some("owner-tab".into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+    app.state = ConnectionState::Connected;
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "agent_master_restarted".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({ "operation_id": "normal-restart" }),
+    });
+
+    assert!(!app.pending_acp_start);
+}
+
+/// A one-off protocol error ends the turn while preserving the live session.
+#[test]
+fn protocol_error_ends_turn_without_failing_connection() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().session_id = Some("live-session".into());
+    app.session_to_tab
+        .insert("live-session".into(), DEFAULT_TAB_ID.into());
+
+    app.handle_event(AppEvent::AgentError {
+        session_id: Some("live-session".to_string()),
+        failure: crate::protocol::acp::failure::AgentFailure::Protocol {
+            code: -32603,
+            message: "bad params".to_string(),
+        },
+        message: "protocol error".to_string(),
+    });
+
+    assert_eq!(app.state, ConnectionState::Connected);
+    assert!(matches!(
+        app.current_tab().messages.last(),
+        Some(ChatMessage::Error(message)) if message == "protocol error"
+    ));
+    assert_eq!(app.current_tab().turn, TurnState::Idle);
+}
+
+#[test]
+fn superseded_lazy_prompt_error_keeps_committed_user_bubble_visible() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().session_id = Some(DEFAULT_TAB_ID.to_string());
+    app.session_to_tab
+        .insert(DEFAULT_TAB_ID.to_string(), DEFAULT_TAB_ID.to_string());
+    submit_test_prompt(&mut app, "keep this prompt visible");
+
+    app.handle_event(AppEvent::AgentError {
+        session_id: Some(DEFAULT_TAB_ID.to_string()),
+        failure: crate::protocol::acp::failure::AgentFailure::Protocol {
+            code: -32003,
+            message: "Failed to update Yolo: Try again".to_string(),
+        },
+        message: "Failed to update Yolo: Try again".to_string(),
+    });
+
+    assert_eq!(
+        app.current_tab().messages,
+        vec![
+            ChatMessage::User("keep this prompt visible".to_string()),
+            ChatMessage::Error("Failed to update Yolo: Try again".to_string()),
+        ]
+    );
+    assert_eq!(app.current_tab().turn, TurnState::Idle);
+    assert_eq!(app.state, ConnectionState::Connected);
+}
+
+#[test]
+fn startup_protocol_error_fails_connection() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connecting("Creating session...".to_string());
+
+    app.handle_event(AppEvent::AgentError {
+        session_id: None,
+        failure: crate::protocol::acp::failure::AgentFailure::Protocol {
+            code: -32603,
+            message: "invalid provider configuration".to_string(),
+        },
+        message: "session creation failed".to_string(),
+    });
+
+    assert_eq!(
+        app.state,
+        ConnectionState::Failed("session creation failed".to_string())
+    );
+    assert!(matches!(
+        app.current_tab().messages.last(),
+        Some(ChatMessage::Error(message)) if message == "session creation failed"
+    ));
+    assert_eq!(app.current_tab().turn, TurnState::Idle);
+}
+
+#[test]
+fn agent_connected_restores_proposal_channels() {
+    let mut app = test_app();
+    app.proposal_channels.set_agent_transport_available(false);
+
+    app.handle_event(AppEvent::AgentConnected {
+        name: "Copilot".to_string(),
+        model: None,
+        version: None,
+        session_id: "sid-fresh".to_string(),
+        available_models: Vec::new(),
+        current_model_id: None,
+        load_session_supported: true,
+        image_supported: false,
+        session_capabilities_ready: true,
+        telemetry_byok_binding: None,
+    });
+
+    assert!(
+        app.proposal_channels
+            .issue("sid-fresh".into(), 1, None, false)
+            .is_ok(),
+        "reaching Connected must restore proposal channels when the pipe is live"
+    );
+}
+
+/// Auth failures must reach the sign-in screen, not get flattened to a dead
+/// `connection.lost`. Classification is typed (`AgentFailure::AuthRequired`),
+/// done once at the helper boundary, so the handler routes purely on the
+/// discriminant — no substring matching of the message text.
+#[test]
+fn auth_error_routes_to_signin_not_connection_lost() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.handle_event(AppEvent::AgentError {
+        session_id: None,
+        failure: crate::protocol::acp::failure::AgentFailure::AuthRequired {
+            message: "authentication required".to_string(),
+        },
+        message: "new_session over master pipe failed: authentication required".to_string(),
+    });
+    assert_eq!(
+        app.mode,
+        AppMode::Setup,
+        "an auth failure must route to the sign-in screen"
+    );
+    assert!(
+        !matches!(app.state, ConnectionState::Failed(_)),
+        "an auth failure must not become a Failed connection-lost state"
+    );
+}
+
+/// A soft stop is an *outcome*, not a connection failure: the handler must
+/// append an informational System line carrying the localized reason text,
+/// while leaving the connection `Connected` and never routing to the
+/// sign-in screen. This is what keeps soft stops off the `AgentFailure`
+/// axis — the gap the client-level emit test cannot cover.
+#[test]
+fn soft_stop_appends_system_line_without_changing_state() {
+    use crate::protocol::acp::soft_stop::SoftStopReason;
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    bind_test_session(&mut app, DEFAULT_TAB_ID);
+
+    app.handle_event(AppEvent::AgentSoftStop {
+        session_id: "0".to_string(),
+        reason: SoftStopReason::Refusal,
+    });
+
+    let expected = t!("system.stopped_refusal").into_owned();
+    assert!(
+        app.current_tab()
+            .messages
+            .iter()
+            .any(|m| matches!(m, ChatMessage::Notice {
+                kind: NoticeKind::Warning,
+                text,
+            } if *text == expected)),
+        "a soft stop must append its localized warning"
+    );
+    assert!(
+        matches!(app.state, ConnectionState::Connected),
+        "a soft stop must not change the connection state"
+    );
+    assert_ne!(
+        app.mode,
+        AppMode::Setup,
+        "a soft stop is not a failure — it must never route to sign-in"
+    );
+    assert!(
+        !app.current_tab()
+            .messages
+            .iter()
+            .any(|m| matches!(m, ChatMessage::Error(_))),
+        "a soft stop must not surface an Error line"
+    );
+}
+
+/// Each `SoftStopReason` must resolve to its own distinct localized line so
+/// the user can tell truncation from a request-budget stop from a refusal.
+#[test]
+fn soft_stop_reasons_map_to_distinct_localized_lines() {
+    use crate::protocol::acp::soft_stop::SoftStopReason;
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    for (reason, key) in [
+        (SoftStopReason::MaxTokens, "system.stopped_max_tokens"),
+        (
+            SoftStopReason::MaxTurnRequests,
+            "system.stopped_max_turn_requests",
+        ),
+        (SoftStopReason::Refusal, "system.stopped_refusal"),
+    ] {
+        let mut app = test_app();
+        bind_test_session(&mut app, DEFAULT_TAB_ID);
+        app.handle_event(AppEvent::AgentSoftStop {
+            session_id: "0".to_string(),
+            reason,
+        });
+        let expected = t!(key).into_owned();
+        assert!(
+            app.current_tab()
+                .messages
+                .iter()
+                .any(|m| matches!(m, ChatMessage::Notice {
+                    kind: NoticeKind::Warning,
+                    text,
+                } if *text == expected)),
+            "reason {reason:?} must render the {key} line"
+        );
+    }
+}
+
+/// F7: while `Connecting`, the activity frame must keep advancing on Tick so
+/// the indicator animates and a cold start doesn't look frozen.
+#[test]
+fn connecting_state_advances_activity_frame_on_tick() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connecting("Initializing ACP...".to_string());
+    let before = app.activity_frame;
+    app.handle_event(AppEvent::Tick);
+    assert_ne!(
+        app.activity_frame, before,
+        "the connecting indicator must keep animating (F7)"
+    );
+}
+
+/// `connection_state: closed/failed` is pane-process termination, not
+/// a shell command failure — it carries no exit code, no command
+/// context, and the pane is gone so any follow-up ReadPaneOutput
+/// would trip E_FAIL. The dispatcher in `handle_event` only routes
+/// `vt_sequence` events to autofix; this asserts the connection_state
+/// path stays banner-only.
+#[test]
+fn connection_state_closed_does_not_trigger_autofix_even_when_binding_cleared() {
+    use crate::agent_sessions::{CliSource, SessionEvent};
+    use std::path::PathBuf;
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.autofix_enabled = true;
+    let pane = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+    // Bind, then unbind — mirrors the Copilot order: agent.session.end
+    // hook arrives and runs SessionStopped before WT emits closed.
+    // The session is NOT tagged with `SessionOrigin::AgentPane` (this
+    // test sets up state via raw SessionStarted, so origin defaults
+    // to Unknown), which means SessionStopped immediately transitions
+    // to Ended and releases the pane binding — exactly the precondition
+    // this test depends on.
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: "copilot-key".into(),
+        cli_source: CliSource::Copilot,
+        pane_session_id: pane.into(),
+        cwd: PathBuf::from("/work"),
+        title: "t".into(),
+    });
+    app.agent_sessions.apply(SessionEvent::SessionStopped {
+        key: "copilot-key".into(),
+        reason: "user_exit".into(),
+    });
+    // Sanity: binding is gone, so the inner is_agent_pane guard alone
+    // would not catch this.
+    assert!(!app.agent_sessions.is_agent_pane(pane));
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: pane.to_string(),
+        tab_id: None,
+        params: serde_json::json!({"session_id": pane, "state": "closed"}),
+    });
+
+    assert!(
+        app.tab_sessions
+            .values()
+            .all(|t| t.autofix.pane_id.is_none()),
+        "connection_state:closed must never arm autofix — no exit code, \
+         no command context, pane is dead so subsequent ReadPaneOutput \
+         would throw E_FAIL"
+    );
+    assert!(
+        app.current_tab().turn.is_idle(),
+        "no autofix prompt should be in-flight"
+    );
+    // The pane-closed event surfaces via the banner / `wt_notifications`,
+    // never in chat. Chat is the agent dialogue surface.
+    assert!(
+        app.current_tab().messages.is_empty(),
+        "WT events must not push into chat history"
+    );
+    assert!(app.show_notification_banner);
+}
+
+/// Regression: a stale agent-CLI binding in the registry must NOT eat a
+/// real shell command failure. OSC 133;D is emitted by shell integration
+/// (PowerShell/bash), never by an agent CLI, so a D arriving in an
+/// "agent-bound" pane implies the binding is a ghost — typically left
+/// over from a hook that misreported `pane_id`, or from the previous
+/// agent CLI having exited without the registry catching it yet.
+/// Real-world repro: autofix runs Copilot, Copilot's hooks emit events
+/// with `pane_id` = the source (user's) pane, registry registers the
+/// user's PowerShell pane as Copilot-bound, then the next typo there
+/// silently dies in the suppression check.
+#[test]
+fn ghost_agent_binding_does_not_suppress_shell_failure() {
+    use crate::agent_sessions::{CliSource, SessionEvent};
+    use std::path::PathBuf;
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.autofix_enabled = true;
+    let pane = "11111111-2222-3333-4444-555555555555";
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: "copilot-key".into(),
+        cli_source: CliSource::Copilot,
+        pane_session_id: pane.into(),
+        cwd: PathBuf::from("/work"),
+        title: "t".into(),
+    });
+    assert!(
+        app.agent_sessions.is_agent_pane(pane),
+        "precondition: pane is registered as agent-bound"
+    );
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "vt_sequence".to_string(),
+        pane_id: pane.to_string(),
+        tab_id: Some("test-tab".to_string()),
+        params: serde_json::json!({
+            "session_id": pane,
+            "sequence": "osc:133;D;1",
+        }),
+    });
+
+    assert_eq!(
+        app.tab_mut("test-tab").autofix.pane_id.as_deref(),
+        Some(pane),
+        "shell failure must arm autofix even when the registry still holds a stale agent binding for the pane"
+    );
+}
+
+/// Positive coverage: a vt_sequence (osc:133;D;1) in a normal shell pane
+/// still fires autofix (the proper command-failure signal). Ensures the
+/// new "vt_sequence-only" routing doesn't silently disable autofix.
+#[test]
+fn vt_sequence_failure_in_normal_pane_still_triggers_autofix() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.autofix_enabled = true;
+    let pane = "fedcba98-7654-3210-fedc-ba9876543210";
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "vt_sequence".to_string(),
+        pane_id: pane.to_string(),
+        tab_id: Some("test-tab".to_string()),
+        params: serde_json::json!({
+            "session_id": pane,
+            "sequence": "osc:133;D;1",
+        }),
+    });
+
+    assert_eq!(
+        app.tab_mut("test-tab").autofix.pane_id.as_deref(),
+        Some(pane),
+        "vt_sequence osc:133;D;<non-zero> in a normal pane must still arm autofix"
+    );
+}
+
+fn vt_event(pane: &str, tab: &str, seq: &str) -> AppEvent {
+    AppEvent::WtEvent {
+        method: "vt_sequence".to_string(),
+        pane_id: pane.to_string(),
+        tab_id: Some(tab.to_string()),
+        params: serde_json::json!({ "session_id": pane, "sequence": seq }),
+    }
+}
+
+#[test]
+fn hookless_shell_errors_submit_one_correctly_routed_autofix_prompt() {
+    let mut app = test_app();
+    let (tx, mut prompts) = tokio::sync::mpsc::unbounded_channel();
+    app.prompt_tx = tx;
+    app.state = ConnectionState::Connected;
+    app.autofix_enabled = true;
+    app.owner_tab_id = Some("test-tab".into());
+    app.window_id = Some("test-window".into());
+    app.pane_id = Some("helper-pane".into());
+    let pane = "shell-without-hooks";
+    assert!(app.agent_sessions.iter_sorted().is_empty());
+
+    app.handle_event(vt_event(pane, "test-tab", "osc:133;D;0"));
+    app.handle_event(vt_event("other-shell", "other-tab", "osc:133;D;1"));
+    assert!(
+        prompts.try_recv().is_err(),
+        "success and other tabs must not submit"
+    );
+
+    app.handle_event(vt_event(pane, "test-tab", "osc:133;D;1"));
+    let prompt = prompts
+        .try_recv()
+        .expect("shell error must reach the ACP prompt queue");
+    assert!(prompt.is_autofix());
+    let context = prompt.pane_context.expect("autofix must retain its source");
+    assert_eq!(context.source_pane_id.as_deref(), Some(pane));
+    assert_eq!(context.tab_id.as_deref(), Some("test-tab"));
+    assert_eq!(context.window_id.as_deref(), Some("test-window"));
+
+    app.handle_event(vt_event(pane, "test-tab", "osc:133;A"));
+    app.handle_event(vt_event(pane, "test-tab", "osc:133;D;1"));
+    assert!(
+        prompts.try_recv().is_err(),
+        "echo/repeated failure must not double-submit"
+    );
+    assert_eq!(
+        app.tab_mut("test-tab").autofix.pane_id.as_deref(),
+        Some(pane)
+    );
+    assert_eq!(app.state, ConnectionState::Connected);
+    assert!(app.agent_sessions.iter_sorted().is_empty());
+}
+
+#[test]
+fn hookless_manual_fix_still_submits_when_auto_suggest_is_disabled() {
+    let mut app = test_app();
+    let (tx, mut prompts) = tokio::sync::mpsc::unbounded_channel();
+    app.prompt_tx = tx;
+    app.state = ConnectionState::Connected;
+    app.autofix_enabled = false;
+    app.show_welcome_hint = false;
+    bind_test_session(&mut app, "chat-without-hooks");
+
+    app.cmd_fix(false, "explain the last failure".into());
+
+    let prompt = prompts
+        .try_recv()
+        .expect("manual /fix must not require hooks");
+    assert!(prompt.is_autofix());
+    assert_eq!(prompt.text, "explain the last failure");
+    assert!(prompts.try_recv().is_err());
+    assert!(app.agent_sessions.iter_sorted().is_empty());
+    assert_eq!(app.state, ConnectionState::Connected);
+}
+
+#[test]
+fn hookless_session_snapshot_renders_and_dispatches_resume() {
+    use crate::agent_sessions::AgentStatus;
+    use crate::protocol::acp::client::MasterExtRequest;
+
+    let _locale = crate::test_support::lock_locale();
+    let (mut app, mut requests) = test_app_with_master_rx();
+    app.state = ConnectionState::Connected;
+    app.current_agent_id = "claude".into();
+    app.current_tab_mut().pane_open = true;
+    app.current_tab_mut().input = "draft without hooks".into();
+    app.current_tab_mut().cursor_pos = app.current_tab().input.len();
+    app.open_agents_view_for_tab(DEFAULT_TAB_ID.into());
+    let MasterExtRequest::SessionsList { request_id, .. } = requests.try_recv().unwrap() else {
+        panic!("opening sessions must request history without any hook");
+    };
+    let mut row = session_info_for_test("history-without-hooks");
+    row.status = Some(AgentStatus::Historical);
+    row.cwd = std::env::temp_dir();
+    app.handle_event(AppEvent::AgentsSnapshotLoaded {
+        request_id,
+        sessions: vec![row],
+    });
+    app.window_id = Some("42".into());
+    assert!(
+        app.agent_sessions.iter_sorted().is_empty(),
+        "history must not need a local hook row"
+    );
+    assert_eq!(
+        app.agents_rows_for_tab(DEFAULT_TAB_ID)[0].key,
+        "history-without-hooks"
+    );
+    assert!(render_to_text(&mut app, 100, 24).contains("history-without-hooks"));
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().current_view, View::Chat);
+    assert_eq!(app.current_tab().input, "draft without hooks");
+    app.open_agents_view_for_tab(DEFAULT_TAB_ID.into());
+    let MasterExtRequest::SessionsList { request_id, .. } = requests.try_recv().unwrap() else {
+        panic!("reopening sessions must request history");
+    };
+    let mut row = session_info_for_test("history-without-hooks");
+    row.status = Some(AgentStatus::Historical);
+    row.cwd = std::env::temp_dir();
+    app.handle_event(AppEvent::AgentsSnapshotLoaded {
+        request_id,
+        sessions: vec![row],
+    });
+    app.current_tab_mut().agents_list_state.select(Some(0));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let command = app
+        .last_dispatched_command_for_test()
+        .expect("resume dispatched");
+    assert_eq!(command.kind, DispatchedCommandKind::NewTabResume);
+    assert!(command
+        .argv
+        .join(" ")
+        .contains("claude --resume history-without-hooks"));
+}
+
+#[tokio::test]
+async fn hookless_chat_streams_while_listener_readiness_is_pending() {
+    use crate::protocol::acp::client::mock_agent_tests::connect_mock_agent;
+    use agent_client_protocol as acp;
+
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            // Only this channel uses the missing executable: no PATH, COM
+            // registration or user configuration is changed.
+            let listener = Arc::new(crate::shell::wt_channel::CliChannel::with_test_executable(
+                std::env::temp_dir()
+                    .join(format!("missing-wtcli-{}.exe", uuid::Uuid::new_v4()))
+                    .to_string_lossy()
+                    .into_owned(),
+            ));
+            let mut readiness = Box::pin(listener.start_reader());
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(50), &mut readiness)
+                    .await
+                    .is_err(),
+                "the failed listener must actually be waiting to retry"
+            );
+
+            let (conn, mut events, _seen) = connect_mock_agent();
+            conn.initialize(acp::schema::v1::InitializeRequest::new(
+                acp::schema::ProtocolVersion::LATEST,
+            ))
+            .await
+            .unwrap();
+            let session = conn
+                .new_session(acp::schema::v1::NewSessionRequest::new("/test"))
+                .await
+                .unwrap();
+            let sid = session.session_id.to_string();
+            let mut app = test_app();
+            app.state = ConnectionState::Connected;
+            app.show_welcome_hint = false;
+            let (tx, mut prompts) = tokio::sync::mpsc::unbounded_channel();
+            app.prompt_tx = tx;
+            bind_test_session(&mut app, &sid);
+            app.current_tab_mut().input = "hookless-chat".into();
+            app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            let prompt = prompts
+                .try_recv()
+                .expect("chat submission cannot wait for hooks");
+            assert!(!prompt.is_autofix());
+            assert_eq!(prompt.text, "hookless-chat");
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                conn.prompt(acp::schema::v1::PromptRequest::new(
+                    session.session_id,
+                    vec![prompt.text.into()],
+                )),
+            )
+            .await
+            .expect("chat cannot wait for listener readiness")
+            .unwrap();
+            pump_until(&mut app, &mut events, |event| {
+                matches!(event, AppEvent::AgentMessageChunk { .. })
+            })
+            .await;
+            assert!(app
+                .current_tab()
+                .active_agent_text()
+                .contains("MOCK_OK:hookless-chat"));
+            assert!(app.agent_sessions.iter_sorted().is_empty());
+            assert_eq!(app.state, ConnectionState::Connected);
+            // Drop cancels this test's retry loop rather than leaving it alive.
+            drop(readiness);
+            drop(listener);
+        })
+        .await;
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn hookless_listener_recovery_delivers_shell_error_to_autofix() {
+    struct Fixture(std::path::PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            for name in ["listener.cmd", "attempted"] {
+                let _ = std::fs::remove_file(self.0.join(name));
+            }
+            let _ = std::fs::remove_dir(&self.0);
+        }
+    }
+    let fixture =
+        Fixture(std::env::temp_dir().join(format!("wta-listener-{}", uuid::Uuid::new_v4())));
+    std::fs::create_dir(&fixture.0).unwrap();
+    let executable = fixture.0.join("listener.cmd");
+    // First process exits before subscribing. The next emits a readiness
+    // marker and an ordinary WT shell error, but never any agent hook.
+    std::fs::write(&executable, r#"@echo off
+if exist "%~dp0attempted" goto ready
+echo attempted>"%~dp0attempted"
+exit /b 1
+:ready
+echo {"_wtcli":"listener_ready","token":"%~6"}
+echo {"method":"vt_sequence","params":{"pane_id":"shell-after-recovery","tab_id":"test-tab","sequence":"osc:133;D;1"}}
+exit /b 0
+"#.replace('\n', "\r\n")).unwrap();
+    let listener = Arc::new(crate::shell::wt_channel::CliChannel::with_test_executable(
+        executable.to_string_lossy().into_owned(),
+    ));
+    let mut events = listener.subscribe_events();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(10), listener.start_reader())
+            .await
+            .expect("listener must recover"),
+        "the replacement process must reach subscription readiness"
+    );
+    let ready = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+        .await
+        .expect("recovered subscription must announce readiness")
+        .expect("event channel remains open");
+    assert_eq!(ready["method"], "wt_listener_ready");
+    assert!(
+        ready.get("_wtcli").is_none(),
+        "raw listener tokens stay internal"
+    );
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+        .await
+        .expect("WT event must be delivered")
+        .expect("event channel remains open");
+    assert_eq!(
+        event["method"], "vt_sequence",
+        "ordinary events follow subscription readiness"
+    );
+    let params = event["params"].clone();
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.autofix_enabled = true;
+    app.owner_tab_id = Some("test-tab".into());
+    let (tx, mut prompts) = tokio::sync::mpsc::unbounded_channel();
+    app.prompt_tx = tx;
+    app.handle_event(AppEvent::WtEvent {
+        method: event["method"].as_str().unwrap().into(),
+        pane_id: params["pane_id"].as_str().unwrap().into(),
+        tab_id: Some(params["tab_id"].as_str().unwrap().into()),
+        params,
+    });
+    let prompt = prompts
+        .try_recv()
+        .expect("recovered event must submit Autofix, not just update a flag");
+    assert!(prompt.is_autofix());
+    assert_eq!(
+        prompt.pane_context.unwrap().source_pane_id.as_deref(),
+        Some("shell-after-recovery")
+    );
+    assert!(app.agent_sessions.iter_sorted().is_empty());
+    drop(listener);
+    drop(events);
+}
+
+/// Detected state must survive the `osc:133;A` that PowerShell emits
+/// ~1ms after the triggering `osc:133;D` — that A is the trigger's
+/// echo, not the user moving on. The NEXT prompt-start (after the
+/// user actually does something) is what dismisses.
+#[test]
+fn detected_survives_trigger_echo_dismisses_on_next_prompt_start() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.autofix_enabled = false; // suggest-mode → produces Detected
+    let pane = "11111111-2222-3333-4444-555555555555";
+    let tab = "tab-A";
+
+    // D;1 → Detected pill armed.
+    app.handle_event(vt_event(pane, tab, "osc:133;D;1"));
+    assert!(
+        matches!(
+            app.tab_mut(tab).autofix.bar_snapshot,
+            AutofixBarSnapshot::Detected { .. }
+        ),
+        "D;1 must establish Detected"
+    );
+    assert_eq!(
+        app.tab_mut(tab).autofix.trigger_echo_pane.as_deref(),
+        Some(pane),
+        "trigger_echo_pane must be armed at Detected set so the immediate A is consumed"
+    );
+
+    // Immediate A (PowerShell redrawing the prompt) — must NOT dismiss.
+    app.handle_event(vt_event(pane, tab, "osc:133;A"));
+    assert!(
+        matches!(
+            app.tab_mut(tab).autofix.bar_snapshot,
+            AutofixBarSnapshot::Detected { .. }
+        ),
+        "the trigger-echo A must not dismiss Detected"
+    );
+    assert!(
+        app.tab_mut(tab).autofix.trigger_echo_pane.is_none(),
+        "trigger_echo_pane must be consumed by the echo A"
+    );
+
+    // A second A (user actually moved on) — must dismiss.
+    app.handle_event(vt_event(pane, tab, "osc:133;A"));
+    assert!(
+        matches!(
+            app.tab_mut(tab).autofix.bar_snapshot,
+            AutofixBarSnapshot::Idle
+        ),
+        "a subsequent A (user moved on) must dismiss Detected"
+    );
+}
+
+/// Pending state (auto-suggest on path: D arms `autofix.pane_id` and
+/// emits Pending) must also survive the trigger-echo A and dismiss on
+/// the next user-driven prompt-start. The Pending/Armed dismiss path
+/// goes through `turn_cancel` (or its manual fallback when no ACP
+/// session is bound).
+#[test]
+fn pending_survives_trigger_echo_dismisses_on_next_prompt_start() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.autofix_enabled = true; // LLM-call path → produces Pending
+    let pane = "22222222-3333-4444-5555-666666666666";
+    let tab = "tab-B";
+
+    app.handle_event(vt_event(pane, tab, "osc:133;D;1"));
+    assert_eq!(
+        app.tab_mut(tab).autofix.pane_id.as_deref(),
+        Some(pane),
+        "D;1 must arm Pending (autofix.pane_id set)"
+    );
+    assert_eq!(
+        app.tab_mut(tab).autofix.trigger_echo_pane.as_deref(),
+        Some(pane),
+    );
+
+    // Echo A — Pending stays.
+    app.handle_event(vt_event(pane, tab, "osc:133;A"));
+    assert_eq!(
+        app.tab_mut(tab).autofix.pane_id.as_deref(),
+        Some(pane),
+        "trigger-echo A must not cancel Pending"
+    );
+
+    // Real A — turn_cancel (or manual fallback) clears pane_id and bar.
+    app.handle_event(vt_event(pane, tab, "osc:133;A"));
+    assert!(
+        app.tab_mut(tab).autofix.pane_id.is_none(),
+        "subsequent A must cancel Pending"
+    );
+    assert!(
+        matches!(
+            app.tab_mut(tab).autofix.bar_snapshot,
+            AutofixBarSnapshot::Idle
+        ),
+        "bar must return to Idle after Pending cancel"
+    );
+}
+
+/// User clicks the Detected pill on a stable prompt → autofix
+/// transitions Detected → Pending → Armed via the LLM call. No D
+/// event is in flight during this transition, so no echo A is
+/// coming. The next prompt-start the user produces must dismiss on
+/// the FIRST Enter, not be eaten as a fake echo.
+///
+/// Bug repro before this fix: emit_autofix_state_pending used to
+/// arm `trigger_echo_pane` unconditionally, so the forced-from-
+/// Detected path planted a gate with no echo to consume. The
+/// gate then ate the user's first real Enter.
+#[test]
+fn force_from_detected_does_not_arm_echo_gate() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.autofix_enabled = false; // suggest-mode produces Detected first
+    let pane = "44444444-5555-6666-7777-888888888888";
+    let tab = "tab-D";
+
+    // D;1 → Detected (gate armed, echo A consumed below).
+    app.handle_event(vt_event(pane, tab, "osc:133;D;1"));
+    app.handle_event(vt_event(pane, tab, "osc:133;A")); // echo
+    assert!(
+        app.tab_mut(tab).autofix.trigger_echo_pane.is_none(),
+        "echo A must consume the gate"
+    );
+
+    // User clicks the pill → forced trigger → Pending. This is on a
+    // stable prompt with no D in flight — gate must NOT re-arm.
+    let synth = WtNotification {
+        severity: WtEventSeverity::Actionable,
+        pane_id: pane.to_string(),
+        tab_id: Some(tab.to_string()),
+        summary: "Command failed (exit 1)".to_string(),
+        acknowledged: false,
+        age_ticks: 0,
+    };
+    app.trigger_autofix_inner(&synth, /*forced*/ true);
+    assert!(
+        app.tab_mut(tab).autofix.trigger_echo_pane.is_none(),
+        "force-from-Detected path must not arm trigger_echo_pane — \
+         no D is in flight, no echo A is coming, and arming would eat \
+         the user's first dismiss Enter"
+    );
+}
+
+/// Returning to Idle clears the echo guard. Otherwise, a stale
+/// `trigger_echo_pane` could swallow a real prompt-start that arrives
+/// long after the state has already been cleared by other means
+/// (e.g. the user clicked the Suggested pill, then the autofix
+/// re-fires later in the same pane).
+#[test]
+fn trigger_echo_pane_clears_when_state_returns_to_idle() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.autofix_enabled = false;
+    let pane = "33333333-4444-5555-6666-777777777777";
+    let tab = "tab-C";
+
+    app.handle_event(vt_event(pane, tab, "osc:133;D;1"));
+    assert_eq!(
+        app.tab_mut(tab).autofix.trigger_echo_pane.as_deref(),
+        Some(pane)
+    );
+
+    // Externally clear the bar (e.g. user dismissed via Esc / pill).
+    let tab_owned = tab.to_string();
+    app.emit_autofix_state_cleared(&tab_owned);
+    assert!(
+        app.tab_mut(tab).autofix.trigger_echo_pane.is_none(),
+        "trigger_echo_pane must be released when bar transitions to Idle, \
+         otherwise the next real prompt-start would be silently swallowed"
+    );
+}
+
+/// Gemini "manual launch" scenario: the user opened a normal pwsh/cmd
+/// pane and typed `gemini`. The hook bridge fires `agent.session.start`
+/// (binding the pane) but `agent.session.end` is unreliable on `/exit`
+/// (Gemini cancels its own hook chain), AND the pane stays alive after
+/// Gemini exits because pwsh keeps running. So neither
+/// `connection_state: closed` nor `SessionStopped` ever arrive.
+///
+/// The shell's FinalTerm prompt-start marker (`osc:133;A`) fires when
+/// pwsh redraws its prompt after Gemini releases the foreground —
+/// that's our signal.
+#[test]
+fn osc133_prompt_start_in_agent_pane_transitions_row_to_ended() {
+    use crate::agent_sessions::{CliSource, SessionEvent};
+    use std::path::PathBuf;
+    let mut app = test_app();
+    let pane = "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb";
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: "gemini-key".into(),
+        cli_source: CliSource::Gemini,
+        pane_session_id: pane.into(),
+        cwd: PathBuf::from("/work"),
+        title: "t".into(),
+    });
+    // Sanity: row is live before the prompt-start arrives.
+    assert!(app.agent_sessions.is_agent_pane(pane));
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "vt_sequence".to_string(),
+        pane_id: pane.to_string(),
+        tab_id: None,
+        params: serde_json::json!({
+            "session_id": pane,
+            "sequence": "osc:133;A",
+        }),
+    });
+
+    let row = app
+        .agent_sessions
+        .iter_sorted()
+        .into_iter()
+        .find(|s| s.key == "gemini-key")
+        .expect("row still exists");
+    assert!(
+        matches!(row.status, crate::agent_sessions::AgentStatus::Ended),
+        "agent-bound pane seeing osc:133;A must transition to Ended",
+    );
+    // The pane→key binding must be cleared either way.
+    assert!(
+        !app.agent_sessions.is_agent_pane(pane),
+        "pane binding should be cleared after close",
+    );
+}
+
+/// Negative coverage: `osc:133;A` in a normal (non-agent) pane must
+/// never apply PaneClosed (defensive — the registry would treat it as
+/// a no-op anyway, but verify the guard short-circuits the call).
+#[test]
+fn osc133_prompt_start_in_normal_pane_is_inert() {
+    let mut app = test_app();
+    let pane = "00000000-1111-2222-3333-444444444444";
+    // No SessionStarted apply -> not an agent pane.
+    app.handle_event(AppEvent::WtEvent {
+        method: "vt_sequence".to_string(),
+        pane_id: pane.to_string(),
+        tab_id: None,
+        params: serde_json::json!({
+            "session_id": pane,
+            "sequence": "osc:133;A",
+        }),
+    });
+    // Nothing to assert positively — the registry just doesn't grow.
+    assert_eq!(app.agent_sessions.iter_sorted().len(), 0);
+}
+
+/// Gemini scenario: no `agent.session.end` hook bridge, so the only
+/// signal we get when the user `/exit`s a resumed Gemini pane is
+/// WT-native `connection_state: closed`. Without bridging that into a
+/// `SessionEvent::PaneClosed`, the row stays stuck at Idle/Working
+/// forever in the session management list.
+#[test]
+fn connection_state_closed_transitions_agent_row_to_ended() {
+    use crate::agent_sessions::{AgentStatus, CliSource, SessionEvent};
+    use std::path::PathBuf;
+    let mut app = test_app();
+    let pane = "deadbeef-1111-2222-3333-444455556666";
+    // Gemini-style: the pane was bound (via ResumePaneAssigned in real
+    // life; SessionStarted is a stand-in here) but no session.end hook
+    // ever fires.
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: "gemini-key".into(),
+        cli_source: CliSource::Gemini,
+        pane_session_id: pane.into(),
+        cwd: PathBuf::from("/work"),
+        title: "t".into(),
+    });
+    // Sanity: the row is live before close.
+    let s = app
+        .agent_sessions
+        .iter_sorted()
+        .into_iter()
+        .find(|s| s.key == "gemini-key")
+        .expect("row exists");
+    assert!(matches!(s.status, AgentStatus::Idle | AgentStatus::Working));
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "connection_state".to_string(),
+        pane_id: pane.to_string(),
+        tab_id: None,
+        params: serde_json::json!({"session_id": pane, "state": "closed"}),
+    });
+
+    let row = app
+        .agent_sessions
+        .iter_sorted()
+        .into_iter()
+        .find(|s| s.key == "gemini-key")
+        .expect("row still exists");
+    assert!(
+        matches!(row.status, AgentStatus::Ended),
+        "Gemini row must transition to Ended on connection_state:closed",
+    );
+    assert!(
+        !app.agent_sessions.is_agent_pane(pane),
+        "pane binding should be cleared after close",
+    );
+}
+
+/// Regression: OSC 133;A in an AGENT-PANE-origin session must NOT
+/// trigger PaneClosed. The previous gate (`is_agent_pane(pane_id)`)
+/// fired on any pane with a bound session, demoting agent panes
+/// when WT itself emitted a stray OSC 133;A around focus events.
+/// Fix at app.rs ~4717 restricts the bridge to origin=Unknown
+/// (shell-pane agents like `gemini` typed in pwsh).
+#[test]
+fn osc133_prompt_start_in_agent_pane_origin_is_ignored() {
+    use crate::agent_sessions::{CliSource, SessionEvent, SessionOrigin};
+    use std::path::PathBuf;
+    let mut app = test_app();
+    let pane = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    let key = "copilot-agent-pane-key";
+    app.agent_sessions.apply(SessionEvent::SessionStarted {
+        key: key.into(),
+        cli_source: CliSource::Copilot,
+        pane_session_id: pane.into(),
+        cwd: PathBuf::from("/work"),
+        title: "t".into(),
+    });
+    // Stamp this row as agent-pane origin (the wta-managed kind).
+    app.agent_sessions.set_origin(key, SessionOrigin::AgentPane);
+
+    // Sanity: row is Live before the stray OSC arrives.
+    let before = app
+        .agent_sessions
+        .iter_sorted()
+        .into_iter()
+        .find(|s| s.key == key)
+        .expect("row exists");
+    assert!(matches!(
+        before.status,
+        crate::agent_sessions::AgentStatus::Idle | crate::agent_sessions::AgentStatus::Working
+    ));
+    assert_eq!(before.origin, SessionOrigin::AgentPane);
+
+    // Fire OSC 133;A — this is the event WT spuriously emits
+    // around focus_pane on agent panes. The handler must IGNORE
+    // it for agent-pane origin and leave the row Live.
+    app.handle_event(AppEvent::WtEvent {
+        method: "vt_sequence".to_string(),
+        pane_id: pane.to_string(),
+        tab_id: None,
+        params: serde_json::json!({
+            "session_id": pane,
+            "sequence": "osc:133;A",
+        }),
+    });
+
+    let after = app
+        .agent_sessions
+        .iter_sorted()
+        .into_iter()
+        .find(|s| s.key == key)
+        .expect("row must still exist (must NOT be pruned by spurious PaneClosed)");
+    assert!(
+        matches!(
+            after.status,
+            crate::agent_sessions::AgentStatus::Idle | crate::agent_sessions::AgentStatus::Working
+        ),
+        "agent-pane row must stay Live on OSC 133;A; got {:?}",
+        after.status,
+    );
+    assert!(
+        app.agent_sessions.is_agent_pane(pane),
+        "pane binding must NOT be cleared by a spurious shell-prompt OSC",
+    );
+}
+
+// ─── turn-state integration tests ──────────────────────────────────────
+//
+// Drive `App` directly through the turn-state transitions in
+// `doc/specs/turn-state-refactor.md`'s table. Most tests bind the active tab
+// to `DEFAULT_TAB_ID`, matching production's exact SessionId routing while
+// keeping the setup terse.
+
+fn bind_test_session(app: &mut App, session_id: &str) {
+    let tab_id = app.active_tab_key().to_string();
+    app.current_tab_mut().session_id = Some(session_id.to_string());
+    app.session_to_tab.insert(session_id.to_string(), tab_id);
+}
+
+fn submit_test_prompt(app: &mut App, text: &str) {
+    let tab_id = app.active_tab_key().to_string();
+    let session_id = app
+        .current_tab()
+        .session_id
+        .clone()
+        .unwrap_or_else(|| DEFAULT_TAB_ID.to_string());
+    app.current_tab_mut().session_id = Some(session_id.clone());
+    app.session_to_tab.insert(session_id.clone(), tab_id);
+    let prompt = SubmittedPrompt {
+        id: 42,
+        text: text.into(),
+        submitted_at_unix_s: 0.0,
+        context: TurnContext::default(),
+        autofix: None,
+    };
+    app.turn_submit_prompt(&session_id, prompt);
+}
+
+/// Form A end-to-end (mock-acp-agent spec, "option 2"): the mock + real
+/// `WtaClient` harness lives in the acp module (it needs the private
+/// `WtaClient`), but this App-state assertion lives here where `App`
+/// internals are reachable. We drive a prompt through the **real** ACP
+/// client against the deterministic mock, pump the resulting `AppEvent`s
+/// into a **real** `App`, and assert the streamed reply is what the chat
+/// view would show — i.e. what the chat should display is covered without a
+/// real terminal, real WT, or an LLM.
+#[tokio::test]
+async fn mock_agent_reply_streams_into_app_chat() {
+    use crate::protocol::acp::client::mock_agent_tests::connect_mock_agent;
+    use agent_client_protocol as acp;
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            // Borrow the acp-module harness: deterministic mock wired to a
+            // real WtaClient over an in-memory duplex.
+            let (conn, mut event_rx, _seen) = connect_mock_agent();
+            conn.initialize(acp::schema::v1::InitializeRequest::new(
+                acp::schema::ProtocolVersion::LATEST,
+            ))
+            .await
+            .expect("initialize failed");
+            let session = conn
+                .new_session(acp::schema::v1::NewSessionRequest::new("/test"))
+                .await
+                .expect("new_session failed");
+            let session_id = session.session_id.to_string();
+            conn.prompt(acp::schema::v1::PromptRequest::new(
+                session.session_id.clone(),
+                vec!["hello".into()],
+            ))
+            .await
+            .expect("prompt failed");
+
+            // Real App with an in-flight turn so streamed chunks are accepted
+            // (the AgentMessageChunk handler drops chunks on an idle turn).
+            let mut app = test_app();
+            bind_test_session(&mut app, &session_id);
+            submit_test_prompt(&mut app, "hello");
+
+            // Pump the AppEvents the real WtaClient produced into the real
+            // App until the agent message chunk has been applied (bounded so
+            // a wiring bug fails fast instead of hanging).
+            let pumped = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    match event_rx.recv().await {
+                        Some(ev) => {
+                            let is_chunk = matches!(ev, AppEvent::AgentMessageChunk { .. });
+                            app.handle_event(ev);
+                            if is_chunk {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
+            })
+            .await;
+            assert!(
+                pumped.is_ok(),
+                "timed out waiting for the agent message chunk"
+            );
+
+            // "What the chat shows" while streaming: the mock's reply is in
+            // the active tab's ordered transcript.
+            assert!(
+                app.current_tab()
+                    .active_agent_text()
+                    .contains("MOCK_OK:hello"),
+                "mock reply must stream into the App transcript; got {:?}",
+                app.current_tab().active_agent_text()
+            );
+        })
+        .await;
+}
+
+/// Drive a prompt through the real ACP client against a mock that requests
+/// permission, pump the `PermissionRequest` into a real `App`, then simulate
+/// the user's key choice and assert the chosen option round-trips back to
+/// the agent. `expected_keys` is the key sequence the user presses; `want`
+/// is the option id the mock must end up recording.
+async fn run_permission_scenario(expected_keys: &[KeyCode], want: &str) {
+    run_permission_scenario_with_modifiers(expected_keys, KeyModifiers::NONE, want).await;
+}
+
+async fn run_permission_scenario_with_modifiers(
+    expected_keys: &[KeyCode],
+    modifiers: KeyModifiers,
+    want: &str,
+) {
+    use crate::protocol::acp::client::mock_agent_tests::connect_mock_agent_asking_permission;
+    use agent_client_protocol as acp;
+
+    let (conn, mut event_rx, outcome) = connect_mock_agent_asking_permission();
+    conn.initialize(acp::schema::v1::InitializeRequest::new(
+        acp::schema::ProtocolVersion::LATEST,
+    ))
+    .await
+    .expect("initialize failed");
+    let session = conn
+        .new_session(acp::schema::v1::NewSessionRequest::new("/test"))
+        .await
+        .expect("new_session failed");
+    let session_id = session.session_id.to_string();
+    conn.prompt(acp::schema::v1::PromptRequest::new(
+        session.session_id.clone(),
+        vec!["do it".into()],
+    ))
+    .await
+    .expect("prompt failed");
+
+    // Real App with an in-flight turn so the permission request is accepted.
+    let mut app = test_app();
+    bind_test_session(&mut app, &session_id);
+    submit_test_prompt(&mut app, "do it");
+
+    // Pump events until the PermissionRequest is applied to the App.
+    let pumped = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match event_rx.recv().await {
+                Some(ev) => {
+                    let is_perm = matches!(ev, AppEvent::PermissionRequest { .. });
+                    app.handle_event(ev);
+                    if is_perm {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+    })
+    .await;
+    assert!(
+        pumped.is_ok(),
+        "timed out waiting for the permission request"
+    );
+
+    // Display assertion: the permission card is queued with allow/reject,
+    // allow selected by default.
+    {
+        let perm = app
+            .current_tab()
+            .permission
+            .front()
+            .expect("a permission request must be queued for display");
+        assert_eq!(perm.options.len(), 2, "expected allow + reject options");
+        assert_eq!(perm.options[0].id, "allow-once");
+        assert_eq!(perm.options[1].id, "reject-once");
+        assert_eq!(perm.selected, 0, "allow must be selected by default");
+    }
+
+    // Simulate the user's key choice (e.g. Enter = allow, Right then Enter = reject).
+    for key in expected_keys {
+        app.handle_key(KeyEvent::new(*key, modifiers));
+    }
+
+    // The choice must round-trip back to the agent.
+    let resolved = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(v) = outcome.lock().unwrap().clone() {
+                break v;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("timed out waiting for the permission outcome to reach the agent");
+    assert_eq!(resolved, want, "the agent must receive the user's choice");
+
+    // The card is cleared once resolved.
+    assert!(
+        app.current_tab().permission.is_empty(),
+        "the permission card must clear after the user resolves it"
+    );
+}
+
+/// Permission allow round-trip: Enter on the default-selected option (allow)
+/// surfaces the card, then sends `allow-once` back to the agent.
+#[tokio::test]
+async fn permission_allow_round_trips_to_agent() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(run_permission_scenario(&[KeyCode::Enter], "allow-once"))
+        .await;
+}
+
+/// Permission reject round-trip: Right moves selection to reject, Enter
+/// sends `reject-once` back to the agent.
+#[tokio::test]
+async fn permission_reject_round_trips_to_agent() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(run_permission_scenario(
+            &[KeyCode::Right, KeyCode::Enter],
+            "reject-once",
+        ))
+        .await;
+}
+
+/// Regression (#permission-quick-keys): the `y` quick-key must resolve to
+/// the allow option even though the wire `kind` is PascalCase (`AllowOnce`)
+/// while the matcher searches for the lowercase substring `allow`. Before
+/// the case-insensitive fix this keypress was a silent no-op and the agent
+/// never received a response — this scenario would time out.
+#[tokio::test]
+async fn permission_quick_allow_key_round_trips_to_agent() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(run_permission_scenario(&[KeyCode::Char('y')], "allow-once"))
+        .await;
+}
+
+#[tokio::test]
+async fn permission_control_y_quick_allow_round_trips_to_agent() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            for key in [KeyCode::Char('y'), KeyCode::Char('Y')] {
+                run_permission_scenario_with_modifiers(&[key], KeyModifiers::CONTROL, "allow-once")
+                    .await;
+            }
+        })
+        .await;
+}
+
+/// Regression (#permission-quick-keys): the `n` quick-key must resolve to
+/// the reject option. See [`permission_quick_allow_key_round_trips_to_agent`].
+#[tokio::test]
+async fn permission_quick_reject_key_round_trips_to_agent() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(run_permission_scenario(
+            &[KeyCode::Char('n')],
+            "reject-once",
+        ))
+        .await;
+}
+
+#[tokio::test]
+async fn permission_enter_resolves_only_the_fifo_front() {
+    let mut app = test_app();
+    let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+    let (second_tx, mut second_rx) = tokio::sync::oneshot::channel();
+
+    let mut first = perm_with("first");
+    first.responder = Some(first_tx);
+    let mut second = perm_with("second");
+    second.responder = Some(second_tx);
+    app.current_tab_mut().permission.push_back(first);
+    app.current_tab_mut().permission.push_back(second);
+
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+
+    assert_eq!(
+        first_rx.await.expect("first responder dropped"),
+        "allow_once"
+    );
+    assert_eq!(
+        second_rx.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty),
+        "the queued responder must remain pending"
+    );
+    assert_eq!(app.current_tab().permission.len(), 1);
+    assert_eq!(
+        app.current_tab().permission.front().unwrap().title,
+        "second"
+    );
+}
+
+/// The `kind` string is the ACP `PermissionOptionKind` rendered via
+/// `format!("{:?}", …)`, i.e. PascalCase (`AllowOnce`, `RejectAlways`).
+/// `PermOption::is_allow`/`is_reject` must match those case-insensitively
+/// so the `y`/`n` quick-keys and the `[Y]`/`[N]` button labels both fire.
+#[test]
+fn perm_option_kind_matching_is_case_insensitive() {
+    let opt = |kind: &str| PermOption {
+        id: "id".into(),
+        name: "name".into(),
+        kind: kind.into(),
+    };
+    for k in ["AllowOnce", "AllowAlways", "allow_once"] {
+        assert!(opt(k).is_allow(), "{k:?} must be recognized as allow");
+        assert!(!opt(k).is_reject(), "{k:?} must not be reject");
+    }
+    for k in ["RejectOnce", "RejectAlways", "reject_once"] {
+        assert!(opt(k).is_reject(), "{k:?} must be recognized as reject");
+        assert!(!opt(k).is_allow(), "{k:?} must not be allow");
+    }
+
+    // PermissionState index helpers pick the first matching option.
+    let perm = PermissionState {
+        tool_call_id: "tool".into(),
+        description: String::new(),
+        title: String::new(),
+        kind_label: None,
+        target: None,
+        target_is_command: false,
+        options: vec![opt("AllowOnce"), opt("RejectOnce")],
+        selected: 0,
+        responder: None,
+    };
+    assert_eq!(perm.allow_index(), Some(0));
+    assert_eq!(perm.reject_index(), Some(1));
+}
+
+#[test]
+fn permission_diagnostic_tracks_only_live_front_and_clears_lifecycle_exits() {
+    struct LogWriter(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for LogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let writer = captured.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(move || LogWriter(writer.clone()))
+        .finish();
+    let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+    let mut app = test_app();
+    bind_test_session(&mut app, DEFAULT_TAB_ID);
+    let prompt = SubmittedPrompt {
+        id: 1,
+        text: "test".into(),
+        submitted_at_unix_s: 0.0,
+        context: TurnContext::default(),
+        autofix: None,
+    };
+    app.current_tab_mut().turn = TurnState::Submitted(prompt);
+    let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+    let (second_tx, second_rx) = tokio::sync::oneshot::channel();
+    let mut first = perm_with("private command body");
+    first.tool_call_id = "first".into();
+    first.responder = Some(first_tx);
+    let mut second = perm_with("second");
+    second.tool_call_id = "second".into();
+    second.responder = Some(second_tx);
+    app.current_tab_mut().permission.push_back(first);
+    app.current_tab_mut().permission.push_back(second);
+    app.log_permission_snapshot();
+    assert_eq!(
+        app.last_permission_snapshot,
+        Some((DEFAULT_TAB_ID.into(), Some("first".into())))
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    app.log_permission_snapshot();
+    assert_eq!(
+        app.last_permission_snapshot,
+        Some((DEFAULT_TAB_ID.into(), Some("second".into())))
+    );
+    drop(first_rx);
+    drop(second_rx);
+    app.log_permission_snapshot();
+    assert_eq!(
+        app.last_permission_snapshot,
+        Some((DEFAULT_TAB_ID.into(), None))
+    );
+
+    let (sender, _receiver) = tokio::sync::oneshot::channel();
+    app.current_tab_mut()
+        .permission
+        .front_mut()
+        .unwrap()
+        .responder = Some(sender);
+    app.current_tab_mut().turn = TurnState::Idle;
+    app.log_permission_snapshot();
+    assert_eq!(
+        app.last_permission_snapshot,
+        Some((DEFAULT_TAB_ID.into(), None))
+    );
+    app.current_tab_mut().permission.clear();
+    app.current_tab_mut().session_id = Some("replacement".into());
+    app.log_permission_snapshot();
+    assert_eq!(
+        app.last_permission_snapshot,
+        Some(("replacement".into(), None))
+    );
+    let logs = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+    let snapshots: Vec<serde_json::Value> = logs
+        .lines()
+        .filter_map(|line| line.split_once("permission_ui: current permission snapshot="))
+        .map(|(_, payload)| serde_json::from_str(payload).unwrap())
+        .collect();
+    assert_eq!(
+        snapshots,
+        vec![
+            json!({"session_id": DEFAULT_TAB_ID, "tool_call_id": "first"}),
+            json!({"session_id": DEFAULT_TAB_ID, "tool_call_id": "second"}),
+            json!({"session_id": DEFAULT_TAB_ID, "tool_call_id": null}),
+            json!({"session_id": "replacement", "tool_call_id": null}),
+        ]
+    );
+    assert!(!logs.contains("private command body"));
+}
+
+#[test]
+fn permission_request_replaces_thinking_until_dismissed() {
+    let mut app = test_app();
+    bind_test_session(&mut app, DEFAULT_TAB_ID);
+    let prompt = SubmittedPrompt {
+        id: 1,
+        text: "test".into(),
+        submitted_at_unix_s: 0.0,
+        context: TurnContext::default(),
+        autofix: None,
+    };
+    app.tab_mut(DEFAULT_TAB_ID).turn = TurnState::Surfaced {
+        prompt,
+        outcome: TurnOutcome::Empty,
+        end_pending: true,
+    };
+    let (responder, _response) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::PermissionRequest {
+        session_id: DEFAULT_TAB_ID.into(),
+        tool_call_id: "tool".into(),
+        description: "Allow tool X?".into(),
+        title: "Allow tool X?".into(),
+        kind_label: None,
+        target: None,
+        target_is_command: false,
+        options: vec![
+            PermOption {
+                id: "allow-once".into(),
+                name: "Allow".into(),
+                kind: "AllowOnce".into(),
+            },
+            PermOption {
+                id: "reject-once".into(),
+                name: "Deny".into(),
+                kind: "RejectOnce".into(),
+            },
+        ],
+        responder,
+    });
+
+    assert!(
+        !app.current_tab().should_show_thinking(),
+        "an actionable permission replaces passive Thinking feedback"
+    );
+    app.current_tab_mut().permission.pop_front();
+    assert!(app.current_tab().should_show_thinking());
+    let TurnState::Surfaced { end_pending, .. } = &mut app.current_tab_mut().turn else {
+        panic!("expected surfaced turn");
+    };
+    *end_pending = false;
+    assert!(!app.current_tab().should_show_thinking());
+}
+
+#[test]
+fn surfaced_autofix_turn_accepts_follow_up_permission_request() {
+    let mut app = test_app();
+    bind_test_session(&mut app, DEFAULT_TAB_ID);
+    let prompt = SubmittedPrompt {
+        id: 1,
+        text: "autofix".into(),
+        submitted_at_unix_s: 0.0,
+        context: TurnContext::default(),
+        autofix: Some(AutofixContext { generation: 0 }),
+    };
+    app.tab_mut(DEFAULT_TAB_ID).turn = TurnState::Surfaced {
+        prompt,
+        outcome: TurnOutcome::ChatTurn,
+        end_pending: false,
+    };
+    let (responder, mut response) = tokio::sync::oneshot::channel();
+
+    app.handle_event(AppEvent::PermissionRequest {
+        session_id: DEFAULT_TAB_ID.into(),
+        tool_call_id: "follow-up-tool".into(),
+        description: "Run the next diagnostic".into(),
+        title: "Run the next diagnostic".into(),
+        kind_label: Some("$".into()),
+        target: Some("winget search PowerToys".into()),
+        target_is_command: true,
+        options: vec![PermOption {
+            id: "allow-once".into(),
+            name: "Allow once".into(),
+            kind: "AllowOnce".into(),
+        }],
+        responder,
+    });
+
+    assert_eq!(app.current_tab().permission.len(), 1);
+    assert_eq!(
+        response.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty),
+        "WTA must wait for the user instead of implicitly cancelling"
+    );
+}
+
+#[test]
+fn yolo_enabled_permission_request_remains_pending_until_user_input() {
+    let mut app = test_app();
+    bind_test_session(&mut app, DEFAULT_TAB_ID);
+    app.yolo_state.lock().unwrap().update_runtime(true, false);
+    assert_eq!(
+        app.yolo_state
+            .lock()
+            .unwrap()
+            .automatic_directive(DEFAULT_TAB_ID),
+        crate::app_contracts::AutomaticYoloDirective::Enable,
+        "the test must exercise an automatically enabled Yolo state"
+    );
+    app.tab_mut(DEFAULT_TAB_ID).turn = TurnState::Submitted(SubmittedPrompt {
+        id: 1,
+        text: "test".into(),
+        submitted_at_unix_s: 0.0,
+        context: TurnContext::default(),
+        autofix: None,
+    });
+    let (responder, mut response) = tokio::sync::oneshot::channel();
+
+    app.handle_event(AppEvent::PermissionRequest {
+        session_id: DEFAULT_TAB_ID.into(),
+        tool_call_id: "provider-tool".into(),
+        description: "Choose a permission".into(),
+        title: "Choose a permission".into(),
+        kind_label: None,
+        target: None,
+        target_is_command: false,
+        options: vec![
+            PermOption {
+                id: "allow-once".into(),
+                name: "Allow once".into(),
+                kind: "AllowOnce".into(),
+            },
+            PermOption {
+                id: "allow-always".into(),
+                name: "Allow always".into(),
+                kind: "AllowAlways".into(),
+            },
+        ],
+        responder,
+    });
+
+    assert_eq!(app.current_tab().permission.len(), 1);
+    assert_eq!(
+        response.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty),
+        "Yolo must never choose an ACP permission option for the user"
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    assert_eq!(
+        response.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty),
+        "only an explicit permission choice may resolve the request"
+    );
+}
+
+fn begin_user_input_test(app: &mut App) {
+    bind_test_session(app, DEFAULT_TAB_ID);
+    app.tab_mut(DEFAULT_TAB_ID).turn = TurnState::Submitted(SubmittedPrompt {
+        id: 1,
+        text: "test".into(),
+        submitted_at_unix_s: 0.0,
+        context: TurnContext::default(),
+        autofix: None,
+    });
+}
+
+#[test]
+fn ctrl_c_cancels_prompt_while_mcp_clarification_is_visible() {
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "needs clarification");
+    app.current_tab_mut().input = "preserve this draft".into();
+    let cancellation = app
+        .current_tab()
+        .active_prompt_cancellation
+        .as_ref()
+        .expect("prompt token")
+        .token
+        .clone();
+    let (input_tx, mut input_rx) = tokio::sync::oneshot::channel();
+    let (permission_tx, mut permission_rx) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::UserInputRequest {
+        request_id: "clarification".into(),
+        session_id: DEFAULT_TAB_ID.into(),
+        request: crate::agent_tools::user_input::UserInputRequest {
+            question: "Which target?".into(),
+            choices: vec!["A".into()],
+            allow_freeform: true,
+        },
+        responder: input_tx,
+    });
+    let mut permission = perm_with("Allow follow-up?");
+    permission.responder = Some(permission_tx);
+    app.current_tab_mut().permission.push_back(permission);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+
+    assert!(cancellation.is_cancelled());
+    assert!(app.current_tab().turn.is_cancelling());
+    assert!(app.current_tab().user_input.is_empty());
+    assert!(app.current_tab().permission.is_empty());
+    assert_eq!(app.current_tab().input, "preserve this draft");
+    assert!(matches!(
+        input_rx.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    ));
+    assert!(matches!(
+        permission_rx.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    ));
+}
+
+#[test]
+fn ctrl_c_cancels_prompt_while_permission_is_visible() {
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "needs permission");
+    let cancellation = app
+        .current_tab()
+        .active_prompt_cancellation
+        .as_ref()
+        .expect("prompt token")
+        .token
+        .clone();
+    let (permission_tx, mut permission_rx) = tokio::sync::oneshot::channel();
+    let mut permission = perm_with("Allow tool?");
+    permission.responder = Some(permission_tx);
+    app.current_tab_mut().permission.push_back(permission);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+
+    assert!(cancellation.is_cancelled());
+    assert!(app.current_tab().turn.is_cancelling());
+    assert!(app.current_tab().permission.is_empty());
+    assert!(matches!(
+        permission_rx.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    ));
+}
+
+#[test]
+fn session_load_preserves_user_input_request() {
+    let mut app = test_app();
+    app.current_tab_mut().loading_session = true;
+    app.current_tab_mut().loading_target_session_id = Some(DEFAULT_TAB_ID.into());
+    let (responder, mut response) = tokio::sync::oneshot::channel();
+
+    app.handle_event(AppEvent::UserInputRequest {
+        request_id: "resume-clarification".into(),
+        session_id: DEFAULT_TAB_ID.into(),
+        request: crate::agent_tools::user_input::UserInputRequest {
+            question: "Which goal should I resume?".into(),
+            choices: vec!["Build".into(), "Test".into()],
+            allow_freeform: true,
+        },
+        responder,
+    });
+
+    assert_eq!(app.current_tab().user_input.len(), 1);
+    assert_eq!(
+        response.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty),
+        "session load must not implicitly cancel a live clarification request"
+    );
+}
+
+#[test]
+fn user_input_choice_returns_selected_index() {
+    let mut app = test_app();
+    begin_user_input_test(&mut app);
+    let (responder, mut response) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::UserInputRequest {
+        request_id: "choice".into(),
+        session_id: DEFAULT_TAB_ID.into(),
+        request: crate::agent_tools::user_input::UserInputRequest {
+            question: "Which approach?".into(),
+            choices: vec!["A".into(), "B".into()],
+            allow_freeform: true,
+        },
+        responder,
+    });
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        response.try_recv().unwrap(),
+        crate::agent_tools::user_input::UserInputResponse::Answered {
+            answer: "B".into(),
+            selected_index: Some(1),
+        }
+    );
+    assert!(app.current_tab().user_input.is_empty());
+}
+
+#[test]
+fn user_input_accepts_freeform_and_escape_cancels() {
+    let mut app = test_app();
+    begin_user_input_test(&mut app);
+    let (responder, mut response) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::UserInputRequest {
+        request_id: "freeform".into(),
+        session_id: DEFAULT_TAB_ID.into(),
+        request: crate::agent_tools::user_input::UserInputRequest {
+            question: "Name it".into(),
+            choices: Vec::new(),
+            allow_freeform: true,
+        },
+        responder,
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        response.try_recv().unwrap(),
+        crate::agent_tools::user_input::UserInputResponse::Answered {
+            answer: "x".into(),
+            selected_index: None,
+        }
+    );
+
+    let (responder, mut response) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::UserInputRequest {
+        request_id: "cancel".into(),
+        session_id: DEFAULT_TAB_ID.into(),
+        request: crate::agent_tools::user_input::UserInputRequest {
+            question: "Continue?".into(),
+            choices: vec!["Yes".into()],
+            allow_freeform: false,
+        },
+        responder,
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(
+        response.try_recv().unwrap(),
+        crate::agent_tools::user_input::UserInputResponse::Cancelled
+    );
+}
+
+#[test]
+fn user_input_freeform_cursor_moves_left_and_right() {
+    let mut app = test_app();
+    begin_user_input_test(&mut app);
+    let (responder, mut response) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::UserInputRequest {
+        request_id: "freeform-cursor".into(),
+        session_id: DEFAULT_TAB_ID.into(),
+        request: crate::agent_tools::user_input::UserInputRequest {
+            question: "Describe it".into(),
+            choices: Vec::new(),
+            allow_freeform: true,
+        },
+        responder,
+    });
+
+    for character in "cat".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        response.try_recv().unwrap(),
+        crate::agent_tools::user_input::UserInputResponse::Answered {
+            answer: "caret".into(),
+            selected_index: None,
+        }
+    );
+}
+
+#[test]
+fn user_input_freeform_cursor_preserves_utf8_boundaries() {
+    let mut app = test_app();
+    begin_user_input_test(&mut app);
+    let (responder, mut response) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::UserInputRequest {
+        request_id: "freeform-unicode".into(),
+        session_id: DEFAULT_TAB_ID.into(),
+        request: crate::agent_tools::user_input::UserInputRequest {
+            question: "Describe it".into(),
+            choices: Vec::new(),
+            allow_freeform: true,
+        },
+        responder,
+    });
+
+    for character in "aé界".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        response.try_recv().unwrap(),
+        crate::agent_tools::user_input::UserInputResponse::Answered {
+            answer: "aX界".into(),
+            selected_index: None,
+        }
+    );
+}
+
+#[test]
+fn user_input_freeform_supports_home_delete_and_end() {
+    let mut app = test_app();
+    begin_user_input_test(&mut app);
+    let (responder, mut response) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::UserInputRequest {
+        request_id: "freeform-navigation".into(),
+        session_id: DEFAULT_TAB_ID.into(),
+        request: crate::agent_tools::user_input::UserInputRequest {
+            question: "Describe it".into(),
+            choices: Vec::new(),
+            allow_freeform: true,
+        },
+        responder,
+    });
+
+    for character in "abcd".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().user_input.front().unwrap().cursor_pos, 0);
+    app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().user_input.front().unwrap().input, "bcd");
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().user_input.front().unwrap().cursor_pos, 3);
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        response.try_recv().unwrap(),
+        crate::agent_tools::user_input::UserInputResponse::Answered {
+            answer: "bc".into(),
+            selected_index: None,
+        }
+    );
+}
+
+#[test]
+fn user_input_freeform_supports_word_navigation_and_deletion() {
+    let mut app = test_app();
+    begin_user_input_test(&mut app);
+    let (responder, mut response) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::UserInputRequest {
+        request_id: "freeform-word-navigation".into(),
+        session_id: DEFAULT_TAB_ID.into(),
+        request: crate::agent_tools::user_input::UserInputRequest {
+            question: "Describe it".into(),
+            choices: Vec::new(),
+            allow_freeform: true,
+        },
+        responder,
+    });
+
+    for character in "one two".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(app.current_tab().user_input.front().unwrap().cursor_pos, 4);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+    assert_eq!(app.current_tab().user_input.front().unwrap().cursor_pos, 7);
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL));
+    let request = app.current_tab().user_input.front().unwrap();
+    assert_eq!(request.input, "two");
+    assert_eq!(request.cursor_pos, 0);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        response.try_recv().unwrap(),
+        crate::agent_tools::user_input::UserInputResponse::Answered {
+            answer: "two".into(),
+            selected_index: None,
+        }
+    );
+}
+
+#[test]
+fn help_overlay_dismisses_before_user_input() {
+    let mut app = test_app();
+    begin_user_input_test(&mut app);
+    let (responder, mut response) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::UserInputRequest {
+        request_id: "behind-help".into(),
+        session_id: DEFAULT_TAB_ID.into(),
+        request: crate::agent_tools::user_input::UserInputRequest {
+            question: "Continue?".into(),
+            choices: vec!["Yes".into()],
+            allow_freeform: false,
+        },
+        responder,
+    });
+    app.help_overlay_visible = true;
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(!app.help_overlay_visible);
+    assert_eq!(app.current_tab().user_input.len(), 1);
+    assert!(matches!(
+        response.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(
+        response.try_recv().unwrap(),
+        crate::agent_tools::user_input::UserInputResponse::Cancelled
+    );
+}
+
+#[test]
+fn user_input_owns_focus_and_cancellation_removes_only_its_request() {
+    let mut app = test_app();
+    begin_user_input_test(&mut app);
+    let (first_responder, mut first_response) = tokio::sync::oneshot::channel();
+    let (second_responder, mut second_response) = tokio::sync::oneshot::channel();
+    for (request_id, responder) in [("first", first_responder), ("second", second_responder)] {
+        app.handle_event(AppEvent::UserInputRequest {
+            request_id: request_id.into(),
+            session_id: DEFAULT_TAB_ID.into(),
+            request: crate::agent_tools::user_input::UserInputRequest {
+                question: "Choose".into(),
+                choices: vec!["A".into()],
+                allow_freeform: false,
+            },
+            responder,
+        });
+    }
+
+    assert!(!app.current_tab().input_has_nav_focus());
+    assert!(!app.current_tab().should_show_thinking());
+    app.handle_event(AppEvent::CancelUserInputRequest {
+        request_id: "second".into(),
+        session_id: DEFAULT_TAB_ID.into(),
+    });
+
+    assert_eq!(app.current_tab().user_input.len(), 1);
+    assert_eq!(
+        app.current_tab().user_input.front().unwrap().request_id,
+        "first"
+    );
+    assert!(matches!(
+        second_response.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    ));
+    assert!(matches!(
+        first_response.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+}
+
+#[test]
+fn cancelling_turn_drops_pending_user_input() {
+    let mut app = test_app();
+    begin_user_input_test(&mut app);
+    let (responder, mut response) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::UserInputRequest {
+        request_id: "turn-cancel".into(),
+        session_id: DEFAULT_TAB_ID.into(),
+        request: crate::agent_tools::user_input::UserInputRequest {
+            question: "Continue?".into(),
+            choices: vec!["Yes".into()],
+            allow_freeform: false,
+        },
+        responder,
+    });
+
+    app.turn_cancel(DEFAULT_TAB_ID);
+
+    assert!(app.current_tab().user_input.is_empty());
+    assert!(matches!(
+        response.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    ));
+}
+
+#[test]
+fn surfaced_recommendation_hides_thinking_before_turn_end() {
+    let mut app = test_app();
+    let prompt = SubmittedPrompt {
+        id: 1,
+        text: "test".into(),
+        submitted_at_unix_s: 0.0,
+        context: TurnContext::default(),
+        autofix: None,
+    };
+    app.tab_mut(DEFAULT_TAB_ID).turn = TurnState::Surfaced {
+        prompt,
+        outcome: TurnOutcome::Recommendation(RecommendationSet {
+            recommended_choice: None,
+            choices: Vec::new(),
+        }),
+        end_pending: true,
+    };
+
+    assert!(
+        app.current_tab().turn.is_in_flight(),
+        "end_pending must continue to gate new prompts"
+    );
+    assert!(
+        !app.current_tab().should_show_thinking(),
+        "the surfaced result replaces Thinking"
+    );
+}
+
+/// Tool-call card: when the mock proposes a command (a `ToolCall`
+/// notification), the real `WtaClient` turns it into `AppEvent::ToolCall`
+/// and the real `App` surfaces a tool-call card in the chat — the display
+/// state the insert/run affordance hangs off.
+#[tokio::test]
+async fn tool_call_surfaces_card_in_chat() {
+    use crate::protocol::acp::client::mock_agent_tests::connect_mock_agent_proposing_tool;
+    use agent_client_protocol as acp;
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (conn, mut event_rx) = connect_mock_agent_proposing_tool();
+            conn.initialize(acp::schema::v1::InitializeRequest::new(
+                acp::schema::ProtocolVersion::LATEST,
+            ))
+            .await
+            .expect("initialize failed");
+            let session = conn
+                .new_session(acp::schema::v1::NewSessionRequest::new("/test"))
+                .await
+                .expect("new_session failed");
+            let session_id = session.session_id.to_string();
+            conn.prompt(acp::schema::v1::PromptRequest::new(
+                session.session_id.clone(),
+                vec!["run it".into()],
+            ))
+            .await
+            .expect("prompt failed");
+
+            let mut app = test_app();
+            bind_test_session(&mut app, &session_id);
+            submit_test_prompt(&mut app, "run it");
+
+            let pumped = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    match event_rx.recv().await {
+                        Some(ev) => {
+                            let is_tool = matches!(ev, AppEvent::ToolCall { .. });
+                            app.handle_event(ev);
+                            if is_tool {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
+            })
+            .await;
+            assert!(pumped.is_ok(), "timed out waiting for the tool call");
+
+            // Display assertion: the proposed command shows as a tool-call card.
+            let has_card = app.current_tab().messages.iter().any(
+                |m| matches!(m, ChatMessage::ToolCall { title, .. } if title == "Run: echo hi"),
+            );
+            assert!(
+                has_card,
+                "a tool-call card must surface in the chat; got {:?}",
+                app.current_tab().messages
+            );
+        })
+        .await;
+}
+
+/// Pump `AppEvent`s into a real `App` until `pred` matches (inclusive), with
+/// a timeout so a wiring bug fails fast instead of hanging.
+async fn pump_until(
+    app: &mut App,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    pred: impl Fn(&AppEvent) -> bool,
+) {
+    let r = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match rx.recv().await {
+                Some(ev) => {
+                    let stop = pred(&ev);
+                    app.handle_event(ev);
+                    if stop {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+    })
+    .await;
+    assert!(r.is_ok(), "timed out pumping events");
+}
+
+/// Drive initialize → new_session → prompt against the harness connection,
+/// leaving an in-flight turn whose streamed notifications the caller pumps
+/// into a real `App`. Returns `()` — it only drives ACP traffic; the caller
+/// owns the `App`.
+async fn app_after_prompt(conn: &crate::protocol::acp::conn::ClientLink) -> String {
+    use agent_client_protocol as acp;
+
+    conn.initialize(acp::schema::v1::InitializeRequest::new(
+        acp::schema::ProtocolVersion::LATEST,
+    ))
+    .await
+    .expect("initialize failed");
+    let session = conn
+        .new_session(acp::schema::v1::NewSessionRequest::new("/test"))
+        .await
+        .expect("new_session failed");
+    conn.prompt(acp::schema::v1::PromptRequest::new(
+        session.session_id.clone(),
+        vec!["go".into()],
+    ))
+    .await
+    .expect("prompt failed");
+    session.session_id.to_string()
+}
+
+/// Streaming: a reply split across two `AgentMessageChunk`s must coalesce
+/// into one contiguous streaming buffer in the chat.
+#[tokio::test]
+async fn streaming_two_chunks_coalesce_in_app_chat() {
+    use crate::protocol::acp::client::mock_agent_tests::connect_mock_agent_streaming_two_chunks;
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (conn, mut event_rx) = connect_mock_agent_streaming_two_chunks();
+            let session_id = app_after_prompt(&conn).await;
+
+            let mut app = test_app();
+            bind_test_session(&mut app, &session_id);
+            submit_test_prompt(&mut app, "go");
+
+            // Two chunks arrive; pump each.
+            pump_until(&mut app, &mut event_rx, |ev| {
+                matches!(ev, AppEvent::AgentMessageChunk { .. })
+            })
+            .await;
+            pump_until(&mut app, &mut event_rx, |ev| {
+                matches!(ev, AppEvent::AgentMessageChunk { .. })
+            })
+            .await;
+
+            assert_eq!(
+                app.current_tab().active_agent_text(),
+                "MOCK_OK",
+                "streamed chunks must coalesce into one contiguous reply"
+            );
+        })
+        .await;
+}
+
+/// Tool-call lifecycle: a `ToolCallUpdate(Completed)` after the initial
+/// `ToolCall` must update the card's status in-place (not duplicate it).
+#[tokio::test]
+async fn tool_call_completion_updates_card_status() {
+    use crate::protocol::acp::client::mock_agent_tests::connect_mock_agent_completing_tool;
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (conn, mut event_rx) = connect_mock_agent_completing_tool();
+            let session_id = app_after_prompt(&conn).await;
+
+            let mut app = test_app();
+            bind_test_session(&mut app, &session_id);
+            submit_test_prompt(&mut app, "go");
+
+            pump_until(&mut app, &mut event_rx, |ev| {
+                matches!(ev, AppEvent::ToolCallUpdate { .. })
+            })
+            .await;
+
+            let cards: Vec<_> = app
+                .current_tab()
+                .messages
+                .iter()
+                .filter_map(|m| match m {
+                    ChatMessage::ToolCall { id, status, .. } => Some((id.clone(), status.clone())),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                cards.len(),
+                1,
+                "the update must edit in place, not add a card"
+            );
+            assert_eq!(cards[0].0, "mock-tool-1");
+            assert_eq!(
+                cards[0].1, "Completed",
+                "card status must reflect the update"
+            );
+        })
+        .await;
+}
+
+#[test]
+fn streamed_prose_and_tool_calls_preserve_acp_arrival_order() {
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "change it");
+
+    app.handle_event(AppEvent::AgentMessageChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: "I will update the file.".into(),
+    });
+    app.current_tab_mut().reveal_chars = 12;
+    app.handle_event(AppEvent::ToolCall {
+        session_id: DEFAULT_TAB_ID.into(),
+        query: None,
+        id: "tool-1".into(),
+        title: "apply_patch".into(),
+        status: "InProgress".into(),
+        kind: ToolCallKind::Edit,
+        location: Some("src/main.rs".into()),
+        location_is_command: false,
+        cwd: None,
+        output: None,
+        exit_code: None,
+        content: Vec::new(),
+        locations: Vec::new(),
+    });
+    app.handle_event(AppEvent::AgentMessageChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: "The update is complete.".into(),
+    });
+    assert_eq!(
+        app.current_tab().reveal_chars,
+        0,
+        "a new prose segment after a tool must start its own reveal cursor"
+    );
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: DEFAULT_TAB_ID.into(),
+    });
+
+    let details = &app.current_tab().completed_turns[0].details;
+    assert!(matches!(&details[0], ChatMessage::Agent(text) if text == "I will update the file."));
+    assert!(matches!(
+        &details[1],
+        ChatMessage::ToolCall { title, .. } if title == "apply_patch"
+    ));
+    assert!(matches!(&details[2], ChatMessage::Agent(text) if text == "The update is complete."));
+}
+
+#[test]
+fn tool_only_turn_commits_the_ordered_tool_transcript() {
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "inspect");
+    app.handle_event(AppEvent::ToolCall {
+        session_id: DEFAULT_TAB_ID.into(),
+        query: None,
+        id: "tool-1".into(),
+        title: "Find files".into(),
+        status: "Completed".into(),
+        kind: ToolCallKind::Search,
+        location: None,
+        location_is_command: false,
+        cwd: None,
+        output: None,
+        exit_code: None,
+        content: Vec::new(),
+        locations: Vec::new(),
+    });
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: DEFAULT_TAB_ID.into(),
+    });
+
+    let tab = app.current_tab();
+    assert!(tab.messages.is_empty());
+    assert_eq!(tab.completed_turns.len(), 1);
+    assert!(matches!(
+        tab.completed_turns[0].details.as_slice(),
+        [ChatMessage::ToolCall { id, .. }] if id == "tool-1"
+    ));
+}
+
+#[test]
+fn live_transcript_does_not_consume_replay_accumulators() {
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "live");
+    app.current_tab_mut().replay_agent_buffer = "replayed history".into();
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Message, "live response");
+
+    let tab = app.current_tab();
+    assert_eq!(tab.streaming_agent_text(), Some("live response"));
+    assert_eq!(tab.active_agent_text(), "live response");
+    assert_eq!(tab.replay_agent_buffer, "replayed history");
+}
+
+/// Plan: a `Plan` notification must surface as a plan card with its entries.
+#[tokio::test]
+async fn plan_surfaces_card_in_chat() {
+    use crate::protocol::acp::client::mock_agent_tests::connect_mock_agent_proposing_plan;
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (conn, mut event_rx) = connect_mock_agent_proposing_plan();
+            let session_id = app_after_prompt(&conn).await;
+
+            let mut app = test_app();
+            bind_test_session(&mut app, &session_id);
+            submit_test_prompt(&mut app, "go");
+
+            pump_until(&mut app, &mut event_rx, |ev| {
+                matches!(ev, AppEvent::Plan { .. })
+            })
+            .await;
+
+            let plan = app.current_tab().messages.iter().find_map(|m| match m {
+                ChatMessage::Plan(entries) => Some(entries.clone()),
+                _ => None,
+            });
+            let entries = plan.expect("a plan card must surface in the chat");
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0].content, "Step one");
+            assert_eq!(entries[0].status, PlanEntryStatus::InProgress);
+            assert_eq!(entries[1].content, "Step two");
+        })
+        .await;
+}
+
+/// Render a driven `App` to a ratatui `TestBackend` and return the visible
+/// buffer as text (rows joined by `\n`). Lets scenarios assert on what is
+/// actually painted, not just on `App` state.
+fn render_to_text(app: &mut App, width: u16, height: u16) -> String {
+    use ratatui::{backend::TestBackend, Terminal};
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal
+        .draw(|frame| {
+            crate::ui::render(frame, app);
+            app.text_selection.snapshot_and_render(frame.buffer_mut());
+        })
+        .expect("render must not panic");
+    buffer_to_text(terminal.backend().buffer())
+}
+
+fn render_to_buffer(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    use ratatui::{backend::TestBackend, Terminal};
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal
+        .draw(|frame| {
+            crate::ui::render(frame, app);
+            app.text_selection.snapshot_and_render(frame.buffer_mut());
+        })
+        .expect("render must not panic");
+    terminal.backend().buffer().clone()
+}
+
+fn buffer_to_text(buf: &ratatui::buffer::Buffer) -> String {
+    let w = buf.area.width as usize;
+    let mut out = String::new();
+    for (i, cell) in buf.content.iter().enumerate() {
+        if i > 0 && i % w == 0 {
+            out.push('\n');
+        }
+        out.push_str(cell.symbol());
+    }
+    out
+}
+
+/// Render (C063 "prompt out-of-focus appearance"): the input border is the
+/// agent pane's focus indicator. It turns cyan while the pane owns keyboard
+/// focus and returns to the subdued border when focus leaves.
+#[test]
+fn render_input_box_intact_when_pane_unfocused() {
+    let _g = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+
+    // Focused baseline: the input box paints the prompt + connected placeholder.
+    app.handle_event(AppEvent::FocusChanged(true));
+    assert!(app.pane_focused);
+    let focused_buffer = render_to_buffer(&mut app, 80, 24);
+    let focused = buffer_to_text(&focused_buffer);
+    let placeholder = rust_i18n::t!("input.placeholder.connected").into_owned();
+    assert!(
+        focused.contains('>') && focused.contains(&placeholder),
+        "sanity: the focused input must paint the prompt + placeholder; rendered:\n{focused}"
+    );
+    let focused_input = app
+        .input_dialog_area
+        .expect("focused input must record its rendered area");
+    let focused_border = focused_buffer
+        .cell((focused_input.x + focused_input.width - 1, focused_input.y))
+        .expect("focused input must paint a top-right border");
+    assert_eq!(
+        focused_border.style().fg,
+        crate::theme::INPUT_BORDER_FOCUSED.fg,
+        "focused agent pane must highlight the input border"
+    );
+
+    // Focus leaves the pane: the input box must remain intact (prompt + placeholder still there),
+    // i.e. losing focus does not blank or corrupt the input surface.
+    app.handle_event(AppEvent::FocusChanged(false));
+    assert!(!app.pane_focused);
+    let unfocused_buffer = render_to_buffer(&mut app, 80, 24);
+    let unfocused = buffer_to_text(&unfocused_buffer);
+    assert!(
+        unfocused.contains('>'),
+        "the out-of-focus input must still paint the prompt marker; rendered:\n{unfocused}"
+    );
+    assert!(
+        unfocused.contains(&placeholder),
+        "the out-of-focus input must still paint the connection placeholder (box intact); rendered:\n{unfocused}"
+    );
+    let unfocused_input = app
+        .input_dialog_area
+        .expect("unfocused input must record its rendered area");
+    let unfocused_border = unfocused_buffer
+        .cell((
+            unfocused_input.x + unfocused_input.width - 1,
+            unfocused_input.y,
+        ))
+        .expect("unfocused input must paint a top-right border");
+    assert_eq!(
+        unfocused_border.style().fg,
+        crate::theme::INPUT_BORDER.fg,
+        "unfocused agent pane must restore the subdued input border"
+    );
+}
+
+/// Render (C067 "non-ASCII input"): non-ASCII characters typed into the agent-pane input must be
+/// accepted and painted correctly (multi-byte UTF-8: accented Latin, Greek, CJK). Drives the real
+/// key handler with `KeyCode::Char` events (a Rust `char` is a full Unicode scalar, exactly what a
+/// keyboard/IME commit produces) and asserts they render. The E2E send path (wtcli send-keys)
+/// cannot carry non-ASCII, so this unit test is the deterministic coverage for the product side;
+/// the IME-composition half stays MANUAL. `insert_input_char` advances the caret by
+/// `ch.len_utf8()` (app.rs:1842), so multi-byte chars must round-trip.
+#[test]
+fn render_agent_input_accepts_non_ascii() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let _g = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    let sample = "café Ω 你好";
+    for c in sample.chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+
+    // The input buffer holds the exact non-ASCII string (the product contract: non-ASCII input
+    // is accepted verbatim, multi-byte caret advance included)...
+    assert_eq!(
+        app.current_tab().input,
+        sample,
+        "non-ASCII characters must be accepted verbatim into the input buffer"
+    );
+    // ...and the painted input line shows the multi-byte glyphs. (CJK are double-width; the
+    // ratatui TestBackend splits a wide glyph across two cells so the raw cell-join may not
+    // reconstruct the CJK codepoint — assert the single-width non-ASCII glyphs render, and rely
+    // on the input-buffer assertion above for the wide-char acceptance contract.)
+    let text = render_to_text(&mut app, 80, 24);
+    for needle in ["café", "Ω"] {
+        assert!(
+            text.contains(needle),
+            "the agent input must paint the non-ASCII text {needle:?}; rendered:\n{text}"
+        );
+    }
+}
+
+#[test]
+fn unhandled_modified_characters_do_not_leak_into_agent_input() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT));
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+
+    assert!(app.current_tab().input.is_empty());
+
+    app.handle_key(KeyEvent::new(
+        KeyCode::Char('@'),
+        KeyModifiers::CONTROL | KeyModifiers::ALT,
+    ));
+    app.handle_key(KeyEvent::new(KeyCode::Char('K'), KeyModifiers::SHIFT));
+    assert_eq!(app.current_tab().input, "@K");
+}
+
+/// Render: a committed agent message must actually appear in the painted
+/// chat view (not just in `App` state). Lifts `ui/chat.rs` coverage.
+#[test]
+fn render_chat_shows_agent_message() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut()
+        .messages
+        .push(ChatMessage::Agent("VISIBLE_REPLY_XYZ".into()));
+
+    let text = render_to_text(&mut app, 80, 24);
+    assert!(
+        text.contains("VISIBLE_REPLY_XYZ"),
+        "the chat view must paint the agent message; rendered:\n{text}"
+    );
+}
+
+/// Render (C134 "Hooks off behavior is safe"): with session management OFF — no tracked
+/// sessions, exactly as when wt-agent-hooks are not installed — the session-management (Agents)
+/// view must still paint a STABLE empty state (the draw does not panic and the navigation footer
+/// hint is drawn) rather than a broken/blank surface.
+#[test]
+fn render_agents_view_empty_when_no_sessions_is_stable() {
+    let mut app = test_app();
+    let key = app.active_tab_key().to_string();
+    // No SessionStarted events applied => the registry is empty, exactly as when session
+    // management is off (no wt-agent-hooks tracking any sessions).
+    assert!(
+        app.agents_rows_for_tab(&key).is_empty(),
+        "precondition: no tracked sessions (hooks off)"
+    );
+    app.current_tab_mut().current_view = View::Agents;
+
+    // render_to_text asserts the draw does not panic.
+    let text = render_to_text(&mut app, 80, 24);
+
+    // The navigation footer hint (agents.footer_hint) is drawn in the empty state too; its
+    // leading "↑ ↓" arrows are invariant across every bundled locale, so assert on those.
+    assert!(
+        text.contains('↑') && text.contains('↓'),
+        "the empty session view must paint the stable navigation footer hint; rendered:\n{text}"
+    );
+}
+
+/// Render: a queued permission request must paint its description and the
+/// allow/reject option labels. Lifts `ui/permission.rs` coverage.
+#[test]
+fn render_permission_card_shows_options() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().permission.push_back(PermissionState {
+        tool_call_id: "tool".into(),
+        description: "Run: echo PERM_XYZ".into(),
+        title: "Run: echo PERM_XYZ".into(),
+        kind_label: None,
+        target: None,
+        target_is_command: false,
+        options: vec![
+            PermOption {
+                id: "allow-once".into(),
+                name: "Allow once".into(),
+                kind: "AllowOnce".into(),
+            },
+            PermOption {
+                id: "reject-once".into(),
+                name: "Reject".into(),
+                kind: "RejectOnce".into(),
+            },
+        ],
+        selected: 0,
+        responder: None,
+    });
+
+    let text = render_to_text(&mut app, 80, 24);
+    assert!(
+        text.contains("PERM_XYZ"),
+        "the permission card must paint its description; rendered:\n{text}"
+    );
+    assert!(
+        text.contains("Allow once"),
+        "the permission card must paint the allow option; rendered:\n{text}"
+    );
+}
+
+/// Render: the full permission card must show the kind glyph next to the
+/// title and the concrete target (path or command) on its own line — even
+/// though the target here is deliberately the same text already implied by
+/// the title, it must still render (the permission card never dedupes,
+/// unlike the chat tool-call card). A command target additionally gets the
+/// `$ ` shell-prompt prefix so it reads distinctly from a path.
+#[test]
+fn render_permission_card_shows_kind_glyph_and_target() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().permission.push_back(PermissionState {
+        tool_call_id: "tool".into(),
+        description: "Run command (rm -rf build)".into(),
+        title: "Run command".into(),
+        kind_label: Some("$".into()),
+        target: Some("rm -rf build".into()),
+        target_is_command: true,
+        options: vec![PermOption {
+            id: "allow-once".into(),
+            name: "Allow once".into(),
+            kind: "AllowOnce".into(),
+        }],
+        selected: 0,
+        responder: None,
+    });
+
+    let text = render_to_text(&mut app, 80, 24);
+    assert!(
+        text.contains("$ Run command"),
+        "the header must show the kind glyph next to the title; rendered:\n{text}"
+    );
+    assert!(
+        text.contains("$ rm -rf build"),
+        "the target line must show the command with a shell-prompt prefix; rendered:\n{text}"
+    );
+}
+
+/// Render: a tool-call card must paint its title in the chat. Lifts the
+/// tool-call branch of `ui/chat.rs`.
+#[test]
+fn render_tool_call_card_in_chat() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().messages.push(ChatMessage::ToolCall {
+        id: "mock-tool-1".into(),
+        query: None,
+        title: "Run: echo TOOL_XYZ".into(),
+        status: "Pending".into(),
+        kind: ToolCallKind::Execute,
+        location: None,
+        location_is_command: false,
+        cwd: None,
+        output: None,
+        exit_code: None,
+        content: Vec::new(),
+        locations: Vec::new(),
+    });
+
+    let text = render_to_text(&mut app, 80, 24);
+    assert!(
+        text.contains("TOOL_XYZ"),
+        "the tool-call card must paint its title; rendered:\n{text}"
+    );
+}
+
+/// Render: the `/help` overlay must list the slash commands. Lifts
+/// `ui/command_popup.rs`.
+#[test]
+fn render_help_overlay_lists_commands() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.help_overlay_visible = true;
+
+    let text = render_to_text(&mut app, 80, 24);
+    assert!(
+        text.contains("/restart"),
+        "the help overlay must list slash commands; rendered:\n{text}"
+    );
+}
+
+/// Render: cloud mode lists cloud models and omits BYOK rows. Lifts
+/// `ui/model_popup.rs`; local-mode filtering is covered by slash-command tests.
+#[test]
+fn render_model_picker_lists_models() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.set_cloud_models(vec![AcpModelInfo {
+        id: "pick-1".into(),
+        name: "PickModelXYZ".into(),
+        description: None,
+    }]);
+    app.set_custom_model_config(
+        vec![
+            CustomModelCatalogEntry {
+                selection_id: "custom:provider-one:shared-model".into(),
+                model_id: "shared-model".into(),
+                name: "shared-model".into(),
+                ..Default::default()
+            },
+            CustomModelCatalogEntry {
+                selection_id: "custom:provider-two:shared-model".into(),
+                model_id: "shared-model".into(),
+                name: "shared-model".into(),
+                ..Default::default()
+            },
+        ],
+        None,
+    );
+    app.current_tab_mut().model_picker_open = true;
+
+    let text = render_to_text(&mut app, 120, 24);
+    assert!(
+        text.contains("PickModelXYZ"),
+        "the cloud-mode model picker must show cloud models; rendered:\n{text}"
+    );
+    assert!(
+        !text.contains("shared-model (BYOK)"),
+        "the cloud-mode model picker must omit BYOK rows; rendered:\n{text}"
+    );
+    assert!(
+        !text.contains('●'),
+        "the model picker must not prefix the current model with a circle; rendered:\n{text}"
+    );
+}
+
+#[test]
+fn render_config_picker_lists_options_and_current_values() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().session_id = Some("session-config".into());
+    app.handle_event(AppEvent::SessionConfigUpdated {
+        session_id: "session-config".into(),
+        options: vec![crate::app_contracts::AcpSessionConfigOption {
+            id: "reasoning".into(),
+            name: "ReasoningXYZ".into(),
+            description: Some("Controls depth".into()),
+            category: Some("thought_level".into()),
+            current_value: "high".into(),
+            values: vec![crate::app_contracts::AcpSessionConfigValue {
+                id: "high".into(),
+                name: "HighXYZ".into(),
+                description: Some("Think longer".into()),
+            }],
+            native_yolo: false,
+        }],
+    });
+    app.current_tab_mut().config_picker = ConfigPickerState::Options { selected: 0 };
+
+    let text = render_to_text(&mut app, 120, 24);
+    assert!(text.contains("ReasoningXYZ"), "rendered:\n{text}");
+    assert!(text.contains("HighXYZ"), "rendered:\n{text}");
+}
+
+#[test]
+fn render_agent_picker_lists_available_agents() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_agent_id = "copilot".into();
+    app.available_agents = vec![
+        AvailableAgent {
+            id: "copilot".into(),
+            display_name: "GitHub Copilot".into(),
+            source: crate::agent_source::AgentSource::Host,
+        },
+        AvailableAgent {
+            id: "claude".into(),
+            display_name: "Claude Test Agent".into(),
+            source: crate::agent_source::AgentSource::Host,
+        },
+    ];
+    app.current_tab_mut().agent_picker_open = true;
+
+    let text = render_to_text(&mut app, 80, 24);
+    assert!(
+        text.contains("Claude Test Agent"),
+        "the agent picker must list available agents; rendered:\n{text}"
+    );
+}
+
+#[test]
+fn slash_agent_accepts_base_display_name_with_source_suffix() {
+    let available_agents = vec![AvailableAgent {
+        id: "copilot".into(),
+        display_name: "GitHub Copilot — Windows".into(),
+        source: crate::agent_source::AgentSource::Host,
+    }];
+
+    let selected = App::find_host_agent_for_command(
+        &available_agents,
+        crate::agent_registry::lookup_profile_by_id("copilot").display_name,
+    )
+    .expect("base built-in display name should select the suffixed host entry");
+
+    assert_eq!(selected.id, "copilot");
+}
+
+/// Render: the setup diagnostic screen must paint its title and subtitle.
+/// Lifts `ui/setup.rs` (reached only via `AppMode::Setup`).
+#[test]
+fn render_setup_screen_shows_title() {
+    let mut app = test_app();
+    app.mode = AppMode::Setup;
+    app.setup = Some(SetupState {
+        reason: SetupReason::AgentError,
+        selected_index: 0,
+        preflight: PreflightResult::passed_for_custom_agent("custom:qwen"),
+        phase: SetupPhase::Ready,
+        options: Vec::new(),
+        title: "SETUP_TITLE_XYZ".into(),
+        subtitle: "SETUP_SUBTITLE_XYZ".into(),
+    });
+
+    let text = render_to_text(&mut app, 80, 24);
+    assert!(
+        text.contains("SETUP_TITLE_XYZ"),
+        "the setup screen must paint its title; rendered:\n{text}"
+    );
+    assert!(
+        text.contains("SETUP_SUBTITLE_XYZ"),
+        "the setup screen must paint its subtitle; rendered:\n{text}"
+    );
+}
+
+/// Render: the auth/sign-in screen must paint the selected agent name.
+/// Lifts `ui/auth.rs` (reached only via `AppMode::Auth`).
+#[test]
+fn render_auth_screen_shows_agent_name() {
+    let mut app = test_app();
+    app.mode = AppMode::Auth;
+    app.auth = Some(AuthState {
+        agent_id: "copilot".into(),
+        agent_name: "SELECTED_AGENT_NAME_XYZ".into(),
+        login_command: String::new(),
+        checking: true,
+        status_message: String::new(),
+        enterprise_mode: false,
+        enterprise_host: String::new(),
+    });
+
+    let text = render_to_text(&mut app, 80, 24);
+    assert!(
+        text.contains("SELECTED_AGENT_NAME_XYZ"),
+        "the auth screen must paint the selected agent name; rendered:\n{text}"
+    );
+}
+
+/// Render: the sessions (agents) view must paint its footer keybinding
+/// hint. Lifts `ui/agents_view.rs` (reached via `View::Agents`).
+#[test]
+fn render_sessions_view_shows_footer_hint() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().current_view = View::Agents;
+
+    let text = render_to_text(&mut app, 80, 24);
+    let expected = t!("agents.footer_hint").into_owned();
+    // Assert on a stable leading token of the localized hint so the test
+    // doesn't break on translation wording while still proving the view
+    // painted its chrome.
+    let probe: String = expected.chars().take(6).collect();
+    assert!(
+        !probe.trim().is_empty() && text.contains(&probe),
+        "the sessions view must paint its footer hint ({expected:?}); rendered:\n{text}"
+    );
+}
+
+/// Render: the auth screen's sign-in card branch (`checking == false`)
+/// must paint the connect prompt and, for Copilot, the GitHub Enterprise
+/// sign-in footer. Covers the `else` arm of `ui/auth.rs`.
+#[test]
+fn render_auth_sign_in_card() {
+    // Pin English through rendering and assertions: wide-glyph buffer padding
+    // breaks substring matches against the original localized strings.
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.mode = AppMode::Auth;
+    app.auth = Some(AuthState {
+        agent_id: "copilot".into(),
+        agent_name: "GitHub Copilot".into(),
+        login_command: String::new(),
+        checking: false,
+        status_message: String::new(),
+        enterprise_mode: false,
+        enterprise_host: String::new(),
+    });
+
+    let text = render_to_text(&mut app, 80, 24);
+    let connect = t!("auth.card_connect", name = "GitHub Copilot").into_owned();
+    let probe: String = connect.chars().take(6).collect();
+    assert!(
+        !probe.trim().is_empty() && text.contains(&probe),
+        "the auth sign-in card must paint the connect prompt ({connect:?}); rendered:\n{text}"
+    );
+    let footer = t!("auth.enterprise_prompt").into_owned();
+    let footer_probe: String = footer.trim_start().chars().take(13).collect();
+    assert!(
+        !footer_probe.trim().is_empty() && text.contains(&footer_probe),
+        "the auth sign-in card must paint the Copilot enterprise footer ({footer:?}); rendered:\n{text}"
+    );
+}
+
+/// `device_verify_url` derives the device-code verification URL from the
+/// login command: github.com by default, but the GitHub Enterprise host
+/// when the command carries `--host https://<host>` (bug B).
+#[test]
+fn device_verify_url_follows_enterprise_host() {
+    assert_eq!(
+        device_verify_url("copilot login"),
+        "https://github.com/login/device"
+    );
+    assert_eq!(
+        device_verify_url("copilot login --host https://mycorp.ghe.com"),
+        "https://mycorp.ghe.com/login/device"
+    );
+    // Trailing slash is trimmed.
+    assert_eq!(
+        device_verify_url("copilot login --host https://mycorp.ghe.com/"),
+        "https://mycorp.ghe.com/login/device"
+    );
+    // A quoted exe path doesn't confuse the --host parse.
+    assert_eq!(
+        device_verify_url("\"C:\\Program Files\\copilot.exe\" login --host https://x.ghe.com"),
+        "https://x.ghe.com/login/device"
+    );
+}
+
+/// A failed Copilot device-flow login (e.g. an unreachable GitHub
+/// Enterprise host) must surface the captured reason on the auth screen
+/// instead of silently returning to the form with no feedback (bug C).
+#[test]
+fn copilot_login_failure_surfaces_reason() {
+    let mut app = test_app();
+    app.mode = AppMode::Auth;
+    app.auth = Some(AuthState {
+        agent_id: "copilot".into(),
+        agent_name: "GitHub Copilot".into(),
+        login_command: "copilot login --host https://nope.invalid".into(),
+        checking: true,
+        status_message: String::new(),
+        enterprise_mode: true,
+        enterprise_host: "nope.invalid".into(),
+    });
+
+    app.handle_event(AppEvent::LoginComplete {
+        agent_id: "copilot".into(),
+        success: false,
+        error: Some("Login failed: TypeError: fetch failed".into()),
+    });
+
+    let auth = app.auth.as_ref().expect("auth screen stays after failure");
+    assert!(!auth.checking, "failure clears the checking spinner");
+    assert_eq!(
+        auth.status_message, "Login failed: TypeError: fetch failed",
+        "the copilot login failure reason must be surfaced"
+    );
+}
+
+/// When no specific reason is captured, a Copilot login failure still shows
+/// a generic localized message rather than nothing.
+#[test]
+fn copilot_login_failure_without_reason_shows_generic_message() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.mode = AppMode::Auth;
+    app.auth = Some(AuthState {
+        agent_id: "copilot".into(),
+        agent_name: "GitHub Copilot".into(),
+        login_command: "copilot login".into(),
+        checking: true,
+        status_message: String::new(),
+        enterprise_mode: false,
+        enterprise_host: String::new(),
+    });
+
+    app.handle_event(AppEvent::LoginComplete {
+        agent_id: "copilot".into(),
+        success: false,
+        error: None,
+    });
+
+    let auth = app.auth.as_ref().expect("auth screen stays after failure");
+    assert_eq!(
+        auth.status_message,
+        t!("system.authentication_failed").into_owned(),
+        "a reasonless copilot failure falls back to a generic message"
+    );
+}
+
+/// Render: a Copilot login failure shows the reason at the *bottom* of the
+/// screen (not appended to the header) followed by situation-specific
+/// guidance. Regression guard for the "error on the first line" report.
+#[test]
+fn render_auth_copilot_failure_shows_reason_and_guidance_at_bottom() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.mode = AppMode::Auth;
+    app.auth = Some(AuthState {
+        agent_id: "copilot".into(),
+        agent_name: "GitHub Copilot".into(),
+        login_command: "copilot login --host https://nope.invalid".into(),
+        checking: false,
+        status_message: "Login failed: boom".into(),
+        enterprise_mode: true,
+        enterprise_host: "nope.invalid".into(),
+    });
+
+    let text = render_to_text(&mut app, 100, 24);
+    assert!(
+        text.contains("Login failed: boom"),
+        "the failure reason must render; rendered:\n{text}"
+    );
+    // Situation-specific guidance is shown (stable leading probe).
+    let help = t!("auth.login_failed_help_enterprise").into_owned();
+    let help_probe: String = help.trim_start().chars().take(16).collect();
+    assert!(
+        text.contains(&help_probe),
+        "enterprise failure guidance must render ({help:?}); rendered:\n{text}"
+    );
+    // The reason must NOT be on the header (card_connect) line — it now
+    // belongs at the bottom.
+    let header = text
+        .lines()
+        .find(|l| l.contains("Connect GitHub Copilot"))
+        .expect("header line present");
+    assert!(
+        !header.contains("Login failed"),
+        "the failure reason must not be in the header; rendered:\n{text}"
+    );
+}
+
+/// Review fix ①: a stale `LoginComplete` after the user escaped the auth
+/// screen (auth = None) must be ignored — it must not force Chat mode or
+/// start ACP for an empty agent.
+#[test]
+fn login_complete_ignored_when_no_active_auth_attempt() {
+    let mut app = test_app();
+    app.mode = AppMode::Setup;
+    app.auth = None;
+
+    app.handle_event(AppEvent::LoginComplete {
+        agent_id: "copilot".into(),
+        success: true,
+        error: None,
+    });
+
+    assert_eq!(
+        app.mode,
+        AppMode::Setup,
+        "a stale success must not force Chat mode after the user left auth"
+    );
+    assert!(
+        !app.pending_acp_start,
+        "a stale success must not start an ACP client"
+    );
+}
+
+/// Review fix ①: a `LoginComplete` whose agent doesn't match the active
+/// auth attempt (user switched agents) must be ignored.
+#[test]
+fn login_complete_ignored_on_agent_mismatch() {
+    let mut app = test_app();
+    app.mode = AppMode::Auth;
+    app.auth = Some(AuthState {
+        agent_id: "claude".into(),
+        agent_name: "Claude".into(),
+        login_command: "claude /login".into(),
+        checking: true,
+        status_message: String::new(),
+        enterprise_mode: false,
+        enterprise_host: String::new(),
+    });
+
+    app.handle_event(AppEvent::LoginComplete {
+        agent_id: "copilot".into(),
+        success: true,
+        error: None,
+    });
+
+    assert_eq!(
+        app.mode,
+        AppMode::Auth,
+        "a completion for a different agent must not transition to Chat"
+    );
+    assert!(
+        app.auth.is_some(),
+        "a mismatched completion must not tear down the active auth screen"
+    );
+}
+
+/// Regression: a Copilot retry must clear any prior failure status so the
+/// checking view shows "Checking…" — not a stale "Login failed…" plus a
+/// phantom "code copied" from the previous attempt. `begin_auth_checking`
+/// is the shared entry point both login paths use.
+#[test]
+fn begin_auth_checking_clears_stale_status() {
+    let mut app = test_app();
+    app.mode = AppMode::Auth;
+    app.auth = Some(AuthState {
+        agent_id: "copilot".into(),
+        agent_name: "GitHub Copilot".into(),
+        login_command: "copilot login --host https://nope.invalid".into(),
+        checking: false,
+        status_message: "Login failed: TypeError: fetch failed".into(),
+        enterprise_mode: true,
+        enterprise_host: "nope.invalid".into(),
+    });
+
+    app.begin_auth_checking();
+
+    let auth = app.auth.as_ref().expect("auth screen present");
+    assert!(
+        auth.checking,
+        "begin_auth_checking must enter the checking state"
+    );
+    assert!(
+        auth.status_message.is_empty(),
+        "a retry must clear the stale failure status so the checking view \
+         does not render a phantom 'code copied'"
+    );
+}
+
+/// Regression: after a GHE failure, the first Esc collapses the enterprise
+/// input AND clears the failure status, so it does not linger on the
+/// collapsed github.com sign-in screen ("failed/copied message carried back").
+#[test]
+fn esc_collapse_clears_enterprise_failure_status() {
+    let mut app = test_app();
+    app.mode = AppMode::Auth;
+    app.auth = Some(AuthState {
+        agent_id: "copilot".into(),
+        agent_name: "GitHub Copilot".into(),
+        login_command: "copilot login --host https://nope.invalid".into(),
+        checking: false,
+        status_message: "Login failed: TypeError: fetch failed".into(),
+        enterprise_mode: true,
+        enterprise_host: "nope.invalid".into(),
+    });
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert_eq!(
+        app.mode,
+        AppMode::Auth,
+        "collapse stays on the sign-in screen"
+    );
+    let auth = app.auth.as_ref().expect("collapse keeps the auth screen");
+    assert!(
+        !auth.enterprise_mode,
+        "first Esc collapses the enterprise input"
+    );
+    assert!(
+        auth.status_message.is_empty(),
+        "collapsing must clear the enterprise failure status so it does not linger"
+    );
+}
+
+/// Render: the auth screen while checking with a non-empty status message
+/// must paint that message (the `waiting_for_authorization` branch). Covers
+/// `ui/auth.rs` lines 44-60.
+#[test]
+fn render_auth_checking_with_status_message() {
+    let mut app = test_app();
+    app.mode = AppMode::Auth;
+    app.auth = Some(AuthState {
+        agent_id: "copilot".into(),
+        agent_name: "GitHub Copilot".into(),
+        login_command: String::new(),
+        checking: true,
+        status_message: "AUTH_STATUS_XYZ".into(),
+        enterprise_mode: false,
+        enterprise_host: String::new(),
+    });
+
+    let text = render_to_text(&mut app, 80, 24);
+    assert!(
+        text.contains("AUTH_STATUS_XYZ"),
+        "the auth screen must paint the status message while waiting; rendered:\n{text}"
+    );
+}
+
+/// The GHE sign-in affordance: [E] reveals the domain input, typed chars
+/// edit it (Ctrl-modified keys and whitespace are ignored), Backspace
+/// deletes, and Esc collapses back to the github.com choice WITHOUT leaving
+/// the sign-in screen.
+#[test]
+fn auth_enterprise_domain_entry_via_keys() {
+    let mut app = test_app();
+    app.mode = AppMode::Auth;
+    app.auth = Some(AuthState {
+        agent_id: "copilot".into(),
+        agent_name: "GitHub Copilot".into(),
+        login_command: "copilot login".into(),
+        checking: false,
+        status_message: String::new(),
+        enterprise_mode: false,
+        enterprise_host: String::new(),
+    });
+
+    // [E] opens the enterprise domain input (it is not typed into the field).
+    app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+    assert!(
+        app.auth.as_ref().unwrap().enterprise_mode,
+        "E must reveal the domain input"
+    );
+
+    // Typed characters edit the domain.
+    for c in ['c', 'o', 'r', 'p', '.', 'g', 'h', 'e', '.', 'c', 'o', 'm'] {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    // Ctrl-combinations and whitespace must NOT be typed into the field.
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    assert_eq!(app.auth.as_ref().unwrap().enterprise_host, "corp.ghe.com");
+
+    // Backspace deletes one character.
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    assert_eq!(app.auth.as_ref().unwrap().enterprise_host, "corp.ghe.co");
+
+    // Esc collapses the input but stays on the sign-in screen.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    let auth = app
+        .auth
+        .as_ref()
+        .expect("Esc collapse must not leave the sign-in screen");
+    assert!(
+        !auth.enterprise_mode,
+        "Esc must collapse the enterprise input"
+    );
+    assert_eq!(
+        app.mode,
+        AppMode::Auth,
+        "Esc collapse must stay in Auth mode"
+    );
+}
+
+fn agent_status_for_test(
+    id: &str,
+    display: &str,
+    cli_found: bool,
+) -> crate::agent_check::AgentStatus {
+    crate::agent_check::AgentStatus {
+        id: id.into(),
+        display_name: display.into(),
+        cli_found,
+        cli_path: None,
+        install_hint: String::new(),
+        auth_hint: String::new(),
+        auto_installable: id == "copilot",
+    }
+}
+
+#[test]
+fn diagnostic_setup_options_route_auth_by_agent() {
+    let missing_copilot = agent_status_for_test("copilot", "GitHub Copilot", false);
+    let missing_options = build_setup_options_with_uncertainty(
+        &SetupReason::AgentMissing,
+        Some(&missing_copilot),
+        false,
+    );
+    assert!(
+        matches!(
+            missing_options.as_slice(),
+            [
+                SetupOption::Install { agent_id, .. },
+                SetupOption::Recheck,
+                SetupOption::ChooseAgentSource
+            ] if agent_id == "copilot"
+        ),
+        "missing Copilot must support both bounded install and manual Recheck"
+    );
+
+    let copilot = agent_status_for_test("copilot", "GitHub Copilot", true);
+    let copilot_options =
+        build_setup_options_with_uncertainty(&SetupReason::AgentError, Some(&copilot), false);
+    assert!(
+        matches!(
+            copilot_options.as_slice(),
+            [SetupOption::SignIn { agent_id, .. }, SetupOption::ChooseAgentSource]
+                if agent_id == "copilot"
+        ),
+        "Copilot auth failures must offer the in-app SignIn flow"
+    );
+
+    let codex = agent_status_for_test("codex", "Codex", true);
+    let codex_options =
+        build_setup_options_with_uncertainty(&SetupReason::AgentError, Some(&codex), false);
+    assert!(
+        matches!(
+            codex_options.as_slice(),
+            [SetupOption::Retry, SetupOption::ChooseAgentSource]
+        ),
+        "external-auth agents stay on the diagnostic Retry flow"
+    );
+
+    let uncertain_options = build_setup_options_with_uncertainty(
+        &SetupReason::AgentMissing,
+        Some(&missing_copilot),
+        true,
+    );
+    assert!(
+        matches!(
+            uncertain_options.as_slice(),
+            [SetupOption::Recheck, SetupOption::ChooseAgentSource]
+        ),
+        "an uncertain prior install must be rechecked before another install starts"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fre_auto_install_hint_starts_missing_copilot_install() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut app = test_app();
+            let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+            app.set_event_tx(event_tx);
+            app.owner_tab_id = Some("fre-tab".into());
+            app.tab_id = Some("other-focused-tab".into());
+            app.current_agent_id = "copilot".into();
+            app.mode = AppMode::Setup;
+            app.preflight_setup_active = true;
+            app.setup = Some(SetupState {
+                reason: SetupReason::AgentMissing,
+                selected_index: 0,
+                preflight: PreflightResult::passed_for_custom_agent("copilot"),
+                phase: SetupPhase::Ready,
+                options: vec![SetupOption::Install {
+                    agent_id: "copilot".into(),
+                    display_name: "GitHub Copilot".into(),
+                }],
+                title: "setup".into(),
+                subtitle: "sub".into(),
+            });
+
+            app.handle_event(AppEvent::WtEvent {
+                method: "fre_auto_install_selected_agent".into(),
+                pane_id: String::new(),
+                tab_id: Some("fre-tab".into()),
+                params: json!({
+                    "tab_id": "fre-tab",
+                    "agent_id": "copilot",
+                }),
+            });
+
+            assert!(!app.auto_install_selected_agent);
+            assert_eq!(app.mode, AppMode::Setup);
+            assert!(matches!(
+                app.setup.as_ref().map(|setup| &setup.phase),
+                Some(SetupPhase::Installing)
+            ));
+            assert!(matches!(
+                app.pending_agent_install.as_ref(),
+                Some(PendingAgentInstall { agent_id, .. }) if agent_id == "copilot"
+            ));
+        })
+        .await;
+}
+
+#[test]
+fn fre_auto_install_hint_rejects_active_non_owner_tab() {
+    let mut app = test_app();
+    app.owner_tab_id = Some("owner-tab".into());
+    app.tab_id = Some("other-focused-tab".into());
+    app.current_agent_id = "copilot".into();
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "fre_auto_install_selected_agent".into(),
+        pane_id: String::new(),
+        tab_id: Some("other-focused-tab".into()),
+        params: json!({
+            "tab_id": "other-focused-tab",
+            "agent_id": "copilot",
+        }),
+    });
+
+    assert!(!app.auto_install_selected_agent);
+    assert!(app.pending_agent_install.is_none());
+}
+
+#[test]
+fn availability_notification_uses_stable_owner_tab() {
+    let mut app = test_app();
+    let _capture = crate::wt_protocol_events::capture_test_published_events();
+    app.owner_tab_id = Some("owner-tab".into());
+    app.tab_id = Some("other-focused-tab".into());
+
+    app.notify_confirmed_agent_available("copilot");
+
+    let event = crate::wt_protocol_events::take_test_published_events()
+        .into_iter()
+        .filter_map(|event| serde_json::from_str::<serde_json::Value>(&event).ok())
+        .find(|event| event["method"] == "agent_availability_changed")
+        .expect("availability change must be published");
+    assert_eq!(event["params"]["tab_id"], "owner-tab");
+}
+
+#[test]
+fn missing_copilot_without_fre_hint_remains_manual() {
+    let mut app = test_app();
+    app.mode = AppMode::Setup;
+    app.preflight_setup_active = true;
+    app.setup = Some(SetupState {
+        reason: SetupReason::AgentMissing,
+        selected_index: 0,
+        preflight: PreflightResult::passed_for_custom_agent("copilot"),
+        phase: SetupPhase::Ready,
+        options: vec![SetupOption::Install {
+            agent_id: "copilot".into(),
+            display_name: "GitHub Copilot".into(),
+        }],
+        title: "setup".into(),
+        subtitle: "sub".into(),
+    });
+
+    assert!(app.pending_agent_install.is_none());
+    assert!(matches!(
+        app.setup.as_ref().map(|setup| &setup.phase),
+        Some(SetupPhase::Ready)
+    ));
+}
+
+#[test]
+fn duplicate_startup_preflight_does_not_replace_active_install() {
+    let mut app = test_app();
+    app.current_agent_id = "copilot".into();
+    app.mode = AppMode::Setup;
+    app.pending_agent_install = Some(PendingAgentInstall {
+        request_id: 7,
+        agent_id: "copilot".into(),
+        binding_generation: app.agent_binding_generation,
+        agent_source: app.current_agent_source.clone(),
+    });
+    app.setup = Some(SetupState {
+        reason: SetupReason::AgentMissing,
+        selected_index: 0,
+        preflight: PreflightResult::passed_for_custom_agent("copilot"),
+        phase: SetupPhase::Installing,
+        options: Vec::new(),
+        title: "installing".into(),
+        subtitle: "sub".into(),
+    });
+
+    app.handle_event(AppEvent::PreflightComplete(PreflightResult {
+        agent_id: "copilot".into(),
+        display_name: "GitHub Copilot".into(),
+        cli_status: CheckStatus::Failed("Not found on PATH".into()),
+        cli_path: None,
+        auth_status: CheckStatus::Skipped,
+        install_hint: "Install GitHub Copilot".into(),
+        install_url: String::new(),
+        auth_hint: String::new(),
+    }));
+
+    assert!(matches!(
+        app.pending_agent_install.as_ref(),
+        Some(PendingAgentInstall { request_id: 7, .. })
+    ));
+    assert!(matches!(
+        app.setup.as_ref().map(|setup| &setup.phase),
+        Some(SetupPhase::Installing)
+    ));
+}
+
+#[test]
+fn fre_auto_install_event_is_ignored_for_wsl() {
+    let mut app = test_app();
+    app.tab_id = Some("fre-tab".into());
+    app.current_agent_id = "copilot".into();
+    app.current_agent_source = crate::agent_source::AgentSource::Wsl {
+        distro: "Ubuntu".into(),
+    };
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "fre_auto_install_selected_agent".into(),
+        pane_id: String::new(),
+        tab_id: Some("fre-tab".into()),
+        params: json!({
+            "tab_id": "fre-tab",
+            "agent_id": "copilot",
+        }),
+    });
+
+    assert!(!app.auto_install_selected_agent);
+    assert!(app.pending_agent_install.is_none());
+}
+
+#[test]
+fn late_fre_auto_install_event_is_consumed_after_passed_preflight() {
+    let mut app = test_app();
+    app.tab_id = Some("fre-tab".into());
+    app.current_agent_id = "copilot".into();
+
+    app.handle_event(AppEvent::PreflightComplete(PreflightResult {
+        agent_id: "copilot".into(),
+        display_name: "GitHub Copilot".into(),
+        cli_status: CheckStatus::Passed,
+        cli_path: Some("copilot.exe".into()),
+        auth_status: CheckStatus::Skipped,
+        install_hint: String::new(),
+        install_url: String::new(),
+        auth_hint: String::new(),
+    }));
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "fre_auto_install_selected_agent".into(),
+        pane_id: String::new(),
+        tab_id: Some("fre-tab".into()),
+        params: json!({
+            "tab_id": "fre-tab",
+            "agent_id": "copilot",
+        }),
+    });
+
+    assert!(app.initial_preflight_completed);
+    assert!(!app.auto_install_selected_agent);
+    assert!(app.pending_agent_install.is_none());
+}
+
+#[test]
+fn stale_install_completion_does_not_mutate_current_setup() {
+    let mut app = test_app();
+    app.mode = AppMode::Setup;
+    app.pending_agent_install = Some(PendingAgentInstall {
+        request_id: 2,
+        agent_id: "copilot".into(),
+        binding_generation: app.agent_binding_generation,
+        agent_source: app.current_agent_source.clone(),
+    });
+    app.setup = Some(SetupState {
+        reason: SetupReason::AgentMissing,
+        selected_index: 0,
+        preflight: PreflightResult::passed_for_custom_agent("copilot"),
+        phase: SetupPhase::Installing,
+        options: vec![SetupOption::Recheck],
+        title: "setup".into(),
+        subtitle: "sub".into(),
+    });
+
+    app.handle_event(AppEvent::AgentInstallComplete {
+        request_id: 1,
+        agent_id: "copilot".into(),
+        outcome: crate::agent_check::AgentInstallOutcome::Failed("stale".into()),
+    });
+
+    assert_eq!(
+        app.pending_agent_install,
+        Some(PendingAgentInstall {
+            request_id: 2,
+            agent_id: "copilot".into(),
+            binding_generation: 0,
+            agent_source: crate::agent_source::AgentSource::Host,
+        })
+    );
+    let setup = app.setup.as_ref().expect("setup remains active");
+    assert_eq!(setup.phase, SetupPhase::Installing);
+}
+
+#[test]
+fn install_completion_cannot_reconnect_after_binding_change() {
+    let mut app = test_app();
+    app.mode = AppMode::Setup;
+    app.current_agent_id = "copilot".into();
+    app.pending_agent_install = Some(PendingAgentInstall {
+        request_id: 1,
+        agent_id: "copilot".into(),
+        binding_generation: 0,
+        agent_source: crate::agent_source::AgentSource::Host,
+    });
+    app.agent_binding_generation = 1;
+    app.current_agent_id = "claude".into();
+
+    app.handle_event(AppEvent::AgentInstallComplete {
+        request_id: 1,
+        agent_id: "copilot".into(),
+        outcome: crate::agent_check::AgentInstallOutcome::AlreadyAvailable,
+    });
+
+    assert!(app.pending_agent_install.is_none());
+    assert_eq!(app.current_agent_id, "claude");
+    assert!(!app.pending_acp_start);
+}
+
+#[test]
+fn confirmed_agent_waits_for_outgoing_transport_retirement() {
+    let mut app = test_app();
+    app.mode = AppMode::Setup;
+    app.current_agent_id = "copilot".into();
+    app.setup = Some(SetupState {
+        reason: SetupReason::AgentMissing,
+        selected_index: 0,
+        preflight: PreflightResult::passed_for_custom_agent("copilot"),
+        phase: SetupPhase::Ready,
+        options: vec![SetupOption::Recheck],
+        title: "setup".into(),
+        subtitle: "sub".into(),
+    });
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some(DEFAULT_TAB_ID.into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+
+    app.reconnect_confirmed_available_agent("copilot");
+
+    assert!(!app.pending_acp_start);
+    assert!(app.reconnect_after_transport_retired);
+    assert!(matches!(
+        app.setup.as_ref().map(|setup| &setup.phase),
+        Some(SetupPhase::Reconnecting)
+    ));
+
+    app.handle_event(AppEvent::AgentTransportRetired);
+
+    assert!(app.pending_acp_start);
+    assert!(!app.reconnect_after_transport_retired);
+}
+
+#[test]
+fn successful_outgoing_connection_cancels_pending_replacement() {
+    let mut app = test_app();
+    app.mode = AppMode::Setup;
+    app.reconnect_after_transport_retired = true;
+    app.setup = Some(SetupState {
+        reason: SetupReason::AgentMissing,
+        selected_index: 0,
+        preflight: PreflightResult::passed_for_custom_agent("copilot"),
+        phase: SetupPhase::Reconnecting,
+        options: Vec::new(),
+        title: "setup".into(),
+        subtitle: "sub".into(),
+    });
+
+    app.handle_event(AppEvent::AgentConnected {
+        name: "Copilot".into(),
+        model: None,
+        version: None,
+        session_id: "sid".into(),
+        available_models: Vec::new(),
+        current_model_id: None,
+        load_session_supported: true,
+        image_supported: false,
+        session_capabilities_ready: true,
+        telemetry_byok_binding: None,
+    });
+
+    assert_eq!(app.mode, AppMode::Chat);
+    assert!(app.setup.is_none());
+    assert!(!app.reconnect_after_transport_retired);
+    assert!(!app.pending_acp_start);
+}
+
+#[test]
+fn show_copilot_auth_screen_sets_expected_state() {
+    let mut app = test_app();
+    app.mode = AppMode::Setup;
+    app.setup = Some(SetupState {
+        reason: SetupReason::AgentError,
+        selected_index: 0,
+        preflight: PreflightResult::passed_for_custom_agent("copilot"),
+        phase: SetupPhase::Ready,
+        options: vec![SetupOption::Retry],
+        title: "setup".into(),
+        subtitle: "sub".into(),
+    });
+
+    app.show_copilot_auth_screen();
+
+    assert_eq!(app.mode, AppMode::Auth);
+    assert!(
+        app.setup.is_none(),
+        "auth screen should replace setup state"
+    );
+    assert_eq!(app.current_agent_id, "copilot");
+    let auth = app.auth.as_ref().expect("copilot auth state");
+    assert_eq!(auth.agent_id, "copilot");
+    assert_eq!(auth.agent_name, "GitHub Copilot");
+    assert!(auth.login_command.contains("copilot"));
+    assert!(!auth.checking);
+    assert!(auth.status_message.is_empty());
+}
+
+#[test]
+fn initial_startup_failure_uses_setup_without_polluting_chat() {
+    let mut app = test_app();
+    let _capture = crate::wt_protocol_events::capture_test_published_events();
+    app.current_agent_id = "copilot".into();
+
+    app.handle_event(AppEvent::InitialAgentStartupFailed {
+        failure: crate::protocol::acp::failure::AgentFailure::HandshakeFailed {
+            stage: crate::protocol::acp::failure::HandshakeStage::Initialize,
+            detail: "missing executable".into(),
+        },
+        message: "INITIAL_STARTUP_FAILURE_XYZ".into(),
+    });
+
+    assert_eq!(app.mode, AppMode::Setup);
+    assert!(matches!(
+        app.setup.as_ref().map(|setup| &setup.phase),
+        Some(SetupPhase::Failed {
+            kind: SetupFailureKind::Connection,
+            message,
+        }) if message == "INITIAL_STARTUP_FAILURE_XYZ"
+    ));
+    assert!(app.current_tab().messages.is_empty());
+    let status = crate::wt_protocol_events::take_test_published_events()
+        .into_iter()
+        .filter_map(|event| serde_json::from_str::<serde_json::Value>(&event).ok())
+        .find(|event| event["method"] == "agent_status")
+        .expect("startup failure must publish the disconnected status");
+    assert_eq!(status["params"]["state"], "disconnected");
+}
+
+#[test]
+fn wsl_retry_enters_reconnecting_phase() {
+    let mut app = test_app();
+    app.current_agent_id = "copilot".into();
+    app.current_agent_source = crate::agent_source::AgentSource::Wsl {
+        distro: "Ubuntu".into(),
+    };
+    app.mode = AppMode::Setup;
+    app.setup = Some(SetupState {
+        reason: SetupReason::AgentError,
+        selected_index: 0,
+        preflight: PreflightResult::passed_for_custom_agent("copilot"),
+        phase: SetupPhase::Failed {
+            kind: SetupFailureKind::Connection,
+            message: "old failure".into(),
+        },
+        options: vec![SetupOption::RetryConnection],
+        title: "setup".into(),
+        subtitle: "sub".into(),
+    });
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Wsl {
+            distro: "Ubuntu".into(),
+        },
+        None,
+        Some("owner-tab".into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+
+    app.handle_setup_enter(SetupOption::RetryConnection);
+
+    assert!(matches!(
+        app.setup.as_ref().map(|setup| &setup.phase),
+        Some(SetupPhase::Reconnecting)
+    ));
+    assert!(matches!(app.state, ConnectionState::Connecting(_)));
+    assert!(app.pending_acp_start);
+}
+
+#[test]
+fn superseded_initial_startup_failure_does_not_replace_connected_chat() {
+    let mut app = test_app();
+    app.current_agent_id = "copilot".into();
+    app.initial_startup_presentation_eligible = false;
+    app.initial_transport_superseded = true;
+    app.state = ConnectionState::Connected;
+
+    app.handle_event(AppEvent::InitialAgentStartupFailed {
+        failure: crate::protocol::acp::failure::AgentFailure::HandshakeFailed {
+            stage: crate::protocol::acp::failure::HandshakeStage::Initialize,
+            detail: "stale".into(),
+        },
+        message: "STALE_INITIAL_FAILURE_XYZ".into(),
+    });
+
+    assert_eq!(app.mode, AppMode::Chat);
+    assert_eq!(app.state, ConnectionState::Connected);
+    assert!(app.current_tab().messages.is_empty());
+}
+
+#[test]
+fn duplicate_reconnect_ready_does_not_erase_active_preflight() {
+    let mut app = test_app();
+    let request = AgentReconnectRequest {
+        operation_id: "op-duplicate".into(),
+        window_id: "window-1".into(),
+        generation: 7,
+        agent_id: "claude".into(),
+        agent_source: crate::agent_source::AgentSource::Host,
+        acp_model: None,
+        custom_model_selection: None,
+    };
+    app.agent_reconnect_state = AgentReconnectState::Disconnecting(request.clone());
+
+    app.handle_event(AppEvent::AgentTransportRetired);
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Preflighting(active)
+            if active.operation_id == "op-duplicate"
+    ));
+
+    app.handle_event(AppEvent::AgentReconnectReady(request));
+
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Preflighting(active)
+            if active.operation_id == "op-duplicate"
+    ));
+}
+
+/// Installing uses one concise progress presentation while the regular Setup
+/// options stay hidden.
+#[test]
+fn render_setup_installing_hides_stale_options() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.mode = AppMode::Setup;
+    app.state = ConnectionState::Disconnected;
+    app.setup = Some(SetupState {
+        reason: SetupReason::AgentMissing,
+        selected_index: 0,
+        preflight: PreflightResult::passed_for_custom_agent("custom:x"),
+        phase: SetupPhase::Installing,
+        options: vec![
+            SetupOption::Install {
+                agent_id: "copilot".into(),
+                display_name: "GitHub Copilot".into(),
+            },
+            SetupOption::SignIn {
+                agent_id: "copilot".into(),
+                display_name: "GitHub Copilot".into(),
+            },
+            SetupOption::Recheck,
+            SetupOption::Retry,
+        ],
+        title: "STALE_MISSING_TITLE_XYZ".into(),
+        subtitle: "sub".into(),
+    });
+
+    let text = render_to_text(&mut app, 80, 30);
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with(" Installing GitHub Copilot CLI  ◜"))
+            && !text.contains("Installing GitHub Copilot CLI..."),
+        "the setup screen must paint the unindented install wording and spinner; rendered:\n{text}"
+    );
+    assert!(
+        !text.contains("STALE_MISSING_TITLE_XYZ")
+            && !text.contains("● Installing GitHub Copilot")
+            && !text.contains("Install GitHub Copilot")
+            && !text.contains("Try again"),
+        "busy setup must hide stale titles and actions; rendered:\n{text}"
+    );
+    assert!(
+        text.contains("disconnected"),
+        "the PM-required input connection status remains visible; rendered:\n{text}"
+    );
+}
+
+/// A failed install keeps its actionable options and paints the failure.
+#[test]
+fn render_setup_install_error() {
+    let mut app = test_app();
+    app.mode = AppMode::Setup;
+    app.setup = Some(SetupState {
+        reason: SetupReason::AgentError,
+        selected_index: 0,
+        preflight: PreflightResult::passed_for_custom_agent("custom:x"),
+        phase: SetupPhase::Failed {
+            kind: SetupFailureKind::Install,
+            message: "INSTALL_ERR_XYZ".into(),
+        },
+        options: vec![SetupOption::Retry],
+        title: "err".into(),
+        subtitle: "sub".into(),
+    });
+
+    let text = render_to_text(&mut app, 80, 30);
+    assert!(
+        text.contains("INSTALL_ERR_XYZ"),
+        "the setup screen must paint the install error; rendered:\n{text}"
+    );
+}
+
+/// Reconnecting replaces the old install content but preserves the normal
+/// connection-state input row.
+#[test]
+fn render_setup_reconnecting_hides_install_content() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.mode = AppMode::Setup;
+    app.state = ConnectionState::Connecting("Reconnecting...".into());
+    app.setup = Some(SetupState {
+        reason: SetupReason::AgentMissing,
+        selected_index: 0,
+        preflight: PreflightResult::passed_for_custom_agent("custom:x"),
+        phase: SetupPhase::Reconnecting,
+        options: vec![
+            SetupOption::Install {
+                agent_id: "copilot".into(),
+                display_name: "GitHub Copilot".into(),
+            },
+            SetupOption::Recheck,
+        ],
+        title: "STALE_AGENT_NOT_FOUND_XYZ".into(),
+        subtitle: "sub".into(),
+    });
+
+    let text = render_to_text(&mut app, 80, 30);
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with(" Connecting x  ◜"))
+            && text.contains("connecting"),
+        "reconnecting and input connection status must both remain visible; rendered:\n{text}"
+    );
+    assert!(
+        !text.contains("STALE_AGENT_NOT_FOUND_XYZ")
+            && !text.contains("Starting GitHub Copilot")
+            && !text.contains("Starting x")
+            && !text.contains("Connecting x...")
+            && !text.contains("Install GitHub Copilot")
+            && !text.contains("Try again"),
+        "reconnecting must hide stale install content; rendered:\n{text}"
+    );
+}
+
+#[test]
+fn render_setup_reconnecting_substitutes_copilot_display_name() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.mode = AppMode::Setup;
+    app.state = ConnectionState::Connecting("Reconnecting...".into());
+    let mut preflight = PreflightResult::passed_for_custom_agent("copilot");
+    preflight.display_name = "GitHub Copilot".into();
+    app.setup = Some(SetupState {
+        reason: SetupReason::AgentMissing,
+        selected_index: 0,
+        preflight,
+        phase: SetupPhase::Reconnecting,
+        options: Vec::new(),
+        title: "STALE_AGENT_NOT_FOUND_XYZ".into(),
+        subtitle: "sub".into(),
+    });
+
+    let text = render_to_text(&mut app, 80, 30);
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with(" Connecting GitHub Copilot  ◜"))
+            && !text.contains("Starting GitHub Copilot")
+            && !text.contains("Connecting GitHub Copilot...")
+            && !text.contains("STALE_AGENT_NOT_FOUND_XYZ"),
+        "the reconnect status must substitute the Copilot display name before the spinner; rendered:\n{text}"
+    );
+}
+
+#[test]
+fn render_setup_busy_spinner_rotates_after_status() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+
+    for (phase, status) in [
+        (SetupPhase::Installing, "Installing GitHub Copilot CLI"),
+        (SetupPhase::Reconnecting, "Connecting GitHub Copilot"),
+    ] {
+        let mut app = test_app();
+        app.mode = AppMode::Setup;
+        let mut preflight = PreflightResult::passed_for_custom_agent("copilot");
+        preflight.display_name = "GitHub Copilot".into();
+        app.setup = Some(SetupState {
+            reason: SetupReason::AgentMissing,
+            selected_index: 0,
+            preflight,
+            phase,
+            options: Vec::new(),
+            title: "STALE_TITLE_XYZ".into(),
+            subtitle: "STALE_SUBTITLE_XYZ".into(),
+        });
+
+        for (frame, glyph) in ['◜', '◝', '◞', '◟'].into_iter().enumerate() {
+            app.activity_frame = frame as u8;
+            let text = render_to_text(&mut app, 80, 30);
+            assert!(
+                text.lines()
+                    .any(|line| line.starts_with(&format!(" {status}  {glyph}"))),
+                "busy setup frame {frame} must render {glyph} after the unindented status; rendered:\n{text}"
+            );
+        }
+    }
+}
+
+/// Alt+V when the agent did not advertise the `image` prompt capability
+/// must no-op the paste and surface a clear system message rather than
+/// queueing an image the agent would reject.
+#[test]
+fn alt_v_without_image_capability_shows_not_supported_message() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.agent_supports_image = false;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT));
+
+    let want = t!("system.image_not_supported").into_owned();
+    let tab = app.current_tab();
+    assert!(
+        tab.messages
+            .iter()
+            .any(|m| matches!(m, ChatMessage::Notice {
+                kind: NoticeKind::Warning,
+                text,
+            } if *text == want)),
+        "Alt+V without image capability must push the not-supported message"
+    );
+    assert!(
+        tab.attachments.is_empty(),
+        "no image should be queued when the capability is missing"
+    );
+}
+
+#[test]
+fn replacing_input_clears_attachments() {
+    let mut app = test_app();
+    queue_test_image(&mut app, "screenshot");
+
+    app.current_tab_mut().replace_input("/move ".to_string());
+
+    assert_eq!(app.current_tab().input, "/move ");
+    assert_eq!(app.current_tab().cursor_pos, "/move ".len());
+    assert!(app.current_tab().attachments.is_empty());
+}
+
+/// Render: queued Alt+V images appear inline with the draft instead of being
+/// pinned to the input-box border.
+#[test]
+fn input_box_renders_queued_image_inline() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    queue_test_image(&mut app, "screenshot");
+
+    let text = render_to_text(&mut app, 80, 30);
+    assert!(
+        text.contains("[image: image-1.png]"),
+        "the input box must render the attachment token inline; rendered:\n{text}"
+    );
+}
+
+fn queue_test_image(app: &mut App, label: &str) {
+    app.current_tab_mut()
+        .insert_image_attachment(crate::clipboard_image::PastedImage {
+            data_base64: "AAA=".into(),
+            mime_type: "image/png".into(),
+            label: label.into(),
+        });
+}
+
+#[test]
+fn image_attachment_backspace_at_input_start_removes_last_image() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    queue_test_image(&mut app, "first");
+    queue_test_image(&mut app, "second");
+
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+
+    assert_eq!(app.current_tab().input, "[image: first.png]");
+    assert_eq!(app.current_tab().attachments.images().count(), 1);
+    assert_eq!(
+        app.current_tab().attachments.images().next().unwrap().label,
+        "first"
+    );
+}
+
+#[test]
+fn image_attachment_backspace_in_text_preserves_images() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    queue_test_image(&mut app, "screenshot");
+    app.current_tab_mut().insert_input_str("hello");
+
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+
+    assert_eq!(app.current_tab().input, "[image: image-1.png]hell");
+    assert_eq!(app.current_tab().attachments.images().count(), 1);
+}
+
+#[test]
+fn image_attachment_left_and_right_skip_the_whole_inline_token() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    queue_test_image(&mut app, "screenshot");
+    let token_len = app.current_tab().input.len();
+
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().cursor_pos, 0);
+
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().cursor_pos, token_len);
+}
+
+#[test]
+fn image_attachment_generated_clipboard_names_are_unique_per_tab() {
+    let mut app = test_app();
+    queue_test_image(&mut app, "image");
+    queue_test_image(&mut app, "image");
+
+    assert_eq!(
+        app.current_tab().input,
+        "[image: image-1.png][image: image-2.png]"
+    );
+}
+
+#[test]
+fn image_attachment_delete_at_token_start_removes_the_whole_token() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    queue_test_image(&mut app, "screenshot");
+    app.current_tab_mut().cursor_pos = 0;
+
+    app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+
+    assert!(app.current_tab().input.is_empty());
+    assert!(app.current_tab().attachments.is_empty());
+}
+
+#[test]
+fn image_attachment_submission_strips_token_from_prompt_text() {
+    let mut app = test_app();
+    queue_test_image(&mut app, "screenshot");
+    app.current_tab_mut().insert_input_str("describe this");
+
+    let display_text = std::mem::take(&mut app.current_tab_mut().input);
+    let (prompt_text, images) = app
+        .current_tab_mut()
+        .attachments
+        .take_for_submission(display_text.clone());
+
+    assert_eq!(display_text, "[image: image-1.png]describe this");
+    assert_eq!(prompt_text, "describe this");
+    assert_eq!(images.len(), 1);
+}
+
+#[test]
+fn image_attachment_ctrl_backspace_crossing_token_removes_it_atomically() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    app.current_tab_mut().insert_input_str("before ");
+    queue_test_image(&mut app, "screenshot");
+    app.current_tab_mut().insert_input_str(" after");
+
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL));
+
+    assert_eq!(app.current_tab().input, "before ");
+    assert!(app.current_tab().attachments.is_empty());
+}
+
+#[test]
+fn image_attachment_submission_preserves_visual_image_order() {
+    let mut app = test_app();
+    app.current_tab_mut().insert_input_str("a");
+    queue_test_image(&mut app, "first");
+    app.current_tab_mut().insert_input_str("b");
+    queue_test_image(&mut app, "second");
+    app.current_tab_mut().insert_input_str("c");
+
+    let display_text = std::mem::take(&mut app.current_tab_mut().input);
+    let (prompt_text, images) = app
+        .current_tab_mut()
+        .attachments
+        .take_for_submission(display_text);
+
+    assert_eq!(prompt_text, "abc");
+    assert_eq!(
+        images
+            .iter()
+            .map(|image| image.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first", "second"]
+    );
+}
+
+#[test]
+fn image_attachment_session_reset_removes_tokens_but_preserves_draft_text() {
+    let mut app = test_app();
+    app.current_tab_mut().insert_input_str("before ");
+    queue_test_image(&mut app, "image");
+    app.current_tab_mut().insert_input_str(" after");
+
+    app.current_tab_mut().clear_chat_history();
+
+    assert_eq!(app.current_tab().input, "before  after");
+    assert_eq!(app.current_tab().cursor_pos, "before  after".len());
+    assert!(app.current_tab().attachments.is_empty());
+}
+
+#[test]
+fn image_attachment_session_reset_clears_attachments_stashed_by_history_navigation() {
+    let mut app = test_app();
+    app.current_tab_mut()
+        .record_input_history("previous prompt");
+    app.current_tab_mut().insert_input_str("draft ");
+    queue_test_image(&mut app, "image");
+    app.current_tab_mut().navigate_input_history_older();
+
+    app.current_tab_mut().clear_chat_history();
+    app.current_tab_mut().navigate_input_history_newer();
+
+    assert_eq!(app.current_tab().input, "draft ");
+    assert!(app.current_tab().attachments.is_empty());
+}
+
+#[test]
+fn image_attachment_escape_clears_the_whole_draft() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    app.current_tab_mut().input = "draft".into();
+    app.current_tab_mut().cursor_pos = "draft".len();
+    queue_test_image(&mut app, "screenshot");
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(app.current_tab().input.is_empty());
+    assert!(app.current_tab().attachments.is_empty());
+}
+
+#[test]
+fn image_attachment_ctrl_c_clears_image_only_draft_without_arming_close() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    queue_test_image(&mut app, "screenshot");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+
+    assert!(app.current_tab().attachments.is_empty());
+    assert!(app.close_pane_armed_at.is_none());
+}
+
+/// the action's command body (the card shows the command, not the choice
+/// `title` field, which only surfaces for action-less choices) plus the
+/// run-command button. Lifts `ui/recommendations.rs` (reached only when
+/// `turn.recommendations()` is Some).
+#[test]
+fn render_recommendation_card_shows_command() {
+    use crate::coordinator::{RecommendationChoice, RecommendationSet, RecommendedAction};
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().turn = TurnState::Surfaced {
+        prompt: SubmittedPrompt {
+            id: 1,
+            text: "fix it".into(),
+            submitted_at_unix_s: 0.0,
+            context: TurnContext::default(),
+            autofix: None,
+        },
+        outcome: TurnOutcome::Recommendation(RecommendationSet {
+            recommended_choice: Some(0),
+            choices: vec![RecommendationChoice {
+                choice: 0,
+                title: "Run the fix".into(),
+                rationale: "because reasons".into(),
+                actions: vec![RecommendedAction::Send {
+                    parent: String::new(),
+                    input: "echo REC_CMD_XYZ".into(),
+                }],
+            }],
+        }),
+        end_pending: false,
+    };
+
+    let text = render_to_text(&mut app, 80, 40);
+    assert!(
+        text.contains("REC_CMD_XYZ"),
+        "the recommendation card must paint its command body; rendered:\n{text}"
+    );
+    let run_btn = t!("recommendations.button_run_command").into_owned();
+    let probe: String = run_btn.chars().take(4).collect();
+    assert!(
+        !probe.trim().is_empty() && text.contains(&probe),
+        "the recommendation card must paint the run-command button ({run_btn:?}); rendered:\n{text}"
+    );
+}
+
+#[test]
+fn recommendation_hint_uses_panel_horizontal_inset() {
+    use crate::coordinator::{RecommendationChoice, RecommendationSet, RecommendedAction};
+
+    let _g = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().turn = TurnState::Surfaced {
+        prompt: SubmittedPrompt {
+            id: 1,
+            text: "fix it".into(),
+            submitted_at_unix_s: 0.0,
+            context: TurnContext::default(),
+            autofix: None,
+        },
+        outcome: TurnOutcome::Recommendation(RecommendationSet {
+            recommended_choice: Some(0),
+            choices: vec![RecommendationChoice {
+                choice: 0,
+                title: "Run the fix".into(),
+                rationale: String::new(),
+                actions: vec![RecommendedAction::Send {
+                    parent: String::new(),
+                    input: "echo PADDING_XYZ".into(),
+                }],
+            }],
+        }),
+        end_pending: false,
+    };
+
+    let rendered = render_to_text(&mut app, 80, 40);
+    let command_line = rendered
+        .lines()
+        .find(|line| line.contains("PADDING_XYZ"))
+        .unwrap_or_else(|| panic!("recommendation command must be visible:\n{rendered}"));
+    assert_eq!(
+        command_line.chars().nth(1),
+        Some('│'),
+        "recommendation card must use the panel's one-cell horizontal inset:\n{rendered}"
+    );
+
+    let hint_line = rendered
+        .lines()
+        .find(|line| line.contains("navigate suggestions"))
+        .unwrap_or_else(|| panic!("recommendation navigation hint must be visible:\n{rendered}"));
+    assert_eq!(
+        hint_line.find('('),
+        Some(1),
+        "recommendation hint must align with the card's top-level horizontal lane:\n{rendered}"
+    );
+}
+
+/// Render: every `ChatMessage` variant must paint without panicking and
+/// surface its distinguishing text. Lifts the `build_message_lines` /
+/// `message_height` match arms in `ui/chat.rs` (User/System/Plan/Error/
+/// AgentEvent/Disclaimer were previously unexercised).
+#[test]
+fn render_chat_all_message_variants() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    {
+        let tab = app.current_tab_mut();
+        tab.messages.push(ChatMessage::User("USER_MSG_XYZ".into()));
+        tab.messages
+            .push(ChatMessage::Agent("AGENT_MSG_XYZ".into()));
+        tab.messages
+            .push(ChatMessage::System("SYSTEM_MSG_XYZ".into()));
+        tab.messages
+            .push(ChatMessage::Error("ERROR_MSG_XYZ".into()));
+        tab.messages
+            .push(ChatMessage::AgentEvent("AGENT_EVENT_MSG_XYZ".into()));
+        tab.messages.push(ChatMessage::Plan(vec![
+            PlanEntry {
+                content: "PLAN_DONE_XYZ".into(),
+                status: PlanEntryStatus::Completed,
+            },
+            PlanEntry {
+                content: "PLAN_DOING_XYZ".into(),
+                status: PlanEntryStatus::InProgress,
+            },
+            PlanEntry {
+                content: "PLAN_TODO_XYZ".into(),
+                status: PlanEntryStatus::Pending,
+            },
+        ]));
+        tab.messages.push(ChatMessage::Disclaimer);
+    }
+
+    let text = render_to_text(&mut app, 80, 40);
+    for needle in [
+        "USER_MSG_XYZ",
+        "AGENT_MSG_XYZ",
+        "SYSTEM_MSG_XYZ",
+        "ERROR_MSG_XYZ",
+        "AGENT_EVENT_MSG_XYZ",
+        "PLAN_DONE_XYZ",
+        "PLAN_DOING_XYZ",
+        "PLAN_TODO_XYZ",
+    ] {
+        assert!(
+            text.contains(needle),
+            "chat must paint {needle:?}; rendered:\n{text}"
+        );
+    }
+}
+
+/// Render: an expanded completed turn with a trailing marker must paint
+/// its prompt header, its detail rows, and the marker. Lifts
+/// `build_completed_turn_lines` in `ui/chat.rs`.
+#[test]
+fn render_chat_completed_turn_expanded_with_marker() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "TURN_PROMPT_XYZ".into(),
+        details: vec![ChatMessage::Agent("TURN_DETAIL_XYZ".into())],
+        expanded: true,
+        trailing_marker: Some("TURN_MARKER_XYZ".into()),
+    });
+
+    let text = render_to_text(&mut app, 80, 40);
+    for needle in ["TURN_PROMPT_XYZ", "TURN_DETAIL_XYZ", "TURN_MARKER_XYZ"] {
+        assert!(
+            text.contains(needle),
+            "expanded completed turn must paint {needle:?}; rendered:\n{text}"
+        );
+    }
+}
+
+#[test]
+fn clicking_completed_turn_triangle_toggles_details() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "MOUSE_TOGGLE_PROMPT".into(),
+        details: vec![ChatMessage::Agent("MOUSE_TOGGLE_DETAIL".into())],
+        expanded: true,
+        trailing_marker: None,
+    });
+    app.current_tab_mut().selected_completed_turn_idx = Some(0);
+
+    let before = render_to_text(&mut app, 80, 16);
+    let (row, column) = before
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| {
+            line.contains("MOUSE_TOGGLE_PROMPT").then(|| {
+                let column = line
+                    .chars()
+                    .position(|character| character == '▼')
+                    .expect("expanded turn header must paint its triangle");
+                (row as u16, column as u16)
+            })
+        })
+        .expect("completed turn must be visible");
+
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+
+    assert!(
+        !app.current_tab().completed_turns[0].expanded,
+        "clicking the rendered triangle must collapse the completed turn",
+    );
+    let collapsed = render_to_text(&mut app, 80, 16);
+    assert!(collapsed.contains("MOUSE_TOGGLE_PROMPT"));
+    assert!(!collapsed.contains("MOUSE_TOGGLE_DETAIL"));
+    assert_eq!(app.current_tab().selected_completed_turn_idx, Some(0));
+}
+
+#[test]
+fn clicking_multiline_completed_turn_prompt_selects_and_reuses_enter_toggle() {
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "MULTILINE_FIRST\nMULTILINE_SECOND internal space AUTO_WRAP_TARGET".into(),
+        details: vec![ChatMessage::Agent("MULTILINE_DETAIL".into())],
+        expanded: true,
+        trailing_marker: None,
+    });
+
+    let before = render_to_text(&mut app, 24, 16);
+    let (row, column) = before
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| {
+            line.find("MULTILINE_SECOND")
+                .map(|column| (row as u16, column as u16 + 2))
+        })
+        .expect("expanded prompt second line must be visible");
+
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+
+    assert!(
+        !app.current_tab().completed_turns[0].expanded,
+        "clicking the rendered second prompt line must collapse the turn",
+    );
+    assert_eq!(
+        app.current_tab().selected_completed_turn_idx,
+        Some(0),
+        "mouse click must reuse completed-turn keyboard selection",
+    );
+
+    let selected_buffer = render_to_buffer(&mut app, 80, 16);
+    let selected_text = buffer_to_text(&selected_buffer);
+    let (selected_row, selected_column) = selected_text
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| {
+            line.find("MULTILINE_FIRST")
+                .map(|column| (row as u16, column as u16))
+        })
+        .expect("selected collapsed prompt must be visible");
+    assert_eq!(
+        selected_buffer
+            .cell((selected_column, selected_row))
+            .expect("selected prompt cell must exist")
+            .style()
+            .fg,
+        Some(ratatui::style::Color::Cyan),
+        "mouse selection must use the same cyan style as keyboard selection",
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        app.current_tab().completed_turns[0].expanded,
+        "Enter must toggle the turn selected by mouse click",
+    );
+}
+
+#[test]
+fn completed_turn_user_input_hits_follow_rendered_text_boundaries() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "BOUNDARY_FIRST\nBOUNDARY_SECOND  x AUTO_WRAP_TARGET_MORE\n\nBOUNDARY_LAST".into(),
+        details: vec![ChatMessage::Agent("BOUNDARY_DETAIL".into())],
+        expanded: true,
+        trailing_marker: None,
+    });
+
+    let rendered = render_to_text(&mut app, 24, 18);
+    let regions: Vec<_> = app
+        .completed_turn_hits
+        .iter()
+        .copied()
+        .filter(|hit| hit.kind == CompletedTurnHitKind::UserInput)
+        .collect();
+    assert!(
+        regions.len() >= 4,
+        "multiline and wrapped prompt rows need separate hit ranges"
+    );
+
+    let locate = |needle: &str| {
+        rendered
+            .lines()
+            .enumerate()
+            .find_map(|(row, line)| line.find(needle).map(|column| (row as u16, column as u16)))
+            .unwrap_or_else(|| panic!("{needle:?} must be visible; rendered:\n{rendered}"))
+    };
+    let (first_row, first_column) = locate("BOUNDARY_FIRST");
+    let (second_row, second_column) = locate("BOUNDARY_SECOND");
+    let (wrap_row, wrap_column) = locate("AUTO_WRAP");
+    let (last_row, last_column) = locate("BOUNDARY_LAST");
+    let (detail_row, detail_column) = locate("BOUNDARY_DETAIL");
+
+    for (row, column) in [
+        (first_row, first_column + 2),
+        (second_row, second_column + 2),
+        (wrap_row, wrap_column + 2),
+        (last_row, last_column + 2),
+    ] {
+        assert!(regions.iter().any(|hit| hit.contains(column, row)));
+    }
+
+    let internal_space_column = rendered
+        .lines()
+        .nth(second_row as usize)
+        .expect("second row")
+        .find("BOUNDARY_SECOND  x")
+        .expect("internal spaces") as u16
+        + "BOUNDARY_SECOND ".len() as u16;
+    assert!(regions
+        .iter()
+        .any(|hit| hit.contains(internal_space_column, second_row)));
+
+    let first_line = rendered.lines().nth(first_row as usize).expect("first row");
+    let prefix_byte = first_line.find('>').expect("prompt prefix");
+    let prefix_column = unicode_width::UnicodeWidthStr::width(&first_line[..prefix_byte]) as u16;
+    assert!(regions
+        .iter()
+        .any(|hit| hit.contains(prefix_column, first_row)));
+    assert!(!regions
+        .iter()
+        .any(|hit| hit.contains(detail_column, detail_row)));
+    for hit in &regions {
+        assert_eq!(hit.start_column, 1);
+        assert_eq!(hit.end_column, 23);
+        assert!(hit.contains(hit.end_column - 1, hit.row));
+        assert!(!hit.contains(hit.end_column, hit.row));
+    }
+    assert!(regions.iter().any(|hit| hit.row == last_row - 1));
+
+    let click = |app: &mut App, row, column| {
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            app.handle_event(AppEvent::Mouse(MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }));
+        }
+    };
+    click(&mut app, second_row, second_column + 2);
+    assert!(!app.current_tab().completed_turns[0].expanded);
+    render_to_text(&mut app, 80, 18);
+    let summary_hit = app
+        .completed_turn_hits
+        .iter()
+        .copied()
+        .find(|hit| hit.kind == CompletedTurnHitKind::UserInput)
+        .expect("collapsed summary must expose its rendered prompt text");
+    click(&mut app, summary_hit.row, summary_hit.start_column);
+    assert!(app.current_tab().completed_turns[0].expanded);
+}
+
+#[test]
+fn clicking_input_dialog_restores_input_navigation_after_mouse_turn_selection() {
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "INPUT_FOCUS_PROMPT".into(),
+        details: vec![ChatMessage::Agent("INPUT_FOCUS_DETAIL".into())],
+        expanded: true,
+        trailing_marker: None,
+    });
+
+    let rendered = render_to_text(&mut app, 80, 16);
+    let (prompt_row, _) = rendered
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| {
+            line.find("INPUT_FOCUS_PROMPT")
+                .map(|column| (row as u16, column))
+        })
+        .expect("completed prompt must be visible");
+    let input_row = rendered
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| line.contains("Ask anything").then_some(row as u16))
+        .expect("input placeholder must be visible");
+
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column: 70,
+            row: prompt_row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+    assert_eq!(app.current_tab().selected_completed_turn_idx, Some(0));
+    assert!(!app.current_tab().completed_turns[0].expanded);
+
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column: 8,
+            row: input_row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+    assert_eq!(app.current_tab().selected_completed_turn_idx, None);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert_eq!(app.current_tab().input, "x");
+}
+
+#[test]
+fn double_click_in_input_dialog_preserves_word_selection() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().input = "INPUT_DOUBLE_CLICK_MARKER".into();
+    let rendered = render_to_text(&mut app, 80, 16);
+    let (row, column) = rendered
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| {
+            line.find("INPUT_DOUBLE_CLICK_MARKER")
+                .map(|column| (row as u16, column as u16 + 2))
+        })
+        .expect("input marker must be visible");
+
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+    assert_eq!(app.text_selection.selected_text(), None);
+    render_to_text(&mut app, 80, 16);
+
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+    render_to_text(&mut app, 80, 16);
+
+    assert_eq!(
+        app.text_selection.selected_text().as_deref(),
+        Some("INPUT_DOUBLE_CLICK_MARKER")
+    );
+}
+
+mod input_mouse_cursor_tests {
+    use super::*;
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+
+    fn draft(input: &str, width: u16, height: u16) -> (App, Rect) {
+        let mut app = test_app();
+        app.state = ConnectionState::Connected;
+        app.current_tab_mut().replace_input(input.into());
+        render_to_text(&mut app, width, height);
+        let area = app.input_dialog_area.expect("rendered input box");
+        (app, area)
+    }
+
+    fn mouse(app: &mut App, kind: MouseEventKind, column: u16, row: u16) {
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+
+    fn click(app: &mut App, area: Rect, column: u16, row: u16) {
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            mouse(app, kind, area.x + 4 + column, area.y + 1 + row);
+        }
+    }
+
+    fn insert_marker(app: &mut App) {
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+        )));
+    }
+
+    #[test]
+    fn clicking_preserves_redo_and_separates_typing_transactions() {
+        let (mut app, area) = draft("base", 80, 20);
+        insert_marker(&mut app);
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL,
+        )));
+        click(&mut app, area, 1, 0);
+        assert_eq!(app.current_tab().input, "base");
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('y'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.current_tab().input, concat!("base", "q"));
+        app.text_selection.clear();
+        render_to_text(&mut app, 80, 20);
+        click(&mut app, area, 2, 0);
+        insert_marker(&mut app);
+        let mut expected = String::from(concat!("base", "q"));
+        expected.insert(2, 'q');
+        assert_eq!(app.current_tab().input, expected);
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.current_tab().input, concat!("base", "q"));
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.current_tab().input, "base");
+    }
+
+    #[test]
+    fn host_visibility_roundtrip_cancels_the_pressed_click() {
+        let (mut app, area) = draft("keep draft", 80, 20);
+        app.current_tab_mut().pane_open = true;
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            area.x + 5,
+            area.y + 1,
+        );
+        for open in [false, true] {
+            app.handle_event(AppEvent::WtEvent {
+                method: "set_agent_state".into(),
+                pane_id: String::new(),
+                tab_id: Some(DEFAULT_TAB_ID.into()),
+                params: json!({ "tab_id": DEFAULT_TAB_ID, "pane_open": open }),
+            });
+        }
+        render_to_text(&mut app, 80, 20);
+        mouse(
+            &mut app,
+            MouseEventKind::Up(MouseButton::Left),
+            area.x + 5,
+            area.y + 1,
+        );
+        assert_eq!(app.current_tab().cursor_pos, "keep draft".len());
+    }
+
+    #[test]
+    fn modal_requests_do_not_reposition_the_draft() {
+        for permission in [false, true] {
+            let (mut app, area) = draft("keep draft", 80, 20);
+            if permission {
+                app.current_tab_mut()
+                    .permission
+                    .push_back(perm_with("Confirm"));
+            } else {
+                begin_user_input_test(&mut app);
+                let (responder, _response) = tokio::sync::oneshot::channel();
+                app.handle_event(AppEvent::UserInputRequest {
+                    request_id: "question".into(),
+                    session_id: DEFAULT_TAB_ID.into(),
+                    request: crate::agent_tools::user_input::UserInputRequest {
+                        question: "Continue?".into(),
+                        choices: vec!["Yes".into()],
+                        allow_freeform: false,
+                    },
+                    responder,
+                });
+            }
+            let before = app.current_tab().cursor_pos;
+            click(&mut app, area, 1, 0);
+            assert_eq!(app.current_tab().cursor_pos, before);
+        }
+    }
+
+    #[test]
+    fn click_repositions_subsequent_typing() {
+        let (mut app, area) = draft("alpha bravo", 80, 20);
+        click(&mut app, area, 3, 0);
+        insert_marker(&mut app);
+        let mut expected = String::from("alpha bravo");
+        expected.insert(3, 'q');
+        assert_eq!(app.current_tab().input, expected);
+    }
+
+    #[test]
+    fn explicit_rows_target_the_clicked_source_line() {
+        let source = concat!("alpha", "\n", "bravo", "\n", "charlie");
+        let (mut app, area) = draft(source, 80, 20);
+        click(&mut app, area, 2, 1);
+        insert_marker(&mut app);
+        let mut expected = source.to_string();
+        expected.insert(8, 'q');
+        assert_eq!(app.current_tab().input, expected);
+    }
+
+    #[test]
+    fn wrapped_rows_use_the_rendered_text_width() {
+        let source = "abcdefghijklmnopqrstuvwxyz";
+        let (mut app, area) = draft(source, 15, 20);
+        assert_eq!(area.width, 15);
+        click(&mut app, area, 2, 1);
+        let mut expected = source.to_string();
+        expected.insert(12, 'q');
+        insert_marker(&mut app);
+        assert_eq!(app.current_tab().input, expected);
+    }
+
+    #[test]
+    fn scrolled_input_uses_the_visible_row_offset() {
+        let source = "zero\none\ntwo\nthree\nfour\nfive\nsix\nseven";
+        let (mut app, area) = draft(source, 80, 24);
+        assert_eq!(area.height, 8);
+        click(&mut app, area, 1, 1);
+        let mut expected = source.to_string();
+        expected.insert(source.find("three").unwrap() + 1, 'q');
+        insert_marker(&mut app);
+        assert_eq!(app.current_tab().input, expected);
+    }
+
+    #[test]
+    fn short_terminal_uses_the_actual_input_viewport_height() {
+        let source = "row0\nrow1\nrow2\nrow3\nrow4\nrow5\nrow6\nrow7";
+        for height in [5, 7, 10] {
+            let (mut app, area) = draft(source, 30, height);
+            assert!(area.height >= 3);
+            let rendered = render_to_text(&mut app, 30, height);
+            let line = rendered.lines().nth(usize::from(area.y + 1)).unwrap();
+            let visible = (0..8)
+                .map(|index| format!("row{index}"))
+                .find(|word| line.contains(word))
+                .expect("first visible input row");
+            click(&mut app, area, 1, 0);
+            let mut expected = source.to_string();
+            expected.insert(source.find(&visible).unwrap() + 1, 'q');
+            insert_marker(&mut app);
+            assert_eq!(
+                app.current_tab().input,
+                expected,
+                "terminal height {height}"
+            );
+        }
+    }
+
+    #[test]
+    fn wide_cells_map_to_valid_character_boundaries() {
+        for (column, position) in [(1, 1), (2, 1), (3, 4), (4, 4), (5, 8)] {
+            let (mut app, area) = draft("a中🙂z", 80, 20);
+            click(&mut app, area, column, 0);
+            assert_eq!(app.current_tab().cursor_pos, position, "column {column}");
+            assert!(app.current_tab().input.is_char_boundary(position));
+            let mut expected = "a中🙂z".to_string();
+            expected.insert(position, 'q');
+            insert_marker(&mut app);
+            assert_eq!(app.current_tab().input, expected);
+        }
+    }
+
+    #[test]
+    fn trailing_blank_cells_clamp_to_the_clicked_line_end() {
+        let (mut app, area) = draft(concat!("abc", "\n", "def"), 80, 20);
+        click(&mut app, area, 20, 0);
+        insert_marker(&mut app);
+        assert_eq!(app.current_tab().input, concat!("abc", "q", "\n", "def"));
+    }
+
+    #[test]
+    fn empty_input_stays_valid_when_clicking_the_placeholder() {
+        let (mut app, area) = draft("", 80, 20);
+        click(&mut app, area, 20, 0);
+        assert_eq!(app.current_tab().cursor_pos, 0);
+        insert_marker(&mut app);
+        assert_eq!(app.current_tab().input, "q");
+    }
+
+    #[test]
+    fn borders_and_prompt_prefix_do_not_reposition_the_caret() {
+        for (column, row) in [(0, 1), (1, 1), (2, 1), (3, 1), (8, 0), (79, 1)] {
+            let (mut app, area) = draft("keep draft", 80, 20);
+            for kind in [
+                MouseEventKind::Down(MouseButton::Left),
+                MouseEventKind::Up(MouseButton::Left),
+            ] {
+                mouse(&mut app, kind, area.x + column, area.y + row);
+            }
+            assert_eq!(app.current_tab().cursor_pos, "keep draft".len());
+        }
+    }
+
+    #[test]
+    fn clicking_replaces_full_selection_with_a_caret() {
+        let (mut app, area) = draft("alpha bravo", 80, 20);
+        app.current_tab_mut().select_all_input();
+        render_to_text(&mut app, 80, 20);
+        click(&mut app, area, 2, 0);
+        assert!(!app.current_tab().input_all_selected);
+        insert_marker(&mut app);
+        let mut expected = String::from("alpha bravo");
+        expected.insert(2, 'q');
+        assert_eq!(app.current_tab().input, expected);
+    }
+
+    #[test]
+    fn clicking_resets_vertical_column_intent() {
+        let (mut app, area) = draft(concat!("alpha", "\n", "bravo"), 80, 20);
+        app.current_tab_mut().input_vertical_goal = Some((80, 4));
+        click(&mut app, area, 1, 0);
+        assert_eq!(app.current_tab().cursor_pos, 1);
+        assert_eq!(app.current_tab().input_vertical_goal, None);
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.current_tab().cursor_pos, 7);
+    }
+
+    #[test]
+    fn clicking_an_image_token_keeps_its_payload_and_boundary() {
+        let (mut app, _) = draft("before ", 80, 20);
+        app.current_tab_mut()
+            .insert_image_attachment(crate::clipboard_image::PastedImage {
+                data_base64: "aW1hZ2U=".into(),
+                mime_type: "image/png".into(),
+                label: "photo.png".into(),
+            });
+        let token = app.current_tab().attachments.token_ranges().next().unwrap();
+        app.current_tab_mut().insert_input_str(" after");
+        render_to_text(&mut app, 80, 20);
+        let area = app.input_dialog_area.unwrap();
+        click(&mut app, area, token.start as u16 + 3, 0);
+        assert_eq!(app.current_tab().cursor_pos, token.start);
+        insert_marker(&mut app);
+        assert!(app.current_tab().input.starts_with("before q[image: "));
+        let image = app.current_tab().attachments.images().next().unwrap();
+        assert_eq!(image.data_base64, "aW1hZ2U=");
+        assert_eq!(image.mime_type, "image/png");
+    }
+
+    #[test]
+    fn drag_selects_text_without_repositioning_the_draft_caret() {
+        let (mut app, area) = draft("abcdefghij", 80, 20);
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            area.x + 5,
+            area.y + 1,
+        );
+        mouse(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            area.x + 8,
+            area.y + 1,
+        );
+        mouse(
+            &mut app,
+            MouseEventKind::Up(MouseButton::Left),
+            area.x + 8,
+            area.y + 1,
+        );
+        assert!(app.text_selection.selected_text().is_some());
+        assert_eq!(app.current_tab().cursor_pos, 10);
+        assert_eq!(app.current_tab().input, "abcdefghij");
+    }
+
+    #[test]
+    fn release_at_another_cell_is_not_a_caret_click() {
+        let (mut app, area) = draft("abcdefghij", 80, 20);
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            area.x + 5,
+            area.y + 1,
+        );
+        mouse(
+            &mut app,
+            MouseEventKind::Up(MouseButton::Left),
+            area.x + 8,
+            area.y + 1,
+        );
+        assert_eq!(app.current_tab().cursor_pos, 10);
+    }
+
+    #[test]
+    fn double_click_keeps_existing_word_selection() {
+        let (mut app, area) = draft("alpha bravo", 80, 20);
+        click(&mut app, area, 2, 0);
+        render_to_text(&mut app, 80, 20);
+        click(&mut app, area, 2, 0);
+        render_to_text(&mut app, 80, 20);
+        assert_eq!(app.text_selection.selected_text().as_deref(), Some("alpha"));
+        assert_eq!(app.current_tab().input, "alpha bravo");
+    }
+
+    #[test]
+    fn non_editable_or_unfocused_contexts_do_not_move_the_caret() {
+        for context in [
+            "help",
+            "model",
+            "agent",
+            "paste",
+            "sessions",
+            "unfocused",
+            "setup",
+            "slash",
+        ] {
+            let (mut app, area) = draft("keep draft", 80, 20);
+            match context {
+                "help" => app.help_overlay_visible = true,
+                "model" => app.current_tab_mut().model_picker_open = true,
+                "agent" => app.current_tab_mut().agent_picker_open = true,
+                "paste" => app.current_tab_mut().paste_pending = true,
+                "sessions" => app.current_tab_mut().current_view = View::Agents,
+                "unfocused" => app.pane_focused = false,
+                "setup" => app.mode = AppMode::Setup,
+                "slash" => app.current_tab_mut().replace_input("/he".into()),
+                _ => unreachable!(),
+            }
+            let before = app.current_tab().cursor_pos;
+            click(&mut app, area, 1, 0);
+            assert_eq!(app.current_tab().cursor_pos, before, "{context}");
+        }
+    }
+
+    #[test]
+    fn tab_switch_invalidates_a_pressed_input_click() {
+        let (mut app, area) = draft("first draft", 80, 20);
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            area.x + 5,
+            area.y + 1,
+        );
+        app.switch_tab_session("other-tab".into());
+        app.current_tab_mut().replace_input("second draft".into());
+        render_to_text(&mut app, 80, 20);
+        mouse(
+            &mut app,
+            MouseEventKind::Up(MouseButton::Left),
+            area.x + 5,
+            area.y + 1,
+        );
+        assert_eq!(app.current_tab().cursor_pos, "second draft".len());
+        app.switch_tab_session(DEFAULT_TAB_ID.into());
+        assert_eq!(app.current_tab().cursor_pos, "first draft".len());
+    }
+
+    #[test]
+    fn resize_and_focus_loss_cancel_the_pending_click() {
+        for resize in [true, false] {
+            let (mut app, area) = draft("keep draft", 80, 20);
+            mouse(
+                &mut app,
+                MouseEventKind::Down(MouseButton::Left),
+                area.x + 5,
+                area.y + 1,
+            );
+            if resize {
+                app.handle_event(AppEvent::Resize(80, 20));
+            } else {
+                app.handle_event(AppEvent::FocusChanged(false));
+                app.handle_event(AppEvent::FocusChanged(true));
+            }
+            mouse(
+                &mut app,
+                MouseEventKind::Up(MouseButton::Left),
+                area.x + 5,
+                area.y + 1,
+            );
+            assert_eq!(app.current_tab().cursor_pos, "keep draft".len());
+        }
+    }
+
+    #[test]
+    fn modified_clicks_keep_their_existing_behavior() {
+        for modifiers in [
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+            KeyModifiers::SHIFT,
+        ] {
+            let (mut app, area) = draft("keep draft", 80, 20);
+            for kind in [
+                MouseEventKind::Down(MouseButton::Left),
+                MouseEventKind::Up(MouseButton::Left),
+            ] {
+                app.handle_event(AppEvent::Mouse(MouseEvent {
+                    kind,
+                    column: area.x + 5,
+                    row: area.y + 1,
+                    modifiers,
+                }));
+            }
+            assert_eq!(app.current_tab().cursor_pos, "keep draft".len());
+        }
+    }
+}
+
+#[test]
+fn input_vertical_explicit_rows_preserve_the_edit_position() {
+    for (key, start) in [(KeyCode::Up, 27), (KeyCode::Down, 5)] {
+        let mut app = test_app();
+        app.current_tab_mut()
+            .replace_input(concat!("alpha line", "\n", "bravo line", "\n", "delta line").into());
+        app.current_tab_mut().cursor_pos = start;
+        render_to_text(&mut app, 80, 16);
+        app.handle_event(AppEvent::Key(KeyEvent::new(key, KeyModifiers::NONE)));
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('!'),
+            KeyModifiers::SHIFT,
+        )));
+        assert_eq!(
+            app.current_tab().input,
+            concat!("alpha line", "\n", "bravo! line", "\n", "delta line")
+        );
+    }
+}
+
+#[test]
+fn input_vertical_noop_boundary_keeps_the_preferred_column() {
+    let mut app = test_app();
+    app.current_tab_mut()
+        .replace_input(concat!("x", "\n", "bravo").into());
+    render_to_text(&mut app, 80, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Down,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().cursor_pos, app.current_tab().input.len());
+}
+
+#[test]
+fn input_vertical_keeps_preferred_column_across_short_rows() {
+    let mut app = test_app();
+    app.current_tab_mut()
+        .replace_input(concat!("alpha long line", "\n", "x", "\n", "bravo long line").into());
+    app.current_tab_mut().cursor_pos = 23;
+    render_to_text(&mut app, 80, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().cursor_pos, 17);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('!'),
+        KeyModifiers::SHIFT,
+    )));
+    assert_eq!(
+        app.current_tab().input,
+        concat!("alpha! long line", "\n", "x", "\n", "bravo long line")
+    );
+}
+
+#[test]
+fn input_vertical_moves_between_soft_wrapped_rows() {
+    for (key, start) in [(KeyCode::Up, 17), (KeyCode::Down, 5)] {
+        let mut app = test_app();
+        app.current_tab_mut()
+            .replace_input("alpha bravo delta echo".into());
+        app.current_tab_mut().cursor_pos = start;
+        render_to_text(&mut app, 11, 16);
+        app.handle_event(AppEvent::Key(KeyEvent::new(key, KeyModifiers::NONE)));
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('!'),
+            KeyModifiers::SHIFT,
+        )));
+        assert_eq!(app.current_tab().input, "alpha bravo! delta echo");
+    }
+}
+
+#[test]
+fn input_vertical_soft_wrap_start_stays_on_the_requested_row() {
+    let mut app = test_app();
+    app.current_tab_mut()
+        .replace_input("alpha bravo delta echo".into());
+    app.current_tab_mut().cursor_pos = 12;
+    render_to_text(&mut app, 11, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().cursor_pos, 6);
+}
+
+#[test]
+fn input_vertical_full_single_row_does_not_create_a_down_target() {
+    let mut app = test_app();
+    app.current_tab_mut().replace_input("alpha one".into());
+    app.current_tab_mut().cursor_pos = 3;
+    render_to_text(&mut app, 14, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Down,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().cursor_pos, 3);
+}
+
+#[test]
+fn input_vertical_can_return_to_the_trailing_caret_row() {
+    let mut app = test_app();
+    app.current_tab_mut().replace_input("alpha one".into());
+    render_to_text(&mut app, 14, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().cursor_pos, 0);
+    render_to_text(&mut app, 14, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Down,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().cursor_pos, 9);
+}
+
+#[test]
+fn input_vertical_width_changes_reset_column_intent() {
+    let mut app = test_app();
+    app.current_tab_mut()
+        .replace_input(concat!("alpha line", "\n", "x", "\n", "bravo line").into());
+    app.current_tab_mut().cursor_pos = 18;
+    render_to_text(&mut app, 80, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().cursor_pos, 12);
+    render_to_text(&mut app, 11, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().cursor_pos, 7);
+}
+
+#[test]
+fn input_vertical_horizontal_movement_resets_column_intent() {
+    let mut app = test_app();
+    app.current_tab_mut()
+        .replace_input(concat!("alpha line", "\n", "x", "\n", "bravo line").into());
+    app.current_tab_mut().cursor_pos = 18;
+    render_to_text(&mut app, 80, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Left,
+        KeyModifiers::NONE,
+    )));
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().cursor_pos, 0);
+}
+
+#[test]
+fn input_vertical_uses_display_columns_and_utf8_boundaries() {
+    let mut app = test_app();
+    app.current_tab_mut()
+        .replace_input(concat!("中文 line", "\n", "ab", "\n", "alpha").into());
+    app.current_tab_mut().cursor_pos = app.current_tab().input.len() - 2;
+    render_to_text(&mut app, 80, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().cursor_pos, "中".len());
+    assert!(app
+        .current_tab()
+        .input
+        .is_char_boundary(app.current_tab().cursor_pos));
+}
+
+#[test]
+fn input_vertical_keeps_attachment_tokens_atomic() {
+    let mut app = test_app();
+    app.current_tab_mut()
+        .replace_input(concat!("start", "\n").into());
+    app.current_tab_mut()
+        .insert_image_attachment(crate::clipboard_image::PastedImage {
+            data_base64: "aW1hZ2U=".into(),
+            mime_type: "image/png".into(),
+            label: "photo.png".into(),
+        });
+    let token = app.current_tab().attachments.token_ranges().next().unwrap();
+    app.current_tab_mut().insert_input_str(concat!("\n", "end"));
+    render_to_text(&mut app, 80, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().cursor_pos, token.start);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Down,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().cursor_pos, app.current_tab().input.len());
+}
+
+#[test]
+fn input_vertical_boundaries_preserve_history_and_draft_restoration() {
+    let mut app = test_app();
+    app.current_tab_mut().record_input_history("old command");
+    app.current_tab_mut()
+        .replace_input(concat!("alpha", "\n", "bravo").into());
+    app.current_tab_mut().cursor_pos = 0;
+    render_to_text(&mut app, 80, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().input, "old command");
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Down,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().input, concat!("alpha", "\n", "bravo"));
+    assert_eq!(app.current_tab().cursor_pos, 0);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Down,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().cursor_pos, 6);
+}
+
+#[test]
+fn input_vertical_preserves_existing_history_browsing_mode() {
+    let mut app = test_app();
+    app.current_tab_mut()
+        .record_input_history(concat!("older", "\n", "command"));
+    app.current_tab_mut()
+        .record_input_history(concat!("newer", "\n", "command"));
+    render_to_text(&mut app, 80, 16);
+    for expected in [
+        concat!("newer", "\n", "command"),
+        concat!("older", "\n", "command"),
+    ] {
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.current_tab().input, expected);
+    }
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Down,
+        KeyModifiers::NONE,
+    )));
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Down,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.current_tab().input.is_empty());
+}
+
+#[test]
+fn input_vertical_collapses_selection_before_boundary_navigation() {
+    for (key, expected) in [(KeyCode::Up, 0), (KeyCode::Down, 11)] {
+        let mut app = test_app();
+        app.current_tab_mut().record_input_history("old command");
+        app.current_tab_mut()
+            .replace_input(concat!("alpha", "\n", "bravo").into());
+        render_to_text(&mut app, 80, 16);
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+        )));
+        app.handle_event(AppEvent::Key(KeyEvent::new(key, KeyModifiers::NONE)));
+        assert_eq!(app.current_tab().input, concat!("alpha", "\n", "bravo"));
+        assert_eq!(app.current_tab().cursor_pos, expected);
+        assert!(!app.current_tab().input_all_selected);
+    }
+}
+
+#[test]
+fn input_vertical_edits_card_input_before_boundary_focus_changes() {
+    let mut app = test_app();
+    stage_surfaced_recommendation(&mut app, vec![send_choice("pane-A", "ls")], 0, None);
+    app.current_tab_mut()
+        .replace_input(concat!("alpha line", "\n", "bravo line").into());
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.current_tab().recommendation_focus,
+        RecommendationFocus::Input
+    );
+    app.current_tab_mut().cursor_pos = 16;
+    render_to_text(&mut app, 80, 24);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().cursor_pos, 5);
+    assert_eq!(
+        app.current_tab().recommendation_focus,
+        RecommendationFocus::Input
+    );
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Home,
+        KeyModifiers::NONE,
+    )));
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.current_tab().recommendation_focus,
+        RecommendationFocus::Button
+    );
+}
+
+#[test]
+fn input_vertical_editing_resets_column_intent() {
+    let mut app = test_app();
+    app.current_tab_mut()
+        .replace_input(concat!("alpha line", "\n", "x", "\n", "bravo line").into());
+    app.current_tab_mut().cursor_pos = 18;
+    render_to_text(&mut app, 80, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('!'),
+        KeyModifiers::SHIFT,
+    )));
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().cursor_pos, 2);
+}
+
+#[test]
+fn input_vertical_column_intent_is_per_tab() {
+    let mut first = TabSession::default();
+    first.replace_input(concat!("alpha", "\n", "x", "\n", "bravo").into());
+    first.cursor_pos = 12;
+    assert!(first.move_cursor_vertical(80, true));
+    let mut second = TabSession::default();
+    second.replace_input(concat!("delta", "\n", "z", "\n", "omega").into());
+    second.cursor_pos = 9;
+    assert!(second.move_cursor_vertical(80, true));
+    assert!(second.move_cursor_vertical(80, true));
+    assert_eq!(second.cursor_pos, 1);
+    assert!(first.move_cursor_vertical(80, true));
+    assert_eq!(first.cursor_pos, 4);
+}
+
+#[test]
+fn input_vertical_full_row_end_does_not_land_on_another_row() {
+    let mut app = test_app();
+    app.current_tab_mut()
+        .replace_input(concat!("abcdefgh", "\n", "bravo").into());
+    app.current_tab_mut().cursor_pos = 8;
+    render_to_text(&mut app, 9, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().cursor_pos, 3);
+}
+
+#[test]
+fn input_vertical_modified_arrows_keep_existing_routing() {
+    for modifiers in [
+        KeyModifiers::CONTROL,
+        KeyModifiers::SHIFT,
+        KeyModifiers::ALT,
+    ] {
+        let mut app = test_app();
+        app.current_tab_mut()
+            .replace_input(concat!("alpha", "\n", "bravo").into());
+        render_to_text(&mut app, 80, 16);
+        app.handle_event(AppEvent::Key(KeyEvent::new(KeyCode::Up, modifiers)));
+        assert_eq!(app.current_tab().cursor_pos, app.current_tab().input.len());
+    }
+}
+
+#[test]
+fn input_vertical_layout_changes_clear_inactive_goals_too() {
+    for debug_toggle in [false, true] {
+        let mut app = test_app();
+        app.terminal_cols = 80;
+        app.current_tab_mut()
+            .replace_input(concat!("alpha line", "\n", "x", "\n", "bravo line").into());
+        app.current_tab_mut().cursor_pos = 18;
+        render_to_text(&mut app, 80, 16);
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        )));
+        {
+            let background = app.tab_mut("background");
+            background.replace_input(concat!("alpha line", "\n", "x", "\n", "bravo line").into());
+            background.cursor_pos = 18;
+            assert!(background.move_cursor_vertical(80, true));
+        }
+        if debug_toggle {
+            app.handle_event(AppEvent::Key(KeyEvent::new(
+                KeyCode::F(12),
+                KeyModifiers::NONE,
+            )));
+            app.handle_event(AppEvent::Key(KeyEvent::new(
+                KeyCode::F(12),
+                KeyModifiers::NONE,
+            )));
+        } else {
+            app.handle_event(AppEvent::Resize(40, 16));
+            render_to_text(&mut app, 40, 16);
+            app.handle_event(AppEvent::Resize(80, 16));
+        }
+        render_to_text(&mut app, 80, 16);
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.current_tab().cursor_pos, 1);
+        let background = app.tab_mut("background");
+        assert!(background.move_cursor_vertical(80, true));
+        assert_eq!(background.cursor_pos, 1);
+    }
+}
+
+#[test]
+fn input_vertical_non_input_scroll_resets_column_intent() {
+    use crossterm::event::{MouseEvent, MouseEventKind};
+    let (mut app, _master_rx) = test_app_with_master_rx();
+    app.current_tab_mut()
+        .replace_input(concat!("alpha line", "\n", "x", "\n", "bravo line").into());
+    app.current_tab_mut().cursor_pos = 18;
+    render_to_text(&mut app, 80, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    app.open_agents_view_for_tab(DEFAULT_TAB_ID.to_string());
+    render_to_text(&mut app, 80, 16);
+    app.handle_event(AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: 1,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    }));
+    app.close_agents_view_for_tab(DEFAULT_TAB_ID);
+    render_to_text(&mut app, 80, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().cursor_pos, 1);
+}
+
+mod input_undo_tests {
+    use super::*;
+
+    fn key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+        app.handle_event(AppEvent::Key(KeyEvent::new(code, modifiers)));
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for ch in text.chars() {
+            key(app, KeyCode::Char(ch), KeyModifiers::NONE);
+        }
+    }
+
+    fn undo(app: &mut App) {
+        key(app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    }
+
+    fn redo(app: &mut App) {
+        key(app, KeyCode::Char('y'), KeyModifiers::CONTROL);
+    }
+
+    #[test]
+    fn contiguous_typing_is_one_edit() {
+        let mut app = test_app();
+        type_text(&mut app, "hello");
+        undo(&mut app);
+        assert!(app.current_tab().input.is_empty());
+        assert_eq!(app.current_tab().cursor_pos, 0);
+        redo(&mut app);
+        assert_eq!(app.current_tab().input, "hello");
+        assert_eq!(app.current_tab().cursor_pos, 5);
+    }
+
+    #[test]
+    fn direct_key_dispatch_uses_the_same_undo_owner() {
+        let mut app = test_app();
+        type_text(&mut app, "hello");
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert!(app.current_tab().input.is_empty());
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        assert_eq!(app.current_tab().input, "hello");
+    }
+
+    #[test]
+    fn cursor_roundtrip_breaks_the_typing_group() {
+        let mut app = test_app();
+        type_text(&mut app, "first");
+        key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        type_text(&mut app, " second");
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, "first");
+        undo(&mut app);
+        assert!(app.current_tab().input.is_empty());
+        redo(&mut app);
+        redo(&mut app);
+        assert_eq!(app.current_tab().input, "first second");
+    }
+
+    #[test]
+    fn insertion_in_the_middle_restores_both_sides_and_the_caret() {
+        let mut app = test_app();
+        app.current_tab_mut().insert_input_str("left right");
+        key(&mut app, KeyCode::Home, KeyModifiers::NONE);
+        for _ in 0..5 {
+            key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        }
+        type_text(&mut app, "new ");
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, "left right");
+        assert_eq!(app.current_tab().cursor_pos, 5);
+        redo(&mut app);
+        assert_eq!(app.current_tab().input, "left new right");
+        assert_eq!(app.current_tab().cursor_pos, 9);
+    }
+
+    #[test]
+    fn control_alt_text_is_not_an_undo_chord() {
+        let mut app = test_app();
+        type_text(&mut app, "draft");
+        key(
+            &mut app,
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        assert_eq!(app.current_tab().input, concat!("draft", "z"));
+        undo(&mut app);
+        assert!(app.current_tab().input.is_empty());
+    }
+
+    #[test]
+    fn selection_replacement_restores_one_complete_draft() {
+        let original = concat!("original", "\n", "\u{4e2d}\u{6587}");
+        let mut app = test_app();
+        app.current_tab_mut().insert_input_str(original);
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        type_text(&mut app, "new");
+        assert_eq!(app.current_tab().input, "new");
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, original);
+        assert!(app.current_tab().input_all_selected);
+        assert_eq!(app.current_tab().cursor_pos, original.len());
+        redo(&mut app);
+        assert_eq!(app.current_tab().input, "new");
+        assert!(!app.current_tab().input_all_selected);
+    }
+
+    #[test]
+    fn selected_deletion_and_cut_are_atomic() {
+        for deletion in [
+            Some((KeyCode::Backspace, KeyModifiers::NONE)),
+            Some((KeyCode::Delete, KeyModifiers::NONE)),
+            Some((KeyCode::Backspace, KeyModifiers::CONTROL)),
+            None,
+        ] {
+            let mut app = test_app();
+            app.current_tab_mut().insert_input_str("keep this draft");
+            key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+            if let Some((code, modifiers)) = deletion {
+                key(&mut app, code, modifiers);
+            } else {
+                assert!(app.copy_input_selection(true, |_| Ok(())));
+            }
+            assert!(app.current_tab().input.is_empty());
+            undo(&mut app);
+            assert_eq!(app.current_tab().input, "keep this draft");
+            assert!(app.current_tab().input_all_selected);
+            redo(&mut app);
+            assert!(app.current_tab().input.is_empty());
+        }
+    }
+
+    #[test]
+    fn failed_cut_does_not_create_an_edit() {
+        let mut app = test_app();
+        type_text(&mut app, "keep");
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert!(app.copy_input_selection(true, |_| {
+            Err(std::io::Error::other("clipboard unavailable"))
+        }));
+        assert_eq!(app.current_tab().input, "keep");
+        undo(&mut app);
+        assert!(app.current_tab().input.is_empty());
+        redo(&mut app);
+        assert_eq!(app.current_tab().input, "keep");
+    }
+
+    #[test]
+    fn accepted_paste_and_unicode_deletion_roundtrip() {
+        let mut app = test_app();
+        app.current_tab_mut().pane_open = true;
+        app.current_tab_mut().paste_pending = true;
+        app.insert_agent_paste_text(DEFAULT_TAB_ID, 0, concat!("\u{4e2d}", "\r\n", "caf\u{e9}"));
+        let expected = concat!("\u{4e2d}", "\n", "caf\u{e9}");
+        assert_eq!(app.current_tab().input, expected);
+        undo(&mut app);
+        assert!(app.current_tab().input.is_empty());
+        redo(&mut app);
+        assert_eq!(app.current_tab().input, expected);
+        key(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(app.current_tab().input, concat!("\u{4e2d}", "\n", "caf"));
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, expected);
+        assert_eq!(app.current_tab().cursor_pos, expected.len());
+    }
+
+    #[test]
+    fn stale_paste_does_not_change_the_edit_chain() {
+        let mut app = test_app();
+        type_text(&mut app, "draft");
+        app.current_tab_mut().pane_open = true;
+        app.current_tab_mut().paste_generation = 2;
+        app.insert_agent_paste_text(DEFAULT_TAB_ID, 1, "stale");
+        undo(&mut app);
+        assert!(app.current_tab().input.is_empty());
+        redo(&mut app);
+        assert_eq!(app.current_tab().input, "draft");
+    }
+
+    #[test]
+    fn image_deletion_restores_token_and_payload() {
+        let image = crate::clipboard_image::PastedImage {
+            data_base64: "AA==".into(),
+            mime_type: "image/png".into(),
+            label: "screenshot".into(),
+        };
+        let mut app = test_app();
+        let tab = app.current_tab_mut();
+        tab.insert_input_str("before ");
+        tab.insert_image_attachment(image.clone());
+        tab.insert_input_str(" after");
+        let original = tab.input.clone();
+        let token = tab.attachments.token_ranges().next().unwrap();
+        tab.cursor_pos = token.end;
+        tab.delete_before_cursor();
+        assert_eq!(tab.input, "before  after");
+        assert!(tab.attachments.is_empty());
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, original);
+        assert_eq!(app.current_tab().cursor_pos, token.end);
+        assert_eq!(
+            app.current_tab().attachments.images().collect::<Vec<_>>(),
+            vec![&image]
+        );
+        redo(&mut app);
+        assert_eq!(app.current_tab().input, "before  after");
+        assert!(app.current_tab().attachments.is_empty());
+    }
+
+    #[test]
+    fn image_insertion_and_selection_replacement_roundtrip() {
+        for selected in [false, true] {
+            let image = crate::clipboard_image::PastedImage {
+                data_base64: "AA==".into(),
+                mime_type: "image/png".into(),
+                label: "screenshot".into(),
+            };
+            let mut app = test_app();
+            app.current_tab_mut().insert_input_str("original draft");
+            if selected {
+                key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+            }
+            app.current_tab_mut().insert_image_attachment(image.clone());
+            let inserted = app.current_tab().input.clone();
+            assert!(!app.current_tab().input_all_selected);
+            undo(&mut app);
+            assert_eq!(app.current_tab().input, "original draft");
+            assert_eq!(app.current_tab().cursor_pos, "original draft".len());
+            assert_eq!(app.current_tab().input_all_selected, selected);
+            assert!(app.current_tab().attachments.is_empty());
+            redo(&mut app);
+            assert_eq!(app.current_tab().input, inserted);
+            assert!(!app.current_tab().input_all_selected);
+            assert_eq!(
+                app.current_tab().attachments.images().collect::<Vec<_>>(),
+                vec![&image]
+            );
+            assert_eq!(app.current_tab().attachments.token_ranges().count(), 1);
+            type_text(&mut app, " next");
+            assert_eq!(app.current_tab().input, format!("{inserted} next"));
+            assert_eq!(
+                app.current_tab().attachments.images().collect::<Vec<_>>(),
+                vec![&image]
+            );
+        }
+    }
+
+    #[test]
+    fn new_edit_discards_redo_but_noop_deletion_does_not() {
+        let mut app = test_app();
+        type_text(&mut app, "old");
+        undo(&mut app);
+        key(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        redo(&mut app);
+        assert_eq!(app.current_tab().input, "old");
+        undo(&mut app);
+        type_text(&mut app, "new");
+        redo(&mut app);
+        assert_eq!(app.current_tab().input, "new");
+    }
+
+    #[test]
+    fn selecting_copying_and_moving_preserve_redo() {
+        let mut app = test_app();
+        app.current_tab_mut().insert_input_str("base");
+        app.current_tab_mut().insert_input_str(" suffix");
+        undo(&mut app);
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert!(app.copy_input_selection(false, |_| Ok(())));
+        key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        redo(&mut app);
+        assert_eq!(app.current_tab().input, "base suffix");
+        assert_eq!(app.current_tab().cursor_pos, "base suffix".len());
+    }
+
+    #[test]
+    fn idle_draft_clearing_is_undoable() {
+        for (code, modifiers) in [
+            (KeyCode::Esc, KeyModifiers::NONE),
+            (KeyCode::Char('c'), KeyModifiers::CONTROL),
+        ] {
+            let mut app = test_app();
+            type_text(&mut app, "draft");
+            key(&mut app, code, modifiers);
+            assert!(app.current_tab().input.is_empty());
+            undo(&mut app);
+            assert_eq!(app.current_tab().input, "draft");
+            assert!(app.close_pane_armed_at.is_none());
+            redo(&mut app);
+            assert!(app.current_tab().input.is_empty());
+        }
+    }
+
+    #[test]
+    fn submission_is_not_an_undoable_edit() {
+        let mut app = test_app();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.prompt_tx = tx;
+        app.state = ConnectionState::Connected;
+        type_text(&mut app, "submitted");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(rx.try_recv().unwrap().text, "submitted");
+        assert!(app.current_tab().input.is_empty());
+        undo(&mut app);
+        redo(&mut app);
+        assert!(app.current_tab().input.is_empty());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn history_browsing_preserves_the_original_draft_edits() {
+        let mut app = test_app();
+        app.current_tab_mut().record_input_history("submitted");
+        type_text(&mut app, "draft");
+        app.current_tab_mut().insert_input_str(" pasted");
+        key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.current_tab().input, "submitted");
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.current_tab().input, "draft pasted");
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, "draft");
+        undo(&mut app);
+        assert!(app.current_tab().input.is_empty());
+    }
+
+    #[test]
+    fn stashed_draft_typing_stays_closed_across_tab_transfer() {
+        let mut app = test_app();
+        app.switch_tab_session("before".into());
+        app.current_tab_mut().record_input_history("historical");
+        type_text(&mut app, "first");
+        key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.current_tab().input, "historical");
+        app.rename_tab_session("before", "after", Some("window"));
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.current_tab().input, "first");
+        type_text(&mut app, " second");
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, "first");
+        undo(&mut app);
+        assert!(app.current_tab().input.is_empty());
+    }
+
+    #[test]
+    fn animation_ticks_skip_input_owner_snapshots() {
+        assert!(!app_events::needs_input_owner_tracking(&AppEvent::Tick));
+        assert!(!app_events::needs_input_owner_tracking(
+            &AppEvent::RevealTick
+        ));
+        assert!(app_events::needs_input_owner_tracking(
+            &AppEvent::CancelUserInputRequest {
+                request_id: "question".into(),
+                session_id: DEFAULT_TAB_ID.into(),
+            }
+        ));
+    }
+
+    #[test]
+    fn editing_recalled_text_starts_a_fresh_chain() {
+        let mut app = test_app();
+        app.current_tab_mut().record_input_history("historical");
+        type_text(&mut app, "original");
+        key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        type_text(&mut app, " change");
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, "historical");
+        assert!(!app.current_tab().input_history_is_browsing());
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, "historical");
+        redo(&mut app);
+        assert_eq!(app.current_tab().input, "historical change");
+    }
+
+    #[test]
+    fn non_input_owners_do_not_consume_draft_history() {
+        for context in ["history", "card", "help", "model", "agents", "unfocused"] {
+            let mut app = test_app();
+            type_text(&mut app, "draft");
+            match context {
+                "history" => {
+                    app.current_tab_mut().completed_turns.push(CompletedTurn {
+                        prompt: "old turn".into(),
+                        details: Vec::new(),
+                        expanded: false,
+                        trailing_marker: None,
+                    });
+                    app.current_tab_mut().select_completed_turn(0);
+                }
+                "card" => stage_surfaced_recommendation(
+                    &mut app,
+                    vec![send_choice("pane-A", "ls")],
+                    0,
+                    None,
+                ),
+                "help" => app.help_overlay_visible = true,
+                "model" => app.current_tab_mut().model_picker_open = true,
+                "agents" => app.current_tab_mut().current_view = View::Agents,
+                "unfocused" => app.pane_focused = false,
+                _ => unreachable!(),
+            }
+            undo(&mut app);
+            assert_eq!(app.current_tab().input, "draft", "{context} after undo");
+            redo(&mut app);
+            assert_eq!(app.current_tab().input, "draft", "{context}");
+        }
+    }
+
+    #[test]
+    fn redo_chord_preserves_permission_quick_allow_without_consuming_draft_redo() {
+        let mut app = test_app();
+        type_text(&mut app, "draft");
+        undo(&mut app);
+        let (responder, mut outcome) = tokio::sync::oneshot::channel();
+        let mut permission = perm_with("permission");
+        permission.responder = Some(responder);
+        app.current_tab_mut().permission.push_back(permission);
+        redo(&mut app);
+        assert!(app.current_tab().permission.is_empty());
+        assert_eq!(outcome.try_recv().unwrap(), "allow_once");
+        assert!(app.current_tab().input.is_empty());
+        redo(&mut app);
+        assert_eq!(app.current_tab().input, "draft");
+    }
+
+    #[test]
+    fn histories_are_per_tab_and_switching_breaks_typing_groups() {
+        let mut app = test_app();
+        app.switch_tab_session("first".into());
+        type_text(&mut app, "first");
+        app.switch_tab_session("second".into());
+        type_text(&mut app, "second");
+        app.switch_tab_session("first".into());
+        type_text(&mut app, " change");
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, "first");
+        assert_eq!(app.tab_sessions["second"].input, "second");
+        app.switch_tab_session("second".into());
+        undo(&mut app);
+        assert!(app.current_tab().input.is_empty());
+        assert_eq!(app.tab_sessions["first"].input, "first");
+    }
+
+    #[test]
+    fn tab_rename_breaks_typing_without_losing_history() {
+        let mut app = test_app();
+        app.switch_tab_session("before".into());
+        type_text(&mut app, "first");
+        app.rename_tab_session("before", "after", Some("window"));
+        type_text(&mut app, " second");
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, "first");
+        undo(&mut app);
+        assert!(app.current_tab().input.is_empty());
+        redo(&mut app);
+        redo(&mut app);
+        assert_eq!(app.current_tab().input, "first second");
+    }
+
+    #[test]
+    fn focus_roundtrip_breaks_typing_groups() {
+        let mut app = test_app();
+        type_text(&mut app, "first");
+        app.handle_event(AppEvent::FocusChanged(false));
+        app.handle_event(AppEvent::FocusChanged(true));
+        type_text(&mut app, " second");
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, "first");
+    }
+
+    #[test]
+    fn async_input_owner_roundtrip_splits_typing() {
+        let mut app = test_app();
+        begin_user_input_test(&mut app);
+        type_text(&mut app, "first");
+        let (responder, _response) = tokio::sync::oneshot::channel();
+        app.handle_event(AppEvent::UserInputRequest {
+            request_id: "question".into(),
+            session_id: DEFAULT_TAB_ID.into(),
+            request: crate::agent_tools::user_input::UserInputRequest {
+                question: "Continue?".into(),
+                choices: vec!["Yes".into()],
+                allow_freeform: false,
+            },
+            responder,
+        });
+        assert!(!app.current_tab().input_has_nav_focus());
+        app.handle_event(AppEvent::CancelUserInputRequest {
+            request_id: "question".into(),
+            session_id: DEFAULT_TAB_ID.into(),
+        });
+        assert!(app.current_tab().input_has_nav_focus());
+        assert_eq!(app.current_tab().input, "first");
+        type_text(&mut app, " second");
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, "first");
+    }
+
+    #[test]
+    fn async_permission_owner_roundtrip_splits_typing() {
+        let mut app = test_app();
+        begin_user_input_test(&mut app);
+        type_text(&mut app, "first");
+        let (responder, _response) = tokio::sync::oneshot::channel();
+        app.handle_event(AppEvent::PermissionRequest {
+            session_id: DEFAULT_TAB_ID.into(),
+            tool_call_id: "permission".into(),
+            description: "Confirm".into(),
+            title: "Confirm".into(),
+            kind_label: None,
+            target: None,
+            target_is_command: false,
+            options: perm_with("permission").options,
+            responder,
+        });
+        assert!(!app.current_tab().input_has_nav_focus());
+        app.turn_cancel(DEFAULT_TAB_ID);
+        assert!(app.current_tab().input_has_nav_focus());
+        assert_eq!(app.current_tab().input, "first");
+        type_text(&mut app, " second");
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, "first");
+    }
+
+    #[test]
+    fn async_updates_without_owner_changes_keep_typing_grouped() {
+        let mut app = test_app();
+        type_text(&mut app, "first");
+        app.handle_event(AppEvent::SystemMessage("status update".into()));
+        app.handle_event(AppEvent::CancelUserInputRequest {
+            request_id: "stale".into(),
+            session_id: "stale".into(),
+        });
+        type_text(&mut app, " second");
+        undo(&mut app);
+        assert!(app.current_tab().input.is_empty());
+    }
+
+    #[test]
+    fn background_owner_changes_do_not_split_active_typing() {
+        let mut app = test_app();
+        begin_user_input_test(&mut app);
+        type_text(&mut app, "background");
+        app.switch_tab_session("active".into());
+        type_text(&mut app, "first");
+        let (responder, _response) = tokio::sync::oneshot::channel();
+        app.handle_event(AppEvent::UserInputRequest {
+            request_id: "background question".into(),
+            session_id: DEFAULT_TAB_ID.into(),
+            request: crate::agent_tools::user_input::UserInputRequest {
+                question: "Continue?".into(),
+                choices: vec!["Yes".into()],
+                allow_freeform: false,
+            },
+            responder,
+        });
+        assert_eq!(app.tab_sessions[DEFAULT_TAB_ID].user_input.len(), 1);
+        assert!(app.current_tab().user_input.is_empty());
+        type_text(&mut app, " second");
+        undo(&mut app);
+        assert!(app.current_tab().input.is_empty());
+    }
+
+    #[test]
+    fn view_roundtrip_breaks_typing_groups_without_a_key() {
+        let mut app = test_app();
+        type_text(&mut app, "draft");
+        app.open_agents_view_for_tab(DEFAULT_TAB_ID.to_string());
+        app.close_agents_view_for_tab(DEFAULT_TAB_ID);
+        type_text(&mut app, " change");
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, "draft");
+    }
+
+    #[test]
+    fn visibility_change_breaks_typing_groups_without_a_focus_event() {
+        let mut app = test_app();
+        app.current_tab_mut().pane_open = true;
+        type_text(&mut app, "first");
+        for open in [false, true] {
+            app.handle_event(AppEvent::WtEvent {
+                method: "set_agent_state".into(),
+                pane_id: String::new(),
+                tab_id: Some(DEFAULT_TAB_ID.into()),
+                params: json!({ "tab_id": DEFAULT_TAB_ID, "pane_open": open }),
+            });
+        }
+        type_text(&mut app, " second");
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, "first");
+    }
+
+    #[test]
+    fn visibility_echo_does_not_break_the_typing_group() {
+        let mut app = test_app();
+        app.current_tab_mut().pane_open = true;
+        type_text(&mut app, "first");
+        app.handle_event(AppEvent::WtEvent {
+            method: "set_agent_state".into(),
+            pane_id: String::new(),
+            tab_id: Some(DEFAULT_TAB_ID.into()),
+            params: json!({ "tab_id": DEFAULT_TAB_ID, "pane_open": true, "view": "chat" }),
+        });
+        type_text(&mut app, " second");
+        undo(&mut app);
+        assert!(app.current_tab().input.is_empty());
+    }
+
+    #[test]
+    fn undo_restores_the_matching_command_popup() {
+        let mut app = test_app();
+        type_text(&mut app, "/he");
+        assert!(app.command_popup_visible());
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        type_text(&mut app, "replacement");
+        assert!(!app.command_popup_visible());
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, "/he");
+        assert!(app.command_popup_visible());
+        redo(&mut app);
+        assert!(!app.command_popup_visible());
+    }
+
+    #[test]
+    fn session_reset_keeps_text_but_discards_old_edits() {
+        let mut app = test_app();
+        type_text(&mut app, "first");
+        app.current_tab_mut().insert_input_str(" second");
+        app.current_tab_mut().clear_chat_history();
+        undo(&mut app);
+        assert_eq!(app.current_tab().input, "first second");
+    }
+
+    #[test]
+    fn edit_history_has_no_prompt_history_step_cap() {
+        let mut app = test_app();
+        for _ in 0..151 {
+            app.current_tab_mut().insert_input_str("x");
+        }
+        for _ in 0..151 {
+            undo(&mut app);
+        }
+        assert!(app.current_tab().input.is_empty());
+        for _ in 0..151 {
+            redo(&mut app);
+        }
+        assert_eq!(app.current_tab().input, "x".repeat(151));
+    }
+}
+
+#[test]
+fn input_selection_deletes_entire_draft() {
+    for key in [
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL),
+    ] {
+        let mut app = test_app();
+        app.current_tab_mut()
+            .replace_input("first\n\u{e9}\u{4e2d}".into());
+        app.current_tab_mut()
+            .messages
+            .push(ChatMessage::info("KEEP_HISTORY"));
+        render_to_text(&mut app, 80, 16);
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+        )));
+        app.handle_event(AppEvent::Key(key));
+        assert!(
+            app.current_tab().input.is_empty(),
+            "selected draft must be deleted by {key:?}"
+        );
+        assert_eq!(app.current_tab().cursor_pos, 0);
+        assert!(render_to_text(&mut app, 80, 16).contains("KEEP_HISTORY"));
+    }
+}
+
+#[test]
+fn input_selection_repeated_select_all_then_typing_replaces_draft() {
+    let mut app = test_app();
+    app.current_tab_mut().replace_input("original draft".into());
+    render_to_text(&mut app, 80, 16);
+    for _ in 0..2 {
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+        )));
+    }
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('x'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().input, "x");
+    assert_eq!(app.current_tab().cursor_pos, 1);
+}
+
+#[test]
+fn input_selection_paste_replaces_draft_without_submitting() {
+    let mut app = test_app();
+    app.current_tab_mut().pane_open = true;
+    app.current_tab_mut().replace_input("original draft".into());
+    render_to_text(&mut app, 80, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL,
+    )));
+    app.current_tab_mut().paste_pending = true;
+    app.insert_agent_paste_text(DEFAULT_TAB_ID, 0, "new\r\n\u{4e2d}");
+    assert_eq!(app.current_tab().input, "new\n\u{4e2d}");
+    assert_eq!(app.current_tab().cursor_pos, app.current_tab().input.len());
+    assert!(app.current_tab().turn.is_idle());
+}
+
+#[test]
+fn input_selection_escape_dismisses_selection_without_clearing_draft() {
+    let mut app = test_app();
+    app.current_tab_mut().replace_input("keep draft".into());
+    render_to_text(&mut app, 80, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL,
+    )));
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().input, "keep draft");
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('!'),
+        KeyModifiers::SHIFT,
+    )));
+    assert_eq!(app.current_tab().input, "keep draft!");
+}
+
+#[test]
+fn input_selection_cursor_keys_collapse_to_start_or_end() {
+    for (key, expected) in [
+        (KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), "!one two"),
+        (
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            "one two!",
+        ),
+        (KeyEvent::new(KeyCode::Home, KeyModifiers::NONE), "!one two"),
+        (KeyEvent::new(KeyCode::End, KeyModifiers::NONE), "one two!"),
+        (
+            KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL),
+            "!one two",
+        ),
+        (
+            KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL),
+            "one two!",
+        ),
+    ] {
+        let mut app = test_app();
+        app.current_tab_mut().replace_input("one two".into());
+        app.current_tab_mut().cursor_pos = 3;
+        render_to_text(&mut app, 80, 16);
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+        )));
+        app.handle_event(AppEvent::Key(key));
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('!'),
+            KeyModifiers::SHIFT,
+        )));
+        assert_eq!(app.current_tab().input, expected, "collapse with {key:?}");
+    }
+}
+
+#[test]
+fn input_selection_highlights_draft_but_not_chat() {
+    use ratatui::style::Modifier;
+    let mut app = test_app();
+    app.current_tab_mut()
+        .messages
+        .push(ChatMessage::info("HISTORY_MARKER"));
+    app.current_tab_mut().replace_input("DRAFT_MARKER".into());
+    render_to_text(&mut app, 80, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL,
+    )));
+    let buffer = render_to_buffer(&mut app, 80, 16);
+    let text = buffer_to_text(&buffer);
+    for (marker, selected) in [("DRAFT_MARKER", true), ("HISTORY_MARKER", false)] {
+        let (x, y) = text
+            .lines()
+            .enumerate()
+            .find_map(|(row, line)| {
+                line.find(marker)
+                    .map(|index| (line[..index].chars().count() as u16, row as u16))
+            })
+            .expect("marker must be rendered");
+        for offset in 0..marker.len() as u16 {
+            assert_eq!(
+                buffer[(x + offset, y)]
+                    .modifier
+                    .contains(Modifier::REVERSED),
+                selected,
+                "{marker}"
+            );
+        }
+    }
+    assert!(
+        app.text_selection.selected_text().is_none(),
+        "editable selection must not be a frame selection"
+    );
+}
+
+#[test]
+fn input_selection_copy_and_cut_preserve_exact_source_text() {
+    let mut app = test_app();
+    let draft = "wrapped source\n\u{e9}\u{4e2d}";
+    app.current_tab_mut().replace_input(draft.into());
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL,
+    )));
+    app.close_pane_armed_at = Some(std::time::Instant::now());
+    assert!(app.copy_input_selection(false, |text| {
+        assert_eq!(text, draft);
+        Ok(())
+    }));
+    assert_eq!(app.current_tab().input, draft);
+    assert!(app.current_tab().input_all_selected);
+    assert!(app.close_pane_armed_at.is_none());
+    app.close_pane_armed_at = Some(std::time::Instant::now());
+    assert!(app.copy_input_selection(true, |text| {
+        assert_eq!(text, draft);
+        Ok(())
+    }));
+    assert!(app.current_tab().input.is_empty());
+    assert!(!app.current_tab().input_all_selected);
+    assert!(app.close_pane_armed_at.is_none());
+}
+
+#[test]
+fn input_selection_clipboard_failure_keeps_draft_and_consumes_copy() {
+    for cut in [false, true] {
+        let mut app = test_app();
+        app.current_tab_mut()
+            .replace_input("do not lose this".into());
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+        )));
+        // The helper must disarm independently of the key dispatcher.
+        app.close_pane_armed_at = Some(std::time::Instant::now());
+        assert!(app.copy_input_selection(cut, |_| Err(std::io::Error::other("clipboard busy"))));
+        assert_eq!(app.current_tab().input, "do not lose this");
+        assert!(app.current_tab().input_all_selected);
+        assert!(app.close_pane_armed_at.is_none());
+    }
+}
+
+#[test]
+fn input_selection_unhandled_copy_preserves_close_arm() {
+    for cut in [false, true] {
+        let mut app = test_app();
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        )));
+        let armed = app.close_pane_armed_at;
+        assert!(armed.is_some());
+        assert!(!app.copy_input_selection(cut, |_| {
+            panic!("an unhandled event must not access the clipboard")
+        }));
+        assert_eq!(app.close_pane_armed_at, armed);
+    }
+}
+
+#[test]
+fn input_selection_copy_failure_cannot_retain_an_earlier_close_arm() {
+    for cut in [false, true] {
+        let mut app = test_app();
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(app.close_pane_armed_at.is_some());
+        for character in "clipboard draft".chars() {
+            app.handle_event(AppEvent::Key(KeyEvent::new(
+                KeyCode::Char(character),
+                KeyModifiers::NONE,
+            )));
+        }
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(app.current_tab().input_all_selected);
+        assert!(app.close_pane_armed_at.is_none());
+        assert!(app.copy_input_selection(cut, |_| { Err(std::io::Error::other("clipboard busy")) }));
+        assert_eq!(app.current_tab().input, "clipboard draft");
+        assert!(app.current_tab().input_all_selected);
+        assert!(app.close_pane_armed_at.is_none());
+    }
+}
+
+#[test]
+fn input_selection_requires_live_edit_focus_not_just_draft_text() {
+    for context in ["history", "card", "help", "model", "agents", "unfocused"] {
+        let mut app = test_app();
+        app.current_tab_mut().replace_input("keep draft".into());
+        match context {
+            "history" => {
+                app.current_tab_mut().completed_turns.push(CompletedTurn {
+                    prompt: "old turn".into(),
+                    details: Vec::new(),
+                    expanded: false,
+                    trailing_marker: None,
+                });
+                app.current_tab_mut().select_completed_turn(0);
+            }
+            "card" => {
+                stage_surfaced_recommendation(&mut app, vec![send_choice("pane-A", "ls")], 0, None)
+            }
+            "help" => app.help_overlay_visible = true,
+            "model" => app.current_tab_mut().model_picker_open = true,
+            "agents" => app.current_tab_mut().current_view = View::Agents,
+            "unfocused" => app.pane_focused = false,
+            _ => unreachable!(),
+        }
+        render_to_text(&mut app, 80, 20);
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(
+            !app.current_tab().input_all_selected,
+            "{context} owns focus"
+        );
+        assert!(!app.copy_input_selection(true, |_| panic!("must not cut hidden draft")));
+        assert_eq!(app.current_tab().input, "keep draft");
+    }
+}
+
+#[test]
+fn input_selection_handles_slash_completion_and_history_without_stale_ranges() {
+    let mut app = test_app();
+    app.current_tab_mut().replace_input("/he".into());
+    assert!(app.command_popup_visible());
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL,
+    )));
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('x'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().input, "x");
+    assert!(!app.command_popup_visible());
+    app.current_tab_mut().record_input_history("prior command");
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL,
+    )));
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().input, "x");
+    assert!(!app.current_tab().input_all_selected);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Up,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().input, "prior command");
+    assert!(!app.current_tab().input_all_selected);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('!'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.current_tab().input, "prior command!");
+}
+
+#[test]
+fn input_selection_deletion_removes_attachment_tokens_atomically() {
+    let mut app = test_app();
+    app.current_tab_mut().replace_input("before ".into());
+    app.current_tab_mut()
+        .insert_image_attachment(crate::clipboard_image::PastedImage {
+            data_base64: "aW1hZ2U=".into(),
+            mime_type: "image/png".into(),
+            label: "test.png".into(),
+        });
+    app.current_tab_mut().insert_input_str(" after");
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL,
+    )));
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Delete,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.current_tab().input.is_empty());
+    assert!(app.current_tab().attachments.is_empty());
+}
+
+#[test]
+fn input_selection_survives_resize_but_not_focus_loss_or_mouse_click() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = test_app();
+    app.current_tab_mut().replace_input("keep draft".into());
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL,
+    )));
+    app.handle_event(AppEvent::Resize(40, 12));
+    assert!(app.current_tab().input_all_selected);
+    app.handle_event(AppEvent::FocusChanged(false));
+    assert!(!app.current_tab().input_all_selected);
+    app.handle_event(AppEvent::FocusChanged(true));
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL,
+    )));
+    app.handle_event(AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert!(!app.current_tab().input_all_selected);
+    assert_eq!(app.current_tab().input, "keep draft");
+}
+
+#[test]
+fn ctrl_a_selects_current_rendered_frame_without_altering_input() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "SELECT_ALL_PROMPT".into(),
+        details: vec![ChatMessage::Agent("SELECT_ALL_REPLY".into())],
+        expanded: true,
+        trailing_marker: None,
+    });
+    app.current_tab_mut().input = "SELECT_ALL_DRAFT".into();
+    app.current_tab_mut().select_completed_turn(0);
+    let rendered = render_to_text(&mut app, 80, 16);
+    assert!(rendered.contains("SELECT_ALL_PROMPT"));
+    assert!(rendered.contains("SELECT_ALL_REPLY"));
+    assert!(rendered.contains("SELECT_ALL_DRAFT"));
+
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL,
+    )));
+
+    let selected = app
+        .text_selection
+        .selected_text()
+        .expect("plain Ctrl+A must select the current rendered frame");
+    assert!(selected.contains("SELECT_ALL_PROMPT"));
+    assert!(selected.contains("SELECT_ALL_REPLY"));
+    assert!(selected.contains("SELECT_ALL_DRAFT"));
+    assert_eq!(app.current_tab().input, "SELECT_ALL_DRAFT");
+
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+    assert!(
+        app.text_selection.selected_text().is_none(),
+        "Ctrl+Shift+A must remain on the generic TerminalControl select-all path",
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn right_click_copies_and_clears_ctrl_a_selection() {
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let _clipboard_guard = crate::clipboard_image::CLIPBOARD_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let original_clipboard = crate::win32::read_paste_string_from_clipboard().ok();
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut()
+        .messages
+        .push(ChatMessage::info("SELECT_ALL_RIGHT_CLICK"));
+    render_to_text(&mut app, 80, 16);
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(app
+        .text_selection
+        .selected_text()
+        .is_some_and(|text| text.contains("SELECT_ALL_RIGHT_CLICK")));
+
+    crate::win32::copy_text_to_clipboard("SELECT_ALL_RIGHT_CLICK_SENTINEL")
+        .expect("clipboard setup must succeed");
+    app.handle_event(AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    }));
+
+    assert!(crate::win32::read_paste_string_from_clipboard()
+        .expect("right-click copy must be readable")
+        .contains("SELECT_ALL_RIGHT_CLICK"));
+    assert!(app.text_selection.selected_text().is_none());
+    assert!(app
+        .transient_hint
+        .as_ref()
+        .is_some_and(|(hint, _)| hint == &t!("system.selection_copied")));
+    if let Some(original_clipboard) = original_clipboard {
+        crate::win32::copy_text_to_clipboard(&original_clipboard)
+            .expect("original clipboard text must be restored");
+    }
+}
+
+#[test]
+fn completed_turn_user_input_multi_click_preserves_turn_state_and_text_selection() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    for click_count in [2, 3] {
+        let mut app = test_app();
+        app.state = ConnectionState::Connected;
+        app.current_tab_mut().completed_turns.push(CompletedTurn {
+            prompt: "MULTI_CLICK_FIRST\nMULTI_CLICK_PROMPT_WORD".into(),
+            details: vec![ChatMessage::Agent("MULTI_CLICK_DETAIL".into())],
+            expanded: true,
+            trailing_marker: None,
+        });
+        let rendered = render_to_text(&mut app, 80, 16);
+        let (row, column) = rendered
+            .lines()
+            .enumerate()
+            .find_map(|(row, line)| {
+                line.find("MULTI_CLICK_PROMPT_WORD")
+                    .map(|column| (row as u16, column as u16 + 2))
+            })
+            .expect("multi-click prompt must be visible");
+
+        for click_index in 0..click_count {
+            app.handle_event(AppEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }));
+            if click_index == 0 {
+                assert_eq!(app.text_selection.click_count(), Some(1));
+            }
+            app.handle_event(AppEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }));
+            if click_index == 0 {
+                assert_eq!(app.text_selection.click_count(), Some(1));
+                assert!(
+                    app.last_completed_turn_click.is_some(),
+                    "first user-input click must retain rollback state",
+                );
+            }
+            render_to_text(&mut app, 80, 16);
+        }
+
+        assert!(
+            app.current_tab().completed_turns[0].expanded,
+            "multi-click selection must restore the initial expanded state",
+        );
+        assert_eq!(
+            app.current_tab().selected_completed_turn_idx,
+            None,
+            "{click_count}-click selection must restore the initial turn selection",
+        );
+        let selected_text = app
+            .text_selection
+            .selected_text()
+            .expect("double/triple click must preserve text selection");
+        assert!(selected_text.contains("MULTI_CLICK_PROMPT_WORD"));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn right_click_copies_and_clears_text_selection() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let _clipboard_guard = crate::clipboard_image::CLIPBOARD_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let original_clipboard = crate::win32::read_paste_string_from_clipboard().ok();
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "RIGHT_CLICK_COPY_MARKER".into(),
+        details: Vec::new(),
+        expanded: true,
+        trailing_marker: None,
+    });
+    let rendered = render_to_text(&mut app, 80, 16);
+    let (row, column) = rendered
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| {
+            line.find("RIGHT_CLICK_COPY_MARKER")
+                .map(|column| (row as u16, column as u16 + 2))
+        })
+        .expect("copy marker must be visible");
+
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+    assert_eq!(
+        app.text_selection.selected_text().as_deref(),
+        Some("RIGHT_CLICK_COPY_MARKER")
+    );
+
+    crate::win32::copy_text_to_clipboard("RIGHT_CLICK_COPY_SENTINEL")
+        .expect("clipboard setup must succeed");
+    app.handle_event(AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }));
+
+    let clipboard = crate::win32::read_paste_string_from_clipboard()
+        .expect("copied text must be readable from the clipboard");
+    assert_eq!(clipboard, "RIGHT_CLICK_COPY_MARKER");
+    assert!(app.text_selection.selected_text().is_none());
+    assert!(app
+        .transient_hint
+        .as_ref()
+        .is_some_and(|(hint, _)| hint == &t!("system.selection_copied")));
+
+    crate::win32::copy_text_to_clipboard("RIGHT_CLICK_COPY_CLEARED")
+        .expect("clipboard reset must succeed");
+    app.handle_event(AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert_eq!(
+        crate::win32::read_paste_string_from_clipboard().expect("clipboard must remain readable"),
+        "RIGHT_CLICK_COPY_CLEARED",
+        "a second right click must not replay the cleared selection"
+    );
+    if let Some(original_clipboard) = original_clipboard {
+        crate::win32::copy_text_to_clipboard(&original_clipboard)
+            .expect("original clipboard text must be restored");
+    }
+}
+
+#[test]
+fn right_click_without_text_selection_requests_owner_default_paste() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.window_id = Some("window-a".into());
+    app.tab_id = Some("tab-a".into());
+    app.pane_id = Some("pane-a".into());
+    app.current_tab_mut().pane_open = true;
+    app.current_tab_mut().selected_completed_turn_idx = Some(0);
+
+    let request = app
+        .default_paste_request_for_current_tab()
+        .expect("connected Chat view must produce an owner-scoped Default Paste request");
+    let event: serde_json::Value = serde_json::from_str(&request).unwrap();
+    assert_eq!(event["method"], "request_default_paste");
+    assert_eq!(event["params"]["window_id"], "window-a");
+    assert_eq!(event["params"]["tab_id"], "tab-a");
+    assert_eq!(event["params"]["pane_id"], "pane-a");
+
+    let dispatched = app
+        .handle_right_click()
+        .expect("Right Down without selected text must dispatch Default Paste");
+    assert_eq!(dispatched, request);
+    assert_eq!(
+        app.current_tab().selected_completed_turn_idx,
+        None,
+        "completed-turn navigation highlight is not selected text and must clear before paste",
+    );
+}
+
+#[test]
+fn default_paste_request_is_chat_only() {
+    let mut app = test_app();
+    app.window_id = Some("window-a".into());
+    app.tab_id = Some("tab-a".into());
+    app.pane_id = Some("pane-a".into());
+    app.current_tab_mut().current_view = View::Agents;
+
+    assert!(app.default_paste_request_for_current_tab().is_none());
+    assert!(app.handle_right_click().is_none());
+}
+
+#[test]
+fn completed_turn_user_input_hit_spans_full_row_with_wide_cells() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "界 A".into(),
+        details: Vec::new(),
+        expanded: true,
+        trailing_marker: None,
+    });
+    render_to_text(&mut app, 80, 16);
+    let hit = app
+        .completed_turn_hits
+        .iter()
+        .copied()
+        .find(|hit| hit.kind == CompletedTurnHitKind::UserInput)
+        .expect("wide prompt must have a user-input hit range");
+    assert_eq!(hit.start_column, 1);
+    assert_eq!(hit.end_column, 79);
+    for column in hit.start_column..hit.end_column {
+        assert!(hit.contains(column, hit.row));
+    }
+    assert!(!hit.contains(hit.end_column, hit.row));
+}
+
+#[test]
+fn completed_turn_prompt_rows_expose_state_aware_action_links() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "ACTION_LINK_FIRST\nACTION_LINK_SECOND".into(),
+        details: vec![ChatMessage::Agent("ACTION_LINK_DETAIL".into())],
+        expanded: true,
+        trailing_marker: None,
+    });
+
+    render_to_text(&mut app, 80, 16);
+    let prompt_rows = app
+        .completed_turn_hits
+        .iter()
+        .filter(|hit| hit.kind == CompletedTurnHitKind::UserInput)
+        .count();
+    assert_eq!(app.completed_turn_action_links.len(), prompt_rows);
+    assert!(app
+        .completed_turn_action_links
+        .iter()
+        .all(|link| link.action == crate::action_links::CompletedTurnAction::Collapse));
+    let triangle = app
+        .completed_turn_hits
+        .iter()
+        .find(|hit| hit.kind == CompletedTurnHitKind::Triangle)
+        .expect("completed-turn triangle must be visible");
+    assert!(app.completed_turn_action_links.iter().any(|link| {
+        link.row == triangle.row
+            && link.start_column <= triangle.start_column
+            && link.end_column > triangle.start_column
+    }));
+
+    app.current_tab_mut().completed_turns[0].expanded = false;
+    render_to_text(&mut app, 80, 16);
+    assert_eq!(app.completed_turn_action_links.len(), 1);
+    assert_eq!(
+        app.completed_turn_action_links[0].action,
+        crate::action_links::CompletedTurnAction::Expand,
+    );
+}
+
+#[test]
+fn completed_turn_triangle_click_ignores_text_drag_and_hidden_chat() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "MOUSE_GUARD_PROMPT".into(),
+        details: vec![ChatMessage::Agent("MOUSE_GUARD_DETAIL".into())],
+        expanded: true,
+        trailing_marker: None,
+    });
+
+    let rendered = render_to_text(&mut app, 80, 16);
+    let (row, triangle_column) = rendered
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| {
+            line.contains("MOUSE_GUARD_PROMPT").then(|| {
+                let column = line
+                    .chars()
+                    .position(|character| character == '▼')
+                    .expect("expanded turn header must paint its triangle");
+                (row as u16, column as u16)
+            })
+        })
+        .expect("completed turn must be visible");
+    let prefix_column = triangle_column + 2;
+    let prompt_column = triangle_column + 4;
+    let row_end_column = 78;
+
+    let send_mouse = |app: &mut App, kind, column| {
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    };
+
+    send_mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        prefix_column,
+    );
+    send_mouse(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        prefix_column,
+    );
+    assert!(!app.current_tab().completed_turns[0].expanded);
+
+    render_to_text(&mut app, 80, 16);
+    send_mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        row_end_column,
+    );
+    send_mouse(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        row_end_column,
+    );
+    assert!(app.current_tab().completed_turns[0].expanded);
+
+    send_mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        triangle_column,
+    );
+    send_mouse(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        prompt_column,
+    );
+    send_mouse(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        triangle_column,
+    );
+    assert!(app.current_tab().completed_turns[0].expanded);
+
+    app.current_tab_mut().current_view = View::Agents;
+    render_to_text(&mut app, 80, 16);
+    assert!(app.completed_turn_action_links.is_empty());
+    assert!(app.input_dialog_area.is_none());
+    send_mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        triangle_column,
+    );
+    send_mouse(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        triangle_column,
+    );
+    assert!(
+        app.current_tab().completed_turns[0].expanded,
+        "a stale chat coordinate must not toggle a turn when chat is hidden",
+    );
+
+    app.current_tab_mut().current_view = View::Chat;
+    render_to_text(&mut app, 80, 16);
+    send_mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        triangle_column,
+    );
+    app.help_overlay_visible = true;
+    send_mouse(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        triangle_column,
+    );
+    assert!(
+        app.current_tab().completed_turns[0].expanded,
+        "an overlay must prevent clicks from reaching a triangle beneath it",
+    );
+    app.help_overlay_visible = false;
+
+    render_to_text(&mut app, 80, 16);
+    send_mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        triangle_column,
+    );
+    app.handle_event(AppEvent::Resize(100, 20));
+    send_mouse(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        triangle_column,
+    );
+    assert!(
+        app.current_tab().completed_turns[0].expanded,
+        "resize must cancel an in-progress triangle click",
+    );
+
+    render_to_text(&mut app, 80, 16);
+    send_mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        triangle_column,
+    );
+    send_mouse(&mut app, MouseEventKind::ScrollUp, triangle_column);
+    send_mouse(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        triangle_column,
+    );
+    assert!(
+        app.current_tab().completed_turns[0].expanded,
+        "scrolling must cancel an in-progress triangle click",
+    );
+
+    render_to_text(&mut app, 80, 16);
+    send_mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        triangle_column,
+    );
+    app.switch_tab_session("other-tab".into());
+    app.switch_tab_session(DEFAULT_TAB_ID.into());
+    send_mouse(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        triangle_column,
+    );
+    assert!(
+        app.current_tab().completed_turns[0].expanded,
+        "switching away and back must cancel an in-progress triangle click",
+    );
+}
+
+#[test]
+fn completed_turn_mouse_selection_continues_with_keyboard_navigation() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    for prompt in ["MOUSE_SELECT_OLDER", "MOUSE_SELECT_NEWER"] {
+        app.current_tab_mut().completed_turns.push(CompletedTurn {
+            prompt: prompt.into(),
+            details: vec![ChatMessage::Agent(format!("DETAIL_{prompt}"))],
+            expanded: true,
+            trailing_marker: None,
+        });
+    }
+    let rendered = render_to_text(&mut app, 80, 16);
+    let (row, column) = rendered
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| {
+            line.find("MOUSE_SELECT_OLDER")
+                .map(|column| (row as u16, column as u16))
+        })
+        .expect("older prompt must be visible");
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+    assert_eq!(app.current_tab().selected_completed_turn_idx, Some(0));
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().selected_completed_turn_idx, Some(1));
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().selected_completed_turn_idx, Some(0));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().selected_completed_turn_idx, None);
+}
+
+#[test]
+fn completed_turn_triangle_hits_follow_visible_scrolled_turns() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    for index in 0..12 {
+        app.current_tab_mut().completed_turns.push(CompletedTurn {
+            prompt: format!("MOUSE_VISIBLE_TURN_{index:02}"),
+            details: vec![ChatMessage::Agent(format!(
+                "MOUSE_VISIBLE_DETAIL_{index:02}"
+            ))],
+            expanded: false,
+            trailing_marker: None,
+        });
+    }
+
+    let before = render_to_text(&mut app, 80, 10);
+    let initial_hits: Vec<_> = app
+        .completed_turn_hits
+        .iter()
+        .copied()
+        .filter(|hit| hit.kind == CompletedTurnHitKind::Triangle)
+        .collect();
+    assert!(!initial_hits.is_empty());
+    assert!(initial_hits.len() < app.current_tab().completed_turns.len());
+    for hit in &initial_hits {
+        assert!(before.contains(&format!("MOUSE_VISIBLE_TURN_{:02}", hit.turn_index)));
+        assert!(hit.row < 10);
+    }
+
+    let target = initial_hits[0];
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column: target.start_column,
+            row: target.row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+    for (index, turn) in app.current_tab().completed_turns.iter().enumerate() {
+        assert_eq!(turn.expanded, index == target.turn_index);
+    }
+
+    render_to_text(&mut app, 80, 10);
+    let expanded_hits: Vec<_> = app
+        .completed_turn_hits
+        .iter()
+        .copied()
+        .filter(|hit| hit.kind == CompletedTurnHitKind::Triangle)
+        .collect();
+    app.current_tab_mut().chat_scroll.by(3);
+    let after_scroll = render_to_text(&mut app, 80, 10);
+    let scrolled_hits: Vec<_> = app
+        .completed_turn_hits
+        .iter()
+        .copied()
+        .filter(|hit| hit.kind == CompletedTurnHitKind::Triangle)
+        .collect();
+    assert_ne!(scrolled_hits, expanded_hits);
+    for hit in &scrolled_hits {
+        assert!(after_scroll.contains(&format!("MOUSE_VISIBLE_TURN_{:02}", hit.turn_index)));
+        assert!(hit.row < 10);
+    }
+}
+
+#[test]
+fn completed_turn_prompt_hits_survive_a_clipped_header_row() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: (0..8)
+            .map(|index| format!("CLIPPED_PROMPT_ROW_{index}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        details: vec![ChatMessage::Agent("CLIPPED_PROMPT_DETAIL".into())],
+        expanded: true,
+        trailing_marker: None,
+    });
+
+    let mut visible_target = None;
+    for offset in 0..12 {
+        app.current_tab_mut().chat_scroll.offset = offset;
+        let rendered = render_to_text(&mut app, 80, 8);
+        if !rendered.contains("CLIPPED_PROMPT_ROW_0") {
+            visible_target = (1..8).find_map(|index| {
+                let marker = format!("CLIPPED_PROMPT_ROW_{index}");
+                rendered
+                    .lines()
+                    .position(|line| line.contains(&marker))
+                    .map(|row| (row as u16, marker))
+            });
+            if visible_target.is_some() {
+                break;
+            }
+        }
+    }
+
+    let (row, marker) =
+        visible_target.expect("a continuation row must remain visible after the header is clipped");
+    assert!(
+        app.completed_turn_hits.iter().any(|hit| {
+            hit.kind == CompletedTurnHitKind::UserInput && hit.row == row && hit.turn_index == 0
+        }),
+        "visible continuation row {marker:?} must retain its click target",
+    );
+    assert!(
+        app.completed_turn_action_links
+            .iter()
+            .any(|link| link.row == row),
+        "visible continuation row {marker:?} must retain its hand-cursor metadata",
+    );
+}
+
+#[test]
+fn completed_turn_triangle_hit_uses_header_glyph_not_prompt_glyphs() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "▼ ▶ MOUSE_GLYPH_PROMPT".into(),
+        details: vec![ChatMessage::Agent("MOUSE_GLYPH_DETAIL".into())],
+        expanded: true,
+        trailing_marker: None,
+    });
+
+    let rendered = render_to_text(&mut app, 80, 16);
+    let hit = app
+        .completed_turn_hits
+        .iter()
+        .copied()
+        .find(|hit| hit.kind == CompletedTurnHitKind::Triangle)
+        .expect("triangle hit must exist");
+    let header = rendered
+        .lines()
+        .nth(hit.row as usize)
+        .expect("hit row must exist");
+    let triangle_columns: Vec<u16> = header
+        .chars()
+        .enumerate()
+        .filter_map(|(column, character)| (character == '▼').then_some(column as u16))
+        .collect();
+    assert!(triangle_columns.len() >= 2);
+    assert_eq!(hit.start_column, triangle_columns[0]);
+
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column: hit.start_column,
+            row: hit.row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+    assert!(!app.current_tab().completed_turns[0].expanded);
+}
+
+#[test]
+fn clicking_completed_tool_header_toggles_only_that_tool() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "Inspect".into(),
+        details: vec![
+            ChatMessage::ToolCall {
+                id: "first-tool".into(),
+                query: None,
+                title: "Read first".into(),
+                status: "Completed".into(),
+                kind: ToolCallKind::Other,
+                location: Some(r"C:\first.txt".into()),
+                location_is_command: false,
+                cwd: None,
+                output: Some(ToolCallOutput {
+                    text: "FIRST_DETAIL".into(),
+                    truncated: false,
+                }),
+                exit_code: None,
+                content: Vec::new(),
+                locations: Vec::new(),
+            },
+            ChatMessage::ToolCall {
+                id: "second-tool".into(),
+                query: None,
+                title: "Read second".into(),
+                status: "Completed".into(),
+                kind: ToolCallKind::Other,
+                location: Some(r"C:\second.txt".into()),
+                location_is_command: false,
+                cwd: None,
+                output: Some(ToolCallOutput {
+                    text: "SECOND_DETAIL".into(),
+                    truncated: false,
+                }),
+                exit_code: None,
+                content: Vec::new(),
+                locations: Vec::new(),
+            },
+        ],
+        expanded: true,
+        trailing_marker: None,
+    });
+
+    render_to_text(&mut app, 80, 20);
+    let hit = app
+        .completed_turn_hits
+        .iter()
+        .copied()
+        .find(|hit| hit.kind == (CompletedTurnHitKind::ToolCall { detail_index: 0 }))
+        .expect("first tool header hit must exist");
+    assert!(hit.end_column.saturating_sub(hit.start_column) > 1);
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column: hit.end_column.saturating_sub(1),
+            row: hit.row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+
+    let expanded = render_to_text(&mut app, 80, 20);
+    assert!(expanded.contains("FIRST_DETAIL"));
+    assert!(!expanded.contains("SECOND_DETAIL"));
+    assert!(app.current_tab().completed_turns[0].expanded);
+}
+
+#[test]
+fn adjacent_successful_reads_render_as_one_compact_group() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().messages = [
+        r"C:\project\Cargo.toml",
+        r"C:\project\src\main.rs",
+        r"C:\project\static\index.html",
+        r"C:\project\static\app.js",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, path)| ChatMessage::ToolCall {
+        id: format!("read-{index}"),
+        query: None,
+        title: format!("Viewing {path}"),
+        status: "Completed".into(),
+        kind: ToolCallKind::Read,
+        location: None,
+        location_is_command: false,
+        cwd: None,
+        output: None,
+        exit_code: None,
+        content: Vec::new(),
+        locations: vec![ToolCallLocation {
+            path: path.into(),
+            line: None,
+        }],
+    })
+    .collect();
+
+    let rendered = render_to_text(&mut app, 100, 16);
+
+    assert_eq!(rendered.matches("Read ·").count(), 1);
+    assert!(rendered.contains("Read · Cargo.toml, main.rs, index.html · +1"));
+}
+
+#[test]
+fn generic_read_group_lists_visible_targets_and_remaining_count() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().messages = ["first.rs", "second.rs", "third.rs", "fourth.rs"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, path)| ChatMessage::ToolCall {
+            id: format!("read-{index}"),
+            query: None,
+            title: "Read file".into(),
+            status: "Completed".into(),
+            kind: ToolCallKind::Read,
+            location: Some(path.into()),
+            location_is_command: false,
+            cwd: None,
+            output: None,
+            exit_code: None,
+            content: Vec::new(),
+            locations: Vec::new(),
+        })
+        .collect();
+
+    let rendered = render_to_text(&mut app, 80, 16);
+
+    assert!(rendered.contains("Read · first.rs, second.rs, third.rs · +1"));
+}
+
+#[test]
+fn clicking_completed_read_group_expands_every_member() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    let details = [r"C:\repo\a.rs", r"C:\repo\b.rs"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, path)| ChatMessage::ToolCall {
+            id: format!("read-{index}"),
+            query: None,
+            title: format!("Viewing {path}"),
+            status: "Completed".into(),
+            kind: ToolCallKind::Read,
+            location: None,
+            location_is_command: false,
+            cwd: None,
+            output: Some(ToolCallOutput {
+                text: format!("DETAIL_{index}"),
+                truncated: false,
+            }),
+            exit_code: None,
+            content: Vec::new(),
+            locations: vec![ToolCallLocation {
+                path: path.into(),
+                line: None,
+            }],
+        })
+        .collect();
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "Inspect".into(),
+        details,
+        expanded: true,
+        trailing_marker: None,
+    });
+
+    render_to_text(&mut app, 80, 20);
+    let hit = app
+        .completed_turn_hits
+        .iter()
+        .copied()
+        .find(|hit| {
+            matches!(
+                hit.kind,
+                CompletedTurnHitKind::ToolGroup {
+                    first_detail_index: 0,
+                    detail_count: 2
+                }
+            )
+        })
+        .expect("read group header hit must exist");
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column: hit.start_column,
+            row: hit.row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+
+    let expanded = render_to_text(&mut app, 80, 20);
+    assert!(expanded.contains("DETAIL_0"));
+    assert!(expanded.contains("DETAIL_1"));
+}
+
+#[test]
+fn pending_tool_in_completed_turn_keeps_clickable_status_marker() {
+    let _locale = crate::test_support::lock_locale();
+    for locale in ["en-US", "zh-CN", "ja-JP", "ar-SA"] {
+        rust_i18n::set_locale(locale);
+        let mut app = test_app();
+        app.state = ConnectionState::Connected;
+        app.current_tab_mut().completed_turns.push(CompletedTurn {
+            prompt: "Interrupted turn".into(),
+            details: vec![ChatMessage::ToolCall {
+                id: "pending-tool".into(),
+                query: None,
+                title: "Pending operation".into(),
+                status: "Pending".into(),
+                kind: ToolCallKind::Other,
+                location: None,
+                location_is_command: false,
+                cwd: None,
+                output: None,
+                exit_code: None,
+                content: Vec::new(),
+                locations: Vec::new(),
+            }],
+            expanded: true,
+            trailing_marker: None,
+        });
+
+        let buffer = render_to_buffer(&mut app, 80, 16);
+        let hit = app
+            .completed_turn_hits
+            .iter()
+            .find(|hit| matches!(hit.kind, CompletedTurnHitKind::ToolCall { detail_index: 0 }))
+            .expect("pending tool header hit must exist");
+        // Hit coordinates are terminal cells, not character offsets in translated text.
+        assert_eq!(
+            buffer[(hit.start_column, hit.row)].symbol(),
+            "●",
+            "{locale}: the pending status marker must start the clickable header"
+        );
+        let header: String = (hit.start_column..hit.end_column)
+            .map(|column| buffer[(column, hit.row)].symbol())
+            .collect();
+        assert!(
+            header.contains("Pending operation"),
+            "{locale}: the clickable header must contain the tool's title: {header:?}"
+        );
+    }
+}
+
+#[test]
+fn render_chat_connection_stage_transitions() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    let stages = [
+        t!("connection.starting").into_owned(),
+        t!("connection.coordinator").into_owned(),
+        t!("connection.initializing").into_owned(),
+        t!("connection.authenticating").into_owned(),
+        t!("connection.syncing_sessions").into_owned(),
+        t!("connection.creating_session").into_owned(),
+        t!("connection.selecting_model", model = "test-model").into_owned(),
+        t!("connection.restarting").into_owned(),
+        t!("connection.reconnecting").into_owned(),
+    ];
+    let generic = t!("connection.connecting_activity").into_owned();
+    let mut previous: Option<String> = None;
+    for stage in stages {
+        app.handle_event(AppEvent::ConnectionStage(stage.clone()));
+        let text = render_to_text(&mut app, 80, 24);
+        assert!(
+            text.contains(&stage),
+            "the activity row must show {stage:?}; rendered:\n{text}"
+        );
+        assert!(!text.contains(&generic));
+        if let Some(previous) = previous {
+            assert!(!text.contains(&previous));
+        }
+        assert!(matches!(app.state, ConnectionState::Connecting(_)));
+        assert!(app.session_id.is_empty());
+        previous = Some(stage);
+    }
+}
+
+#[test]
+fn render_chat_connection_stage_preserves_draft() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.current_tab_mut().input = "keep this draft".into();
+    let stage = t!("connection.creating_session").into_owned();
+    app.handle_event(AppEvent::ConnectionStage(stage.clone()));
+    let text = render_to_text(&mut app, 80, 24);
+    assert!(text.contains(&stage));
+    assert!(text.contains("keep this draft"));
+    assert_eq!(app.current_tab().input, "keep this draft");
+}
+
+#[test]
+fn render_chat_connection_stage_disappears_when_not_connecting() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    let stage = t!("connection.creating_session").into_owned();
+    app.handle_event(AppEvent::ConnectionStage(stage.clone()));
+    assert!(render_to_text(&mut app, 80, 24).contains(&stage));
+    for state in [
+        ConnectionState::Connected,
+        ConnectionState::Disconnected,
+        ConnectionState::Failed("startup failed".into()),
+    ] {
+        app.state = state;
+        assert!(!crate::ui::chat::should_show_activity(&app));
+        assert!(!render_to_text(&mut app, 80, 24).contains(&stage));
+    }
+}
+
+#[test]
+fn render_chat_connection_stage_fits_narrow_activity_row() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    for (stage, prefix) in [
+        (t!("connection.initializing").into_owned(), "Initializing"),
+        (t!("connection.creating_session").into_owned(), "Creating"),
+        (
+            t!(
+                "connection.selecting_model",
+                model = "a-very-long-model-identifier"
+            )
+            .into_owned(),
+            "Setting session",
+        ),
+    ] {
+        for resuming in [false, true] {
+            app.state = ConnectionState::Connecting(stage.clone());
+            app.current_tab_mut().loading_session = resuming;
+            app.current_tab_mut().loading_target_session_id =
+                Some("aaaaaaaa-long-session-id".into());
+            let text = buffer_to_text(&render_to_buffer(&mut app, 18, 24));
+            assert!(
+                text.lines()
+                    .any(|line| line.trim_start().starts_with(prefix)),
+                "the stage must remain identifiable even during resume in a narrow pane: {text:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn restart_connection_stage_is_localized_and_preserves_draft() {
+    let _locale = crate::test_support::lock_locale();
+    for (locale, expected) in [
+        ("en-US", "Restarting agent..."),
+        ("zh-CN", "正在重启智能体..."),
+    ] {
+        rust_i18n::set_locale(locale);
+        let (mut app, mut restart_rx) = test_app_with_restart_rx();
+        app.current_tab_mut().input = "keep this draft".into();
+        app.cmd_restart();
+        assert_eq!(app.state, ConnectionState::Connecting(expected.into()));
+        assert!(matches!(
+            restart_rx.try_recv().unwrap(),
+            AgentLifecycleRequest::RestartMaster
+        ));
+        // The text harness includes the empty trailing cells of wide glyphs.
+        let text = render_to_text(&mut app, 80, 24).replace(' ', "");
+        assert!(
+            text.contains(&expected.replace(' ', "")),
+            "{locale}: {text}"
+        );
+        assert_eq!(app.current_tab().input, "keep this draft");
+        let stage = t!("connection.coordinator").into_owned();
+        app.handle_event(AppEvent::ConnectionStage(stage.clone()));
+        let text = render_to_text(&mut app, 80, 24).replace(' ', "");
+        assert!(text.contains(&stage.replace(' ', "")));
+        assert!(!text.contains(&expected.replace(' ', "")));
+    }
+}
+
+/// Render: the first-run welcome hint must paint its title when connected
+/// and `show_welcome_hint` is set. Lifts the welcome branch of
+/// `ui/chat.rs` + `ui/layout.rs`.
+#[test]
+fn render_chat_welcome_hint() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.show_welcome_hint = true;
+
+    let text = render_to_text(&mut app, 80, 24);
+    let title = t!("chat.welcome_title").into_owned();
+    let probe: String = title.chars().take(6).collect();
+    assert!(
+        !probe.trim().is_empty() && text.contains(&probe),
+        "chat must paint the welcome title ({title:?}); rendered:\n{text}"
+    );
+}
+
+#[test]
+fn resuming_pane_shows_connection_stage_then_resume_until_load_completes() {
+    let _locale = crate::test_support::lock_locale();
+    for locale in ["en-US", "zh-CN"] {
+        rust_i18n::set_locale(locale);
+        for load_succeeds in [true, false] {
+            let (mut app, mut load_rx) = make_app_with_load_session_channel();
+            app.owner_tab_id = Some("OWNER-TAB".into());
+            app.tab_id = Some("OWNER-TAB".into());
+            app.tab_sessions
+                .insert("OWNER-TAB".into(), TabSession::default());
+            let session_id = "aaaaaaaa-1111-2222-3333-444444444444";
+            app.handle_event(AppEvent::WtEvent {
+                method: "load_session".into(),
+                pane_id: String::new(),
+                tab_id: None,
+                params: json!({ "tab_id": "OWNER-TAB", "session_id": session_id }),
+            });
+            assert_eq!(load_rx.try_recv().unwrap().session_id, session_id);
+            app.current_tab_mut().input = "keep this draft".into();
+            let stages = [
+                t!("connection.coordinator").into_owned(),
+                t!("connection.initializing").into_owned(),
+                t!("connection.syncing_sessions").into_owned(),
+                t!("connection.connecting_activity").into_owned(),
+            ];
+            for stage in &stages {
+                app.handle_event(AppEvent::ConnectionStage(stage.clone()));
+                let combined = t!(
+                    "connection.resuming_stage",
+                    stage = stage.as_str(),
+                    session_id = "aaaaaaaa"
+                )
+                .into_owned();
+                assert!(combined.starts_with(stage));
+                let text = render_to_text(&mut app, 100, 24).replace(' ', "");
+                assert!(
+                    text.contains(&combined.replace(' ', "")),
+                    "{locale}: {text}"
+                );
+                assert!(matches!(app.state, ConnectionState::Connecting(_)));
+                assert!(app.current_tab().loading_session);
+                assert!(!text.contains(&t!("connection.creating_session").replace(' ', "")));
+            }
+            app.handle_event(AppEvent::AgentConnected {
+                name: "Copilot".into(),
+                model: None,
+                version: None,
+                session_id: session_id.into(),
+                available_models: Vec::new(),
+                current_model_id: None,
+                load_session_supported: true,
+                image_supported: false,
+                session_capabilities_ready: false,
+                telemetry_byok_binding: None,
+            });
+            let resume = t!("system.resuming_session", session_id = "aaaaaaaa").into_owned();
+            assert_eq!(app.state, ConnectionState::Connected);
+            assert!(app.current_tab().loading_session);
+            let text = render_to_text(&mut app, 100, 24).replace(' ', "");
+            assert!(text.contains(&resume.replace(' ', "")));
+            for stage in &stages {
+                assert!(!text.contains(&stage.replace(' ', "")));
+            }
+            if load_succeeds {
+                app.handle_event(AppEvent::SessionAttached {
+                    tab_id: "OWNER-TAB".into(),
+                    session_id: session_id.into(),
+                    prompt_id: None,
+                    available_models: Vec::new(),
+                    current_model_id: None,
+                });
+            } else {
+                app.handle_event(AppEvent::TabError {
+                    tab_id: "OWNER-TAB".into(),
+                    message: "restore failed".into(),
+                });
+            }
+            assert!(!app.current_tab().loading_session);
+            let text = render_to_text(&mut app, 100, 24).replace(' ', "");
+            assert!(!text.contains(&resume.replace(' ', "")));
+            for stage in &stages {
+                assert!(!text.contains(&stage.replace(' ', "")));
+            }
+            assert_eq!(app.current_tab().input, "keep this draft");
+        }
+    }
+}
+
+#[test]
+fn resuming_pane_does_not_paint_the_first_run_welcome() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    // A restored conversation is not a first run, so the hint must be gone by
+    // the time the replayed history lands. `load_session` can arrive after the
+    // connect that already decided this was a first run, so the handler has to
+    // retract it rather than merely decline to set it.
+    let (mut app, _load_session_rx) = make_app_with_load_session_channel();
+    app.owner_tab_id = Some("OWNER-TAB".to_string());
+    app.tab_sessions
+        .insert("OWNER-TAB".to_string(), TabSession::default());
+    app.state = ConnectionState::Connected;
+    app.show_welcome_hint = true;
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": "OWNER-TAB",
+            "session_id": "sess-resume",
+        }),
+    });
+
+    assert!(
+        !app.show_welcome_hint,
+        "a resume must retract the first-run welcome hint"
+    );
+
+    let text = render_to_text(&mut app, 80, 24);
+    let title = t!("chat.welcome_title").into_owned();
+    let probe: String = title.chars().take(6).collect();
+    assert!(
+        !probe.trim().is_empty() && !text.contains(&probe),
+        "a resuming pane must not paint the welcome title ({title:?}); rendered:\n{text}"
+    );
+}
+
+#[test]
+fn fixed_activity_row_does_not_change_estimated_chat_height() {
+    let mut app = test_app();
+    app.current_tab_mut()
+        .messages
+        .push(ChatMessage::User("hello".into()));
+
+    app.state = ConnectionState::Disconnected;
+    let without_activity = crate::ui::chat::estimated_block_height(&app, 80, 40);
+    app.state = ConnectionState::Connecting("Starting agent".into());
+    let with_activity = crate::ui::chat::estimated_block_height(&app, 80, 40);
+
+    assert_eq!(with_activity, without_activity);
+    assert!(
+        app.has_activity_indicator(),
+        "Connecting must keep Tick redraws active for the shimmer"
+    );
+}
+
+#[test]
+fn estimated_chat_height_stops_after_filling_available_rows() {
+    let mut app = test_app();
+    for index in 0..100 {
+        app.current_tab_mut().completed_turns.push(CompletedTurn {
+            prompt: format!("prompt {index}"),
+            details: vec![ChatMessage::Agent(format!("response {index}"))],
+            expanded: true,
+            trailing_marker: None,
+        });
+    }
+
+    crate::ui::chat::reset_completed_turn_line_build_count();
+    let estimated = crate::ui::chat::estimated_block_height(&app, 80, 12);
+    let built_turns = crate::ui::chat::completed_turn_line_build_count();
+
+    assert_eq!(estimated, 12);
+    assert!(
+        built_turns < app.current_tab().completed_turns.len(),
+        "height estimation must not build history beyond the layout limit",
+    );
+}
+
+#[test]
+fn render_large_mixed_chat_keeps_latest_content_and_width_correct() {
+    use unicode_width::UnicodeWidthStr;
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    for index in 0..200 {
+        app.current_tab_mut().completed_turns.push(CompletedTurn {
+            prompt: format!("OLD_TURN_{index:03}"),
+            details: vec![
+                ChatMessage::Agent(format!("old response {index}")),
+                ChatMessage::ToolCall {
+                    id: format!("old-tool-{index}"),
+                    query: None,
+                    title: "Read old file".into(),
+                    status: "Completed".into(),
+                    kind: ToolCallKind::Read,
+                    location: Some(format!(r"C:\repo\old-{index}.txt")),
+                    location_is_command: false,
+                    cwd: None,
+                    output: Some(ToolCallOutput {
+                        text: format!("old output {index}"),
+                        truncated: false,
+                    }),
+                    exit_code: None,
+                    content: Vec::new(),
+                    locations: Vec::new(),
+                },
+            ],
+            expanded: true,
+            trailing_marker: None,
+        });
+    }
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "LATEST_MIXED_PROMPT".into(),
+        details: vec![
+            ChatMessage::Agent(
+                "最新回复包含宽字符，用来验证窄窗口中的换行；LATEST_AGENT_TAIL".into(),
+            ),
+            ChatMessage::ToolCall {
+                id: "latest-read".into(),
+                query: None,
+                title: "Read latest file".into(),
+                status: "Completed".into(),
+                kind: ToolCallKind::Read,
+                location: Some(r"C:\repo\latest.txt".into()),
+                location_is_command: false,
+                cwd: None,
+                output: Some(ToolCallOutput {
+                    text: "LATEST_READ_OUTPUT".into(),
+                    truncated: false,
+                }),
+                exit_code: None,
+                content: Vec::new(),
+                locations: Vec::new(),
+            },
+            ChatMessage::ToolCall {
+                id: "latest-execute".into(),
+                query: None,
+                title: "Run latest tests".into(),
+                status: "Completed".into(),
+                kind: ToolCallKind::Execute,
+                location: Some("cargo test --package latest".into()),
+                location_is_command: true,
+                cwd: Some(r"C:\repo".into()),
+                output: Some(ToolCallOutput {
+                    text: "LATEST_EXEC_OUTPUT".into(),
+                    truncated: false,
+                }),
+                exit_code: Some(0),
+                content: Vec::new(),
+                locations: Vec::new(),
+            },
+            ChatMessage::ToolCall {
+                id: "latest-edit".into(),
+                query: None,
+                title: "Edit latest source".into(),
+                status: "Completed".into(),
+                kind: ToolCallKind::Edit,
+                location: Some(r"C:\repo\src\latest.rs".into()),
+                location_is_command: false,
+                cwd: None,
+                output: None,
+                exit_code: None,
+                content: vec![ToolCallContent::Diff {
+                    path: r"C:\repo\src\latest.rs".into(),
+                    old_text: Some(ToolCallOutput {
+                        text: "LATEST_OLD_LINE".into(),
+                        truncated: false,
+                    }),
+                    new_text: ToolCallOutput {
+                        text: "LATEST_NEW_LINE".into(),
+                        truncated: false,
+                    },
+                }],
+                locations: Vec::new(),
+            },
+            ChatMessage::Plan(vec![
+                PlanEntry {
+                    content: "LATEST_PLAN_DONE".into(),
+                    status: PlanEntryStatus::Completed,
+                },
+                PlanEntry {
+                    content: "LATEST_PLAN_NEXT".into(),
+                    status: PlanEntryStatus::Pending,
+                },
+            ]),
+        ],
+        expanded: true,
+        trailing_marker: None,
+    });
+    let latest_turn = app.current_tab().completed_turns.len() - 1;
+    for detail_index in [1, 2, 3] {
+        app.current_tab_mut()
+            .toggle_completed_tool_call(latest_turn, detail_index);
+    }
+
+    crate::ui::chat::reset_completed_turn_line_build_count();
+    crate::ui::chat::reset_tool_detail_build_count();
+    let width = 56;
+    let buffer = render_to_buffer(&mut app, width, 38);
+    let rendered = buffer_to_text(&buffer);
+    let built_turns = crate::ui::chat::completed_turn_line_build_count();
+
+    for needle in [
+        "LATEST_MIXED_PROMPT",
+        "LATEST_AGENT_TAIL",
+        r"Read · repo\latest.txt",
+        "LATEST_READ_OUTPUT",
+        "Run latest tests",
+        "LATEST_EXEC_OUTPUT",
+        r"Edit · src\latest.rs",
+        "LATEST_OLD_LINE",
+        "LATEST_NEW_LINE",
+        "LATEST_PLAN_DONE",
+        "LATEST_PLAN_NEXT",
+    ] {
+        assert!(
+            rendered.contains(needle),
+            "latest mixed content {needle:?} must remain visible; rendered:\n{rendered}",
+        );
+    }
+    assert!(!rendered.contains("OLD_TURN_000"));
+    assert!(
+        built_turns < 50,
+        "layout and bottom-up rendering must not build all 201 turns; built {built_turns}",
+    );
+    assert_eq!(
+        crate::ui::chat::tool_detail_build_count(),
+        6,
+        "only the three explicitly expanded latest tools may build details for height and paint",
+    );
+
+    for row in buffer.content.chunks(width as usize) {
+        assert_eq!(row.len(), width as usize);
+        for (column, cell) in row.iter().enumerate() {
+            let symbol_width = UnicodeWidthStr::width(cell.symbol());
+            assert!(
+                column.saturating_add(symbol_width) <= width as usize,
+                "cell {:?} at column {column} must not overflow width {width}",
+                cell.symbol(),
+            );
+        }
+    }
+
+    app.current_tab_mut().chat_scroll.offset = 120;
+    let scrolled = render_to_text(&mut app, width, 38);
+    assert!(
+        scrolled.contains("OLD_TURN_"),
+        "older mixed history must remain renderable after lazy height estimation",
+    );
+}
+
+#[test]
+fn repeated_deep_scroll_reuses_intermediate_turn_heights() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    for index in 0..200 {
+        app.current_tab_mut().completed_turns.push(CompletedTurn {
+            prompt: format!("CACHED_SCROLL_TURN_{index:03}"),
+            details: vec![ChatMessage::Agent(format!(
+                "CACHED_SCROLL_DETAIL_{index:03}"
+            ))],
+            expanded: true,
+            trailing_marker: None,
+        });
+    }
+    app.current_tab_mut().chat_scroll.offset = 300;
+
+    crate::ui::chat::reset_completed_turn_line_build_count();
+    let first = render_to_text(&mut app, 80, 20);
+    let first_builds = crate::ui::chat::completed_turn_line_build_count();
+    assert!(first.contains("CACHED_SCROLL_TURN_"));
+    assert!(!first.contains("CACHED_SCROLL_TURN_199"));
+
+    crate::ui::chat::reset_completed_turn_line_build_count();
+    let second = render_to_text(&mut app, 80, 20);
+    let second_builds = crate::ui::chat::completed_turn_line_build_count();
+
+    assert_eq!(second, first);
+    assert!(
+        second_builds < first_builds,
+        "the second frame must reuse intermediate heights: first={first_builds}, second={second_builds}",
+    );
+    assert!(
+        second_builds < 20,
+        "deep-scroll redraw must only build viewport-adjacent turns; built {second_builds}",
+    );
+}
+
+#[test]
+fn wrapped_live_message_stops_before_completed_history() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut()
+        .messages
+        .push(ChatMessage::Agent(format!(
+            "{}LIVE_WRAP_BOTTOM",
+            "word ".repeat(1_000),
+        )));
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "OLDER_COMPLETED_TURN".into(),
+        details: vec![ChatMessage::Agent("older detail".into())],
+        expanded: true,
+        trailing_marker: None,
+    });
+
+    crate::ui::chat::reset_completed_turn_line_build_count();
+    let rendered = render_to_text(&mut app, 40, 10);
+
+    assert!(rendered.contains("LIVE_WRAP_BOTTOM"));
+    assert!(!rendered.contains("OLDER_COMPLETED_TURN"));
+    assert_eq!(
+        crate::ui::chat::completed_turn_line_build_count(),
+        0,
+        "wrapped live rows that fill the viewport must stop before completed history",
+    );
+}
+
+#[test]
+fn completed_turn_height_cache_invalidates_for_width_and_expansion() {
+    let mut app = test_app();
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "CACHE_INVALIDATION_PROMPT".into(),
+        details: vec![ChatMessage::Agent(
+            "detail text that wraps differently after the pane becomes narrow".repeat(4),
+        )],
+        expanded: false,
+        trailing_marker: None,
+    });
+
+    let collapsed = crate::ui::chat::estimated_block_height(&app, 80, 100);
+    crate::ui::chat::reset_completed_turn_line_build_count();
+    assert_eq!(
+        crate::ui::chat::estimated_block_height(&app, 80, 100),
+        collapsed,
+    );
+    assert_eq!(
+        crate::ui::chat::completed_turn_line_build_count(),
+        0,
+        "unchanged width and content must use the cached height",
+    );
+
+    app.current_tab_mut().toggle_completed_turn(0);
+    crate::ui::chat::reset_completed_turn_line_build_count();
+    let expanded = crate::ui::chat::estimated_block_height(&app, 80, 100);
+    assert!(expanded > collapsed);
+    assert_eq!(crate::ui::chat::completed_turn_line_build_count(), 1);
+
+    crate::ui::chat::reset_completed_turn_line_build_count();
+    let narrow = crate::ui::chat::estimated_block_height(&app, 30, 100);
+    assert!(narrow > expanded);
+    assert_eq!(
+        crate::ui::chat::completed_turn_line_build_count(),
+        1,
+        "a width change must invalidate cached wrapping",
+    );
+}
+
+#[test]
+fn completed_turn_height_estimate_tracks_cache_updates_and_width() {
+    let mut tab = TabSession::default();
+    for index in 0..4 {
+        tab.completed_turns.push(CompletedTurn {
+            prompt: format!("ESTIMATED_HEIGHT_TURN_{index}"),
+            details: Vec::new(),
+            expanded: false,
+            trailing_marker: None,
+        });
+    }
+
+    assert_eq!(
+        tab.estimated_completed_turn_height(80),
+        4,
+        "without measurements, every turn contributes its one-row minimum",
+    );
+
+    tab.cache_completed_turn_height(0, 80, 3);
+    tab.cache_completed_turn_height(1, 80, 5);
+    assert_eq!(
+        tab.estimated_completed_turn_height(80),
+        16,
+        "unknown turns use the rounded-up mean of known heights",
+    );
+
+    tab.cache_completed_turn_height(1, 80, 7);
+    assert_eq!(
+        tab.estimated_completed_turn_height(80),
+        20,
+        "replacing a cached height must update rather than double-count it",
+    );
+
+    tab.invalidate_completed_turn_height(0);
+    assert_eq!(
+        tab.estimated_completed_turn_height(80),
+        28,
+        "invalidated heights must leave both aggregate count and sum",
+    );
+    assert_eq!(
+        tab.estimated_completed_turn_height(40),
+        4,
+        "changing wrap width must discard incompatible measurements",
+    );
+}
+
+#[test]
+fn scrollbar_metrics_map_bottom_based_offsets_to_ratatui_state() {
+    use crate::ui::chat::ScrollbarMetrics;
+
+    assert_eq!(crate::ui::chat::scrollbar_metrics(10, 10, 0), None);
+    assert_eq!(
+        crate::ui::chat::scrollbar_metrics(100, 20, 0),
+        Some(ScrollbarMetrics {
+            content_length: 81,
+            position: 80,
+        }),
+    );
+    assert_eq!(
+        crate::ui::chat::scrollbar_metrics(100, 20, 30),
+        Some(ScrollbarMetrics {
+            content_length: 81,
+            position: 50,
+        }),
+    );
+    assert_eq!(
+        crate::ui::chat::scrollbar_metrics(100, 20, 80),
+        Some(ScrollbarMetrics {
+            content_length: 81,
+            position: 0,
+        }),
+    );
+    assert_eq!(
+        crate::ui::chat::scrollbar_metrics(100, 20, usize::MAX),
+        Some(ScrollbarMetrics {
+            content_length: 81,
+            position: 0,
+        }),
+        "overscroll must clamp to the top",
+    );
+}
+
+#[test]
+fn collapsing_old_turn_immediately_restores_newer_collapsed_turn() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    for index in 0..2 {
+        app.current_tab_mut().completed_turns.push(CompletedTurn {
+            prompt: format!("COLLAPSE_SCROLL_TURN_{index}"),
+            details: vec![ChatMessage::Agent("detail\n".repeat(20))],
+            expanded: false,
+            trailing_marker: None,
+        });
+    }
+
+    let initial = render_to_text(&mut app, 80, 8);
+    assert!(initial.contains("COLLAPSE_SCROLL_TURN_0"));
+    assert!(initial.contains("COLLAPSE_SCROLL_TURN_1"));
+
+    app.current_tab_mut().select_completed_turn(0);
+    app.current_tab_mut().toggle_selected_completed_turn();
+    render_to_text(&mut app, 80, 8);
+    assert!(
+        app.current_tab().chat_scroll.offset > 0,
+        "expanding the old turn must scroll enough to keep its header visible",
+    );
+
+    app.current_tab_mut().toggle_selected_completed_turn();
+    let collapsed = render_to_text(&mut app, 80, 8);
+    assert!(collapsed.contains("COLLAPSE_SCROLL_TURN_0"));
+    assert!(
+        collapsed.contains("COLLAPSE_SCROLL_TURN_1"),
+        "the newer collapsed turn must return on the first frame after collapse:\n{collapsed}",
+    );
+    assert_eq!(
+        app.current_tab().chat_scroll.offset,
+        0,
+        "the collapsed two-row history fits in the viewport",
+    );
+}
+
+#[test]
+fn expanding_completed_turn_keeps_prompt_and_older_buffer_rows_anchored() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    for index in 0..4 {
+        app.current_tab_mut().completed_turns.push(CompletedTurn {
+            prompt: format!("ANCHOR_TOGGLE_TURN_{index}"),
+            details: vec![ChatMessage::Agent("expanded detail\n".repeat(20))],
+            expanded: false,
+            trailing_marker: None,
+        });
+    }
+
+    let initial = render_to_text(&mut app, 80, 16);
+    let row_of = |rendered: &str, index: usize| {
+        rendered
+            .lines()
+            .position(|line| line.contains(&format!("ANCHOR_TOGGLE_TURN_{index}")))
+            .expect("anchored prompt must be visible")
+    };
+    let anchored_rows = (0..=1)
+        .map(|index| row_of(&initial, index))
+        .collect::<Vec<_>>();
+
+    app.current_tab_mut().select_completed_turn(1);
+    render_to_text(&mut app, 80, 16);
+    app.current_tab_mut().toggle_selected_completed_turn();
+    let expanded = render_to_text(&mut app, 80, 16);
+    for (index, expected_row) in anchored_rows.iter().copied().enumerate() {
+        assert_eq!(
+            row_of(&expanded, index),
+            expected_row,
+            "expanding turn 1 must not move its prompt or older buffer row {index}",
+        );
+    }
+
+    app.current_tab_mut().toggle_selected_completed_turn();
+    let collapsed = render_to_text(&mut app, 80, 16);
+    for (index, expected_row) in anchored_rows.iter().copied().enumerate() {
+        assert_eq!(
+            row_of(&collapsed, index),
+            expected_row,
+            "collapsing turn 1 must restore without moving older buffer row {index}",
+        );
+    }
+}
+
+#[test]
+fn wheel_up_does_not_hide_collapsed_turns_when_history_fits() {
+    use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    for index in 0..2 {
+        app.current_tab_mut().completed_turns.push(CompletedTurn {
+            prompt: format!("FITTING_SCROLL_TURN_{index}"),
+            details: vec![ChatMessage::Agent("detail".into())],
+            expanded: false,
+            trailing_marker: None,
+        });
+    }
+
+    let initial = render_to_text(&mut app, 80, 8);
+    assert!(initial.contains("FITTING_SCROLL_TURN_0"));
+    assert!(initial.contains("FITTING_SCROLL_TURN_1"));
+
+    app.handle_event(AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    }));
+    let after_scroll = render_to_text(&mut app, 80, 8);
+
+    assert_eq!(app.current_tab().chat_scroll.offset, 0);
+    assert!(after_scroll.contains("FITTING_SCROLL_TURN_0"));
+    assert!(
+        after_scroll.contains("FITTING_SCROLL_TURN_1"),
+        "overscroll must not virtualize a row when all history fits:\n{after_scroll}",
+    );
+}
+
+#[test]
+fn chat_scrollbar_appears_only_for_overflow_and_tracks_scroll_position() {
+    let mut fitting = test_app();
+    fitting.state = ConnectionState::Connected;
+    fitting
+        .current_tab_mut()
+        .completed_turns
+        .push(CompletedTurn {
+            prompt: "SCROLLBAR_FITTING_TURN".into(),
+            details: Vec::new(),
+            expanded: false,
+            trailing_marker: None,
+        });
+    let fitting_buffer = render_to_buffer(&mut fitting, 80, 16);
+    assert!(
+        !fitting_buffer
+            .content
+            .iter()
+            .any(|cell| cell.symbol() == "┃"),
+        "the scrollbar must stay hidden when all chat content fits",
+    );
+
+    let mut overflowing = test_app();
+    overflowing.state = ConnectionState::Connected;
+    for index in 0..80 {
+        overflowing
+            .current_tab_mut()
+            .completed_turns
+            .push(CompletedTurn {
+                prompt: format!("SCROLLBAR_OVERFLOW_TURN_{index}"),
+                details: Vec::new(),
+                expanded: false,
+                trailing_marker: None,
+            });
+    }
+
+    let thumb_rows = |buffer: &ratatui::buffer::Buffer| {
+        (0..buffer.area.height)
+            .filter(|row| {
+                buffer
+                    .cell((buffer.area.width - 1, *row))
+                    .is_some_and(|cell| cell.symbol() == "┃")
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let bottom_buffer = render_to_buffer(&mut overflowing, 80, 16);
+    let bottom_thumb = thumb_rows(&bottom_buffer);
+    assert!(
+        !bottom_thumb.is_empty(),
+        "overflowing chat must paint a scrollbar in the right padding",
+    );
+    let input_top = (0..bottom_buffer.area.height)
+        .find(|row| {
+            bottom_buffer
+                .cell((bottom_buffer.area.width - 1, *row))
+                .is_some_and(|cell| cell.symbol() == "┐")
+        })
+        .expect("input dialog must paint its top-right corner");
+    assert_eq!(
+        bottom_thumb.last().copied(),
+        input_top.checked_sub(1),
+        "bottom scroll position must place the thumb against the end of the chat track",
+    );
+
+    overflowing.current_tab_mut().chat_scroll.offset = 30;
+    let scrolled_buffer = render_to_buffer(&mut overflowing, 80, 16);
+    let scrolled_thumb = thumb_rows(&scrolled_buffer);
+    assert!(!scrolled_thumb.is_empty());
+    assert!(
+        scrolled_thumb[0] < bottom_thumb[0],
+        "scrolling toward older turns must move the thumb upward",
+    );
+}
+
+#[test]
+fn completed_turn_toggle_render_is_stable_after_first_frame() {
+    let _locale = crate::test_support::lock_locale();
+    for height in 6..=16 {
+        for selected_index in 0..4 {
+            let mut app = test_app();
+            app.state = ConnectionState::Connected;
+            for index in 0..4 {
+                app.current_tab_mut().completed_turns.push(CompletedTurn {
+                    prompt: format!("STABLE_TOGGLE_TURN_{index}"),
+                    details: vec![ChatMessage::Agent("detail\n".repeat(20))],
+                    expanded: false,
+                    trailing_marker: None,
+                });
+            }
+            render_to_text(&mut app, 80, height);
+
+            app.current_tab_mut().select_completed_turn(selected_index);
+            app.current_tab_mut().toggle_selected_completed_turn();
+            let first_expanded = render_to_text(&mut app, 80, height);
+            let second_expanded = render_to_text(&mut app, 80, height);
+            assert_eq!(
+                first_expanded, second_expanded,
+                "expanded render changed without an event at height={height}, turn={selected_index}",
+            );
+
+            app.current_tab_mut().toggle_selected_completed_turn();
+            let first_collapsed = render_to_text(&mut app, 80, height);
+            let second_collapsed = render_to_text(&mut app, 80, height);
+            assert_eq!(
+                first_collapsed, second_collapsed,
+                "collapsed render changed without an event at height={height}, turn={selected_index}",
+            );
+        }
+    }
+}
+
+#[test]
+fn completed_tool_output_update_invalidates_cached_turn_height() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    bind_test_session(&mut app, DEFAULT_TAB_ID);
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "TERMINAL_CACHE_PROMPT".into(),
+        details: vec![ChatMessage::ToolCall {
+            id: "terminal-cache-tool".into(),
+            query: None,
+            title: "Run cached command".into(),
+            status: "Completed".into(),
+            kind: ToolCallKind::Execute,
+            location: Some("echo cached".into()),
+            location_is_command: true,
+            cwd: None,
+            output: None,
+            exit_code: None,
+            content: vec![ToolCallContent::Terminal {
+                id: "terminal-cache-id".into(),
+                output: None,
+                exit_code: None,
+            }],
+            locations: Vec::new(),
+        }],
+        expanded: true,
+        trailing_marker: None,
+    });
+    app.current_tab_mut().toggle_completed_tool_call(0, 0);
+    render_to_text(&mut app, 80, 20);
+
+    app.handle_event(AppEvent::ToolTerminalOutput {
+        session_id: DEFAULT_TAB_ID.into(),
+        terminal_id: "terminal-cache-id".into(),
+        output: ToolCallOutput {
+            text: concat!("TERMINAL_CACHE_NEW_OUTPUT", "\n", "second line").into(),
+            truncated: false,
+        },
+        exit_code: Some(0),
+    });
+
+    crate::ui::chat::reset_completed_turn_line_build_count();
+    let rendered = render_to_text(&mut app, 80, 20);
+    assert!(rendered.contains("TERMINAL_CACHE_NEW_OUTPUT"));
+    assert!(
+        crate::ui::chat::completed_turn_line_build_count() > 0,
+        "completed tool updates must invalidate the cached turn",
+    );
+}
+
+/// Render: when the pane is too short for a full permission card, the
+/// compact one-row fallback must paint the description and the `[Y/N]`
+/// hint. Lifts `render_compact` in `ui/permission.rs`.
+#[test]
+fn render_permission_compact_shows_hint() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().permission.push_back(PermissionState {
+        tool_call_id: "tool".into(),
+        description: "Run: echo PERM_COMPACT_XYZ".into(),
+        title: "Run: echo PERM_COMPACT_XYZ".into(),
+        kind_label: None,
+        target: None,
+        target_is_command: false,
+        options: vec![
+            PermOption {
+                id: "allow-once".into(),
+                name: "Allow once".into(),
+                kind: "AllowOnce".into(),
+            },
+            PermOption {
+                id: "reject-once".into(),
+                name: "Reject".into(),
+                kind: "RejectOnce".into(),
+            },
+        ],
+        selected: 0,
+        responder: None,
+    });
+    app.current_tab_mut()
+        .permission
+        .push_back(perm_with("QUEUED_COMPACT_2"));
+    app.current_tab_mut()
+        .permission
+        .push_back(perm_with("QUEUED_COMPACT_3"));
+
+    let text = render_to_text(&mut app, 80, 7);
+    assert!(
+        text.contains("PERM_COMPACT_XYZ"),
+        "the compact permission row must paint its description; rendered:\n{text}"
+    );
+    assert!(
+        text.contains("Y/N"),
+        "the compact permission row must paint the [Y/N] hint; rendered:\n{text}"
+    );
+    assert!(
+        text.contains("[1/3]"),
+        "the compact permission row must expose the pending count; rendered:\n{text}"
+    );
+}
+
+#[test]
+fn render_permission_queue_keeps_one_actionable_and_previews_the_rest() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    for description in [
+        "CURRENT_PERMISSION",
+        "QUEUED_PERMISSION_2",
+        "QUEUED_PERMISSION_3",
+        "QUEUED_PERMISSION_4",
+        "QUEUED_PERMISSION_5",
+        "QUEUED_PERMISSION_6",
+    ] {
+        app.current_tab_mut()
+            .permission
+            .push_back(perm_with(description));
+    }
+
+    let text = render_to_text(&mut app, 100, 30);
+    assert!(text.contains("[1/6]"), "rendered:\n{text}");
+    assert!(text.contains("CURRENT_PERMISSION"), "rendered:\n{text}");
+    assert!(text.contains("QUEUED_PERMISSION_2"), "rendered:\n{text}");
+    assert!(text.contains("QUEUED_PERMISSION_3"), "rendered:\n{text}");
+    assert!(text.contains("QUEUED_PERMISSION_4"), "rendered:\n{text}");
+    assert!(!text.contains("QUEUED_PERMISSION_5"), "rendered:\n{text}");
+    assert!(text.contains("+2"), "rendered:\n{text}");
+}
+
+#[test]
+fn render_recommendation_compact_keeps_summary_and_actions_visible() {
+    let _g = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    install_recs(&mut app, vec![rec_send("echo COMPACT_RECOMMENDATION_XYZ")]);
+
+    let text = render_to_text(&mut app, 80, 7);
+    assert!(
+        text.contains("COMPACT_RECOMMENDATION_XYZ"),
+        "compact recommendation must retain its selected summary; rendered:\n{text}"
+    );
+    let run_label = t!("recommendations.button_run_command").into_owned();
+    assert!(
+        text.contains(&run_label),
+        "compact recommendation must retain its primary action; rendered:\n{text}"
+    );
+    assert!(
+        text.contains('○') && !text.contains('✓'),
+        "compact recommendation must use the pending marker; rendered:\n{text}"
+    );
+}
+
+fn submit_autofix_prompt(app: &mut App, pane: &str) {
+    let tab_id = app.active_tab_key().to_string();
+    let session_id = app
+        .current_tab()
+        .session_id
+        .clone()
+        .unwrap_or_else(|| DEFAULT_TAB_ID.to_string());
+    app.current_tab_mut().session_id = Some(session_id.clone());
+    app.session_to_tab.insert(session_id.clone(), tab_id);
+    let gen = {
+        let tab = app.tab_mut(DEFAULT_TAB_ID);
+        tab.autofix.generation = tab.autofix.generation.wrapping_add(1);
+        tab.autofix.pane_id = Some(pane.into());
+        tab.autofix.generation
+    };
+    let prompt = SubmittedPrompt {
+        id: 99,
+        text: "diagnose this".into(),
+        submitted_at_unix_s: 0.0,
+        context: TurnContext::with_target_pane(pane),
+        autofix: Some(AutofixContext { generation: gen }),
+    };
+    app.turn_submit_prompt(&session_id, prompt);
+}
+
+/// Submit a manual-`/fix`-style autofix turn: an autofix context whose
+/// `target_pane_id` is empty (the App doesn't know the working pane until
+/// the client task resolves it and plumbs it back).
+fn submit_fix_prompt(app: &mut App, id: u64) {
+    let gen = {
+        let tab = app.tab_mut(DEFAULT_TAB_ID);
+        tab.autofix.generation = tab.autofix.generation.wrapping_add(1);
+        tab.autofix.generation
+    };
+    let prompt = SubmittedPrompt {
+        id,
+        text: String::new(),
+        submitted_at_unix_s: 0.0,
+        context: TurnContext::default(),
+        autofix: Some(AutofixContext { generation: gen }),
+    };
+    app.turn_submit_prompt(DEFAULT_TAB_ID, prompt);
+}
+
+fn fix_target_pane(app: &App) -> String {
+    app.current_tab()
+        .turn
+        .prompt()
+        .unwrap()
+        .context
+        .target_pane_id
+        .clone()
+        .unwrap_or_default()
+}
+
+#[test]
+fn fix_target_pane_is_late_bound_by_prompt_id() {
+    let mut app = test_app();
+    submit_fix_prompt(&mut app, 42);
+    assert_eq!(fix_target_pane(&app), "", "starts unbound");
+
+    // A resolution for a different prompt id (a superseded /fix) is ignored.
+    app.apply_prompt_target_resolved(Some(DEFAULT_TAB_ID.into()), 7, "pane-X".into());
+    assert_eq!(fix_target_pane(&app), "", "stale prompt_id must not patch");
+
+    // An empty pane id is a no-op.
+    app.apply_prompt_target_resolved(Some(DEFAULT_TAB_ID.into()), 42, String::new());
+    assert_eq!(fix_target_pane(&app), "", "empty pane id is ignored");
+
+    // The matching prompt id binds the resolved working pane.
+    app.apply_prompt_target_resolved(Some(DEFAULT_TAB_ID.into()), 42, "pane-7".into());
+    assert_eq!(
+        fix_target_pane(&app),
+        "pane-7",
+        "matching id binds the pane"
+    );
+    assert_eq!(
+        app.current_tab()
+            .turn
+            .prompt()
+            .unwrap()
+            .context
+            .target_pane_id
+            .as_deref(),
+        Some("pane-7")
+    );
+}
+
+#[test]
+fn manual_fix_uses_the_helpers_captured_source_target() {
+    let mut app = test_app();
+    app.source_session_id = Some("captured-source-pane".into());
+
+    app.cmd_fix(false, String::new());
+
+    let prompt = app.current_tab().turn.prompt().unwrap();
+    assert_eq!(
+        prompt.context.target_pane_id.as_deref(),
+        Some("captured-source-pane")
+    );
+}
+
+#[test]
+fn prompt_target_binding_survives_tab_rename() {
+    let mut app = test_app();
+    submit_fix_prompt(&mut app, 42);
+    app.rename_tab_session(DEFAULT_TAB_ID, "renamed-tab", None);
+
+    app.apply_prompt_target_resolved(Some(DEFAULT_TAB_ID.into()), 42, "pane-7".into());
+
+    assert_eq!(
+        app.tab_sessions["renamed-tab"]
+            .turn
+            .prompt()
+            .unwrap()
+            .context
+            .target_pane_id
+            .as_deref(),
+        Some("pane-7")
+    );
+}
+
+#[test]
+fn submit_clears_messages_and_pushes_user_bubble() {
+    let mut app = test_app();
+    app.current_tab_mut()
+        .messages
+        .push(ChatMessage::System("stale".into()));
+    submit_test_prompt(&mut app, "hello");
+    let tab = app.current_tab();
+    assert!(matches!(tab.turn, TurnState::Submitted(_)));
+    assert!(
+        !tab.turn.accepts_new_prompt(),
+        "Submitted blocks new prompts"
+    );
+    assert_eq!(tab.messages.len(), 1, "stale System bubble was cleared");
+    assert!(matches!(tab.messages[0], ChatMessage::User(ref t) if t == "hello"));
+}
+
+#[test]
+fn first_message_chunk_transitions_to_streaming_with_transcript_text() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "hi");
+    assert!(app.current_tab().should_show_thinking());
+    let advanced = app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Message, "partial");
+    assert!(advanced, "first message chunk must advance the buffer");
+    assert_eq!(app.current_tab().streaming_agent_text(), Some("partial"));
+    assert!(app.current_tab().turn.is_streaming());
+    assert!(
+        !app.current_tab().should_show_thinking(),
+        "visible response text replaces the generic Thinking row"
+    );
+    app.current_tab_mut().reveal_chars = "partial".chars().count();
+    let rendered = render_to_text(&mut app, 80, 20);
+    assert!(rendered.contains("partial"));
+    assert!(!rendered.contains("Think · …"));
+    app.advance_reveal();
+    assert!(
+        !app.current_tab().should_show_thinking(),
+        "revealed response text does not need synthetic thinking content"
+    );
+}
+
+#[test]
+fn thought_phases_collapse_and_remain_in_order_after_answers_and_turn_end() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "hi");
+    let advanced = app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "thinking…");
+    assert!(advanced, "visible thought chunks advance the live buffer");
+    let tab = app.current_tab();
+    assert!(tab.turn.is_streaming());
+    assert_eq!(tab.streaming_agent_text(), None);
+    assert_eq!(tab.streaming_thought_text(), Some("thinking…"));
+    assert!(!tab.should_show_thinking());
+    assert!(render_to_text(&mut app, 80, 20).contains("│ thinking…"));
+
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Message, "Final answer");
+    let tab = app.current_tab();
+    assert_eq!(tab.streaming_thought_text(), None);
+    assert_eq!(tab.streaming_agent_text(), Some("Final answer"));
+    app.current_tab_mut().reveal_chars = "Final answer".chars().count();
+    let reveal_chars = app.current_tab().reveal_chars;
+    assert!(app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "late visible thought"));
+    assert_eq!(
+        app.current_tab().streaming_thought_text(),
+        Some("late visible thought")
+    );
+    assert_eq!(
+        app.current_tab().reveal_chars,
+        reveal_chars,
+        "late thought chunks must not rewind visible response text"
+    );
+    let rendered = render_to_text(&mut app, 80, 20);
+    assert!(rendered.contains("Final"));
+    assert!(!rendered.contains("thinking"));
+    assert!(rendered.contains("│ late visible thought"));
+
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: DEFAULT_TAB_ID.into(),
+    });
+    assert_eq!(app.current_tab().streaming_thought_text(), None);
+    let rendered = render_to_text(&mut app, 80, 20);
+    assert!(!rendered.contains("late visible thought"));
+    let details = &app.current_tab().completed_turns[0].details;
+    assert!(
+        matches!(&details[0], ChatMessage::Thought { text, expanded: false, duration_ms: Some(_), .. } if text == "thinking…")
+    );
+    assert!(matches!(&details[1], ChatMessage::Agent(text) if text == "Final answer"));
+    assert!(
+        matches!(&details[2], ChatMessage::Thought { text, expanded: false, .. } if text == "late visible thought")
+    );
+    assert!(app.current_tab_mut().toggle_thought(0, 0, false));
+    let reopened = render_to_text(&mut app, 80, 20);
+    assert!(reopened.contains("│ thinking…"));
+    assert!(!reopened.contains("late visible thought"));
+}
+
+#[test]
+fn thought_mouse_headers_toggle_live_and_completed_without_body_hits() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_test_prompt(&mut app, "inspect");
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "PRIVATE_REASONING_BODY");
+    let send = |app: &mut App, kind, hit: CompletedTurnHitRegion, column, row| {
+        assert!(hit.start_column < hit.end_column);
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    };
+    for active in [true, false] {
+        render_to_text(&mut app, 80, 24);
+        let hit = *app
+            .completed_turn_hits
+            .iter()
+            .find(|hit| {
+                matches!(hit.kind,
+                    CompletedTurnHitKind::Thought { active: hit_active, .. } if hit_active == active
+                )
+            })
+            .expect("visible thought header");
+        assert!(app
+            .completed_turn_action_links
+            .iter()
+            .any(|link| link.start_column == hit.start_column
+                && link.end_column == hit.end_column
+                && link.row == hit.row));
+        // The body and trailing whitespace are not action links.
+        assert!(!app
+            .completed_turn_hits
+            .iter()
+            .any(|region| region.contains(hit.start_column, hit.row + 1)));
+        send(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            hit,
+            hit.start_column,
+            hit.row,
+        );
+        send(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            hit,
+            hit.start_column + 1,
+            hit.row,
+        );
+        send(
+            &mut app,
+            MouseEventKind::Up(MouseButton::Left),
+            hit,
+            hit.start_column,
+            hit.row,
+        );
+        let expected_visible = active;
+        assert_eq!(
+            render_to_text(&mut app, 80, 24).contains("PRIVATE_REASONING_BODY"),
+            expected_visible
+        );
+        for visible in [!expected_visible, expected_visible] {
+            app.text_selection.clear();
+            let hit = *app.completed_turn_hits.iter().find(|hit| matches!(hit.kind,
+                CompletedTurnHitKind::Thought { active: hit_active, .. } if hit_active == active
+            )).unwrap();
+            send(
+                &mut app,
+                MouseEventKind::Down(MouseButton::Left),
+                hit,
+                hit.end_column - 1,
+                hit.row,
+            );
+            send(
+                &mut app,
+                MouseEventKind::Up(MouseButton::Left),
+                hit,
+                hit.end_column - 1,
+                hit.row,
+            );
+            assert_eq!(
+                render_to_text(&mut app, 80, 24).contains("PRIVATE_REASONING_BODY"),
+                visible
+            );
+        }
+        if active {
+            app.handle_event(AppEvent::AgentMessageEnd {
+                session_id: DEFAULT_TAB_ID.into(),
+            });
+        }
+    }
+}
+
+#[test]
+fn thought_mouse_release_tracks_identity_after_tool_removal() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_test_prompt(&mut app, "inspect");
+    app.handle_event(AppEvent::ToolCall {
+        session_id: DEFAULT_TAB_ID.into(),
+        id: "hidden-tool".into(),
+        title: "Preparing command".into(),
+        status: "InProgress".into(),
+        kind: ToolCallKind::Other,
+        query: None,
+        location: None,
+        location_is_command: false,
+        cwd: None,
+        output: None,
+        exit_code: None,
+        content: Vec::new(),
+        locations: Vec::new(),
+    });
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "retained thought");
+    let find_header = |app: &mut App| {
+        render_to_text(app, 80, 24);
+        *app.completed_turn_hits
+            .iter()
+            .find(|hit| matches!(hit.kind, CompletedTurnHitKind::Thought { active: true, .. }))
+            .unwrap()
+    };
+    let mouse = |kind, hit: CompletedTurnHitRegion| {
+        AppEvent::Mouse(MouseEvent {
+            kind,
+            column: hit.start_column,
+            row: hit.row,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    let pressed = find_header(&mut app);
+    app.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), pressed));
+    app.handle_event(AppEvent::HideToolCall {
+        session_id: DEFAULT_TAB_ID.into(),
+        id: "hidden-tool".into(),
+    });
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, " continued");
+    let released = find_header(&mut app);
+    let CompletedTurnHitKind::Thought {
+        id: pressed_id,
+        detail_index: old_index,
+        ..
+    } = pressed.kind
+    else {
+        panic!("thought header");
+    };
+    let CompletedTurnHitKind::Thought {
+        id, detail_index, ..
+    } = released.kind
+    else {
+        panic!("thought header");
+    };
+    assert_eq!(id, pressed_id);
+    assert_eq!(detail_index + 1, old_index);
+    app.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), released));
+    assert!(matches!(&app.current_tab().messages[detail_index],
+        ChatMessage::Thought { text, expanded: false, .. } if text == "retained thought continued"));
+}
+
+#[test]
+fn thought_mouse_release_rejects_replacement_reordering_and_new_turn() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    for change in ["replacement", "reordering", "new turn", "stale geometry"] {
+        let mut app = test_app();
+        app.state = ConnectionState::Connected;
+        submit_test_prompt(&mut app, "inspect");
+        app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "same text");
+        let find_header = |app: &mut App| {
+            render_to_text(app, 80, 24);
+            *app.completed_turn_hits
+                .iter()
+                .find(|hit| matches!(hit.kind, CompletedTurnHitKind::Thought { active: true, .. }))
+                .unwrap()
+        };
+        let mouse = |kind, hit: CompletedTurnHitRegion| {
+            AppEvent::Mouse(MouseEvent {
+                kind,
+                column: hit.start_column,
+                row: hit.row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        let pressed = find_header(&mut app);
+        app.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), pressed));
+        match change {
+            "new turn" => {
+                app.handle_event(AppEvent::AgentMessageEnd {
+                    session_id: DEFAULT_TAB_ID.into(),
+                });
+                submit_test_prompt(&mut app, "another turn");
+                app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "same text");
+            }
+            "reordering" => {
+                app.current_tab_mut().finish_thought();
+                app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "same text");
+                let tab = app.current_tab_mut();
+                let last = tab.messages.len() - 1;
+                tab.messages.swap(last - 1, last);
+            }
+            _ => {
+                app.current_tab_mut().finish_thought();
+                app.current_tab_mut().messages.pop();
+                app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "same text");
+            }
+        }
+        let released = if change == "reordering" {
+            render_to_text(&mut app, 80, 24);
+            *app.completed_turn_hits
+                .iter()
+                .find(|hit| {
+                    matches!((hit.kind, pressed.kind),
+                    (CompletedTurnHitKind::Thought { detail_index, active: true, .. },
+                     CompletedTurnHitKind::Thought { detail_index: old_index, .. })
+                        if detail_index == old_index)
+                })
+                .unwrap()
+        } else if change == "stale geometry" {
+            pressed
+        } else {
+            find_header(&mut app)
+        };
+        let before = app.current_tab().messages.clone();
+        app.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), released));
+        assert_eq!(app.current_tab().messages, before, "{change}");
+    }
+}
+
+#[test]
+fn thought_legacy_cache_assigns_unique_identity_and_preserves_state() {
+    let legacy = r#"{"Thought":{"text":"cached reasoning","expanded":true,"duration_ms":3000}}"#;
+    let first: ChatMessage = serde_json::from_str(legacy).unwrap();
+    let second: ChatMessage = serde_json::from_str(legacy).unwrap();
+    let ChatMessage::Thought {
+        id,
+        text,
+        expanded,
+        duration_ms,
+    } = &first
+    else {
+        panic!("cached thought");
+    };
+    assert_eq!(text, "cached reasoning");
+    assert!(*expanded);
+    assert_eq!(*duration_ms, Some(3000));
+    assert!(matches!(second, ChatMessage::Thought { id: other, .. } if *id != other));
+    let restored: ChatMessage =
+        serde_json::from_str(&serde_json::to_string(&first).unwrap()).unwrap();
+    assert_eq!(restored, first);
+}
+
+#[test]
+fn thought_keyboard_toggles_active_selected_and_latest_turn_only() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    let key = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    for prompt in ["first", "second"] {
+        submit_test_prompt(&mut app, prompt);
+        app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, prompt);
+        app.handle_key(key);
+        assert!(matches!(
+            app.current_tab().messages.last(),
+            Some(ChatMessage::Thought {
+                expanded: false,
+                ..
+            })
+        ));
+        app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, " more");
+        assert!(matches!(
+            app.current_tab().messages.last(),
+            Some(ChatMessage::Thought {
+                expanded: false,
+                ..
+            })
+        ));
+        app.handle_event(AppEvent::AgentMessageEnd {
+            session_id: DEFAULT_TAB_ID.into(),
+        });
+    }
+    app.handle_key(key);
+    assert!(matches!(
+        app.current_tab().completed_turns[0].details[0],
+        ChatMessage::Thought {
+            expanded: false,
+            ..
+        }
+    ));
+    assert!(matches!(
+        app.current_tab().completed_turns[1].details[0],
+        ChatMessage::Thought { expanded: true, .. }
+    ));
+    app.current_tab_mut().select_completed_turn(0);
+    app.current_tab_mut().completed_turns[0].expanded = false;
+    app.handle_key(key);
+    assert!(app.current_tab().completed_turns[0].expanded);
+    assert!(matches!(
+        app.current_tab().completed_turns[0].details[0],
+        ChatMessage::Thought { expanded: true, .. }
+    ));
+    assert!(matches!(
+        app.current_tab().completed_turns[1].details[0],
+        ChatMessage::Thought { expanded: true, .. }
+    ));
+}
+
+#[test]
+fn thought_phase_duration_cancel_clear_and_unicode_retention() {
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "inspect");
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, &"😀思".repeat(2100));
+    app.current_tab_mut().streaming_thought =
+        Some(std::time::Instant::now() - std::time::Duration::from_secs(3));
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "");
+    let message = app.current_tab().messages.last().unwrap();
+    let ChatMessage::Thought {
+        text,
+        duration_ms: Some(duration),
+        expanded,
+        ..
+    } = message
+    else {
+        panic!("finished thought")
+    };
+    assert_eq!(text.chars().count(), 4000);
+    assert!((3000..4000).contains(duration));
+    assert!(!expanded);
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "second phase");
+    app.turn_cancel(DEFAULT_TAB_ID);
+    let details = &app.current_tab().completed_turns[0].details;
+    assert_eq!(
+        details
+            .iter()
+            .filter(|message| matches!(
+                message,
+                ChatMessage::Thought {
+                    expanded: false,
+                    ..
+                }
+            ))
+            .count(),
+        2
+    );
+    let saved = serde_json::to_string(&app.current_tab().completed_turns[0]).unwrap();
+    let restored: CompletedTurn = serde_json::from_str(&saved).unwrap();
+    assert_eq!(restored, app.current_tab().completed_turns[0]);
+    assert!(!app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "late ignored"));
+    app.current_tab_mut().clear_chat_history();
+    app.current_tab_mut().clear_completed_turns();
+    assert!(app.current_tab().messages.is_empty());
+    assert!(app.current_tab().streaming_thought_text().is_none());
+    assert!(app.current_tab().completed_turns.is_empty());
+}
+
+#[test]
+fn thought_replay_preserves_order_without_fabricated_duration() {
+    let mut app = test_app();
+    bind_test_session(&mut app, DEFAULT_TAB_ID);
+    app.current_tab_mut().loading_session = true;
+    app.current_tab_mut().loading_target_session_id = Some(DEFAULT_TAB_ID.into());
+    app.handle_event(AppEvent::UserMessageReplayChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        message_id: Some("one".into()),
+        text: "question".into(),
+    });
+    for text in ["replayed ", "thought"] {
+        app.handle_event(AppEvent::AgentThoughtChunk {
+            session_id: DEFAULT_TAB_ID.into(),
+            text: text.into(),
+        });
+    }
+    app.handle_event(AppEvent::AgentMessageChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: "answer".into(),
+    });
+    app.handle_event(AppEvent::AgentThoughtChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: "after answer".into(),
+    });
+    app.current_tab_mut().flush_load_replay_pending();
+    app.current_tab_mut().pack_replayed_messages_into_turns();
+    let details = &app.current_tab().completed_turns[0].details;
+    assert_eq!(details.len(), 3);
+    assert!(
+        matches!(&details[0], ChatMessage::Thought { text, expanded: false, duration_ms: None, .. } if text == "replayed thought")
+    );
+    assert!(matches!(&details[1], ChatMessage::Agent(text) if text == "answer"));
+    assert!(
+        matches!(&details[2], ChatMessage::Thought { text, expanded: false, duration_ms: None, .. } if text == "after answer")
+    );
+}
+
+#[test]
+fn thought_session_isolation_and_stale_mouse_release() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_test_prompt(&mut app, "first tab");
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "first tab thought");
+    render_to_text(&mut app, 80, 24);
+    let hit = *app
+        .completed_turn_hits
+        .iter()
+        .find(|hit| matches!(hit.kind, CompletedTurnHitKind::Thought { active: true, .. }))
+        .unwrap();
+    let mouse = |kind| {
+        AppEvent::Mouse(MouseEvent {
+            kind,
+            column: hit.start_column,
+            row: hit.row,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    app.handle_event(mouse(MouseEventKind::Down(MouseButton::Left)));
+    app.switch_tab_session("second-tab".into());
+    bind_test_session(&mut app, "second-session");
+    submit_test_prompt(&mut app, "second tab");
+    app.turn_observe_chunk("second-session", ChunkKind::Thought, "second tab thought");
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, " continued");
+    assert_eq!(
+        app.current_tab().streaming_thought_text(),
+        Some("second tab thought")
+    );
+    app.switch_tab_session(DEFAULT_TAB_ID.into());
+    render_to_text(&mut app, 80, 24);
+    app.handle_event(mouse(MouseEventKind::Up(MouseButton::Left)));
+    assert_eq!(
+        app.current_tab().streaming_thought_text(),
+        Some("first tab thought continued")
+    );
+    assert!(matches!(
+        app.current_tab().messages.last(),
+        Some(ChatMessage::Thought { expanded: true, .. })
+    ));
+    app.text_selection.clear();
+    app.handle_event(mouse(MouseEventKind::Down(MouseButton::Left)));
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: DEFAULT_TAB_ID.into(),
+    });
+    render_to_text(&mut app, 80, 24);
+    app.handle_event(mouse(MouseEventKind::Up(MouseButton::Left)));
+    assert!(matches!(
+        app.current_tab().completed_turns[0].details[0],
+        ChatMessage::Thought {
+            expanded: false,
+            ..
+        }
+    ));
+    app.switch_tab_session("second-tab".into());
+    app.current_tab_mut().clear_chat_history();
+    assert!(!app.turn_observe_chunk("second-session", ChunkKind::Thought, "discard after clear"));
+    assert!(app.current_tab().messages.is_empty());
+}
+
+#[test]
+fn live_thought_buffer_is_bounded_without_splitting_unicode() {
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "hi");
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, &"思".repeat(4100));
+
+    assert_eq!(
+        app.current_tab()
+            .streaming_thought_text()
+            .expect("thought stream")
+            .chars()
+            .count(),
+        4000
+    );
+}
+
+#[test]
+fn whitespace_thought_keeps_only_generic_thinking_activity() {
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "hi");
+
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, " ");
+
+    let tab = app.current_tab();
+    assert!(tab.should_show_thinking());
+    assert_eq!(crate::ui::chat::pending_render_text(tab), None);
+}
+
+#[test]
+fn bounded_late_thought_does_not_rewind_revealed_assistant_response() {
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "hi");
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Message, "Final answer");
+    app.current_tab_mut().reveal_chars = "Final answer".chars().count();
+    let reveal_chars = app.current_tab().reveal_chars;
+
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, &"思".repeat(4100));
+
+    let tab = app.current_tab();
+    assert_eq!(
+        tab.streaming_thought_text()
+            .expect("late thought stream")
+            .chars()
+            .count(),
+        4000
+    );
+    assert_eq!(
+        tab.reveal_chars, reveal_chars,
+        "bounding a late thought must not rewind fully revealed response text"
+    );
+}
+
+#[test]
+fn structured_stream_hides_thinking_after_response_is_visible() {
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "hi");
+    app.turn_observe_chunk(
+        DEFAULT_TAB_ID,
+        ChunkKind::Message,
+        r#"{"kind":"explanation""#,
+    );
+    app.advance_reveal();
+    assert!(!app.current_tab().should_show_thinking());
+
+    app.turn_observe_chunk(
+        DEFAULT_TAB_ID,
+        ChunkKind::Message,
+        r#","explanation":"Visible answer"}"#,
+    );
+    app.advance_reveal();
+    assert!(!app.current_tab().should_show_thinking());
+}
+
+#[test]
+fn running_tool_replaces_thinking_until_tool_completes() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "inspect");
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "Choosing files");
+    app.handle_event(AppEvent::ToolCall {
+        session_id: DEFAULT_TAB_ID.into(),
+        query: None,
+        id: "tool".into(),
+        title: "Find files".into(),
+        status: "InProgress".into(),
+        kind: ToolCallKind::Search,
+        location: None,
+        location_is_command: false,
+        cwd: None,
+        output: None,
+        exit_code: None,
+        content: Vec::new(),
+        locations: Vec::new(),
+    });
+    assert!(
+        !app.current_tab().should_show_thinking(),
+        "the running tool card is already visible progress"
+    );
+    assert_eq!(app.current_tab().streaming_thought_text(), None);
+    assert_eq!(
+        crate::ui::chat::pending_render_text(app.current_tab()),
+        None
+    );
+    assert!(
+        !render_to_text(&mut app, 80, 20).contains("Think · …"),
+        "tool activity must not invent thinking content in the transcript"
+    );
+
+    app.handle_event(AppEvent::ToolCallUpdate {
+        session_id: DEFAULT_TAB_ID.into(),
+        query: None,
+        id: "tool".into(),
+        title: None,
+        status: Some("Completed".into()),
+        kind: None,
+        location: None,
+        location_is_command: false,
+        output: None,
+        content: None,
+        locations: None,
+        cwd: None,
+        exit_code: None,
+    });
+    assert!(
+        app.current_tab().should_show_thinking(),
+        "after tool completion the generic row indicates that the Agent is still responding"
+    );
+}
+
+fn search_tool_message(id: &str, status: &str, query: &str) -> ChatMessage {
+    ChatMessage::ToolCall {
+        id: id.into(),
+        title: "Searching for 'As of September...'".into(),
+        status: status.into(),
+        kind: ToolCallKind::Search,
+        query: Some(ToolCallOutput {
+            text: query.into(),
+            truncated: false,
+        }),
+        location: None,
+        location_is_command: false,
+        cwd: None,
+        output: Some(ToolCallOutput {
+            text: format!("RESULT_{id}"),
+            truncated: false,
+        }),
+        exit_code: None,
+        content: Vec::new(),
+        locations: Vec::new(),
+    }
+}
+
+fn click_tool_hit(app: &mut App, hit: CompletedTurnHitRegion) {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    app.text_selection.clear();
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column: hit.end_column - 1,
+            row: hit.row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+}
+
+#[test]
+fn active_search_and_thought_share_disclosure_geometry_and_keyboard_toggle() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_test_prompt(&mut app, "inspect");
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "retained reasoning");
+    app.current_tab_mut().finish_thought();
+    app.current_tab_mut().messages.extend([
+        search_tool_message("one", "Completed", "FIRST_QUERY"),
+        search_tool_message("two", "Completed", "SECOND_QUERY"),
+    ]);
+    let compact = render_to_text(&mut app, 48, 40);
+    assert!(!compact.contains("retained reasoning"));
+    assert!(!compact.contains("FIRST_QUERY"));
+    assert_eq!(app.completed_turn_hits.len(), 2);
+    assert!(app
+        .completed_turn_hits
+        .iter()
+        .any(|hit| matches!(hit.kind, CompletedTurnHitKind::Thought { active: true, .. })));
+    assert!(app.completed_turn_hits.iter().any(|hit| matches!(
+        hit.kind,
+        CompletedTurnHitKind::ActiveToolGroup {
+            detail_count: 2,
+            ..
+        }
+    )));
+
+    for active in [true, false] {
+        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        let expanded = render_to_text(&mut app, 48, 40);
+        for text in [
+            "retained reasoning",
+            "FIRST_QUERY",
+            "SECOND_QUERY",
+            "RESULT_one",
+        ] {
+            assert!(expanded.contains(text), "{expanded}");
+        }
+        assert!(!expanded.contains("Think · …"));
+        let headers = app
+            .completed_turn_hits
+            .iter()
+            .filter(|hit| {
+                matches!(
+                    hit.kind,
+                    CompletedTurnHitKind::Thought { .. }
+                        | CompletedTurnHitKind::ActiveToolCall { .. }
+                        | CompletedTurnHitKind::ToolCall { .. }
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(headers.len(), 3);
+        for hit in headers {
+            assert!(app.completed_turn_action_links.iter().any(|link| {
+                link.start_column == hit.start_column
+                    && link.end_column == hit.end_column
+                    && link.row == hit.row
+                    && link.action == crate::action_links::CompletedTurnAction::Collapse
+            }));
+        }
+        if active {
+            assert!(app.current_tab().completed_turn_viewport_anchor().is_none());
+            assert_eq!(app.completed_turn_hits.len(), 3);
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        let collapsed = render_to_text(&mut app, 48, 40);
+        assert!(!collapsed.contains("retained reasoning"));
+        assert!(!collapsed.contains("FIRST_QUERY"));
+        if active {
+            app.handle_event(AppEvent::AgentMessageEnd {
+                session_id: DEFAULT_TAB_ID.into(),
+            });
+        }
+    }
+}
+
+#[test]
+fn search_and_thought_hit_rows_follow_scrolling_and_skipped_active_content() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    for index in 0..20 {
+        let id = format!("history-{index}");
+        app.current_tab_mut().completed_turns.push(CompletedTurn {
+            prompt: format!("history prompt {index}"),
+            details: vec![
+                ChatMessage::Thought {
+                    id: Default::default(),
+                    text: "retained history reasoning".into(),
+                    expanded: true,
+                    duration_ms: None,
+                },
+                search_tool_message(&id, "Completed", "history query with wrapped words"),
+            ],
+            expanded: true,
+            trailing_marker: None,
+        });
+        app.current_tab_mut()
+            .expanded_completed_tool_calls
+            .insert(id);
+    }
+    submit_test_prompt(&mut app, "active search");
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "active reasoning");
+    app.current_tab_mut().messages.push(search_tool_message(
+        "active",
+        "InProgress",
+        &"active query words ".repeat(40),
+    ));
+    app.current_tab_mut()
+        .expanded_completed_tool_calls
+        .insert("active".into());
+
+    let mut saw_active_thought = false;
+    let mut saw_active_tool = false;
+    let mut saw_history_thought = false;
+    let mut saw_history_tool = false;
+    for offset in (0..180).step_by(3) {
+        app.current_tab_mut().chat_scroll.offset = offset;
+        let buffer = render_to_buffer(&mut app, 48, 20);
+        for hit in &app.completed_turn_hits {
+            let marker = match hit.kind {
+                CompletedTurnHitKind::Thought { active, .. } => {
+                    saw_active_thought |= active;
+                    saw_history_thought |= !active;
+                    "▼"
+                }
+                CompletedTurnHitKind::ActiveToolCall { .. } => {
+                    saw_active_tool = true;
+                    "●"
+                }
+                CompletedTurnHitKind::ToolCall { .. } => {
+                    saw_history_tool = true;
+                    "✓"
+                }
+                _ => continue,
+            };
+            assert_eq!(
+                buffer.cell((hit.start_column, hit.row)).unwrap().symbol(),
+                marker
+            );
+            assert!(app.completed_turn_action_links.iter().any(|link| {
+                link.start_column == hit.start_column
+                    && link.end_column == hit.end_column
+                    && link.row == hit.row
+            }));
+        }
+    }
+    assert!(saw_active_thought && saw_active_tool && saw_history_thought && saw_history_tool);
+    app.current_tab_mut().select_completed_turn(0);
+    let oldest = render_to_text(&mut app, 48, 20);
+    assert!(oldest.contains("history prompt 0"), "{oldest}");
+    assert!(app.completed_turn_hits.iter().all(|hit| !matches!(
+        hit.kind,
+        CompletedTurnHitKind::Thought { active: true, .. }
+            | CompletedTurnHitKind::ActiveToolCall { .. }
+            | CompletedTurnHitKind::ActiveToolGroup { .. }
+    )));
+}
+
+#[test]
+fn active_tool_mouse_release_tracks_identity_after_earlier_tool_removal() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    for grouped in [false, true] {
+        let mut app = test_app();
+        app.state = ConnectionState::Connected;
+        submit_test_prompt(&mut app, "search");
+        app.current_tab_mut().messages.push(search_tool_message(
+            "hidden",
+            "InProgress",
+            "hidden query",
+        ));
+        app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "retained reasoning");
+        app.current_tab_mut().finish_thought();
+        app.current_tab_mut().messages.push(search_tool_message(
+            "one",
+            if grouped { "Completed" } else { "InProgress" },
+            "FIRST_QUERY",
+        ));
+        if grouped {
+            app.current_tab_mut().messages.push(search_tool_message(
+                "two",
+                "Completed",
+                "SECOND_QUERY",
+            ));
+        }
+        let find_header = |app: &mut App| {
+            render_to_text(app, 60, 40);
+            *app.completed_turn_hits
+                .iter()
+                .find(|hit| {
+                    let index = match hit.kind {
+                        CompletedTurnHitKind::ActiveToolCall { detail_index } => detail_index,
+                        CompletedTurnHitKind::ActiveToolGroup { first_detail_index, .. } => first_detail_index,
+                        _ => return false,
+                    };
+                    matches!(&app.current_tab().messages[index], ChatMessage::ToolCall { id, .. } if id == "one")
+                })
+                .unwrap()
+        };
+        let mouse = |kind, hit: CompletedTurnHitRegion| {
+            AppEvent::Mouse(MouseEvent {
+                kind,
+                column: hit.start_column,
+                row: hit.row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        let pressed = find_header(&mut app);
+        app.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), pressed));
+        app.handle_event(AppEvent::HideToolCall {
+            session_id: DEFAULT_TAB_ID.into(),
+            id: "hidden".into(),
+        });
+        let released = find_header(&mut app);
+        assert_ne!(pressed.kind, released.kind);
+        app.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), released));
+        assert!(app.current_tab().completed_tool_call_expanded("one"));
+        assert_eq!(
+            app.current_tab().completed_tool_call_expanded("two"),
+            grouped
+        );
+        assert!(app.current_tab().messages.iter().any(|message| matches!(
+            message,
+            ChatMessage::Thought {
+                expanded: false,
+                ..
+            }
+        )));
+    }
+}
+
+#[test]
+fn active_tool_query_wraps_retains_updates_and_follows_tool_into_history() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_test_prompt(&mut app, "search");
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "");
+    let query = format!(
+        "QUERY_START {} QUERY_END",
+        "provider supplied words ".repeat(10)
+    );
+    app.current_tab_mut()
+        .messages
+        .push(search_tool_message("search", "InProgress", &query));
+    if let Some(ChatMessage::ToolCall {
+        content,
+        output: Some(output),
+        ..
+    }) = app.current_tab_mut().messages.last_mut()
+    {
+        content.push(ToolCallContent::Text(output.clone()));
+    }
+    let compact = render_to_text(&mut app, 48, 40);
+    assert!(!compact.contains("QUERY_END"));
+    let hit = *app
+        .completed_turn_hits
+        .iter()
+        .find(|hit| matches!(hit.kind, CompletedTurnHitKind::ActiveToolCall { .. }))
+        .unwrap();
+    click_tool_hit(&mut app, hit);
+    let expanded = render_to_text(&mut app, 48, 40);
+    assert!(
+        expanded.contains("QUERY_START") && expanded.contains("QUERY_END"),
+        "{expanded}"
+    );
+    assert!(expanded.contains("RESULT_search"));
+    assert!(app.current_tab().completed_tool_call_expanded("search"));
+
+    app.handle_event(AppEvent::ToolCallUpdate {
+        session_id: DEFAULT_TAB_ID.into(),
+        id: "search".into(),
+        title: Some("Searching for 'As of...'".into()),
+        status: Some("Completed".into()),
+        kind: None,
+        query: None,
+        location: None,
+        location_is_command: false,
+        output: Some(ToolCallOutput {
+            text: "FINAL_RESULT".into(),
+            truncated: false,
+        }),
+        content: None,
+        locations: Some(Vec::new()),
+        cwd: None,
+        exit_code: None,
+    });
+    let completed = render_to_text(&mut app, 48, 40);
+    assert!(completed.contains("QUERY_END") && completed.contains("FINAL_RESULT"));
+    assert!(!completed.contains("RESULT_search"));
+    assert!(app
+        .completed_turn_hits
+        .iter()
+        .any(|hit| matches!(hit.kind, CompletedTurnHitKind::ActiveToolCall { .. })));
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: DEFAULT_TAB_ID.into(),
+    });
+    let history = render_to_text(&mut app, 48, 40);
+    assert!(
+        history.contains("QUERY_END") && history.contains("FINAL_RESULT"),
+        "{history}"
+    );
+    assert!(app
+        .completed_turn_hits
+        .iter()
+        .any(|hit| matches!(hit.kind, CompletedTurnHitKind::ToolCall { .. })));
+    assert!(!app
+        .completed_turn_hits
+        .iter()
+        .any(|hit| matches!(hit.kind, CompletedTurnHitKind::ActiveToolCall { .. })));
+    let encoded = serde_json::to_string(&app.current_tab().completed_turns[0].details).unwrap();
+    let decoded: Vec<ChatMessage> = serde_json::from_str(&encoded).unwrap();
+    assert!(decoded.iter().any(|message| matches!(message,
+        ChatMessage::ToolCall { query: Some(value), .. } if value.text == query)));
+}
+
+#[test]
+fn active_tool_groups_expand_and_ctrl_o_updates_active_and_cached_history() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_test_prompt(&mut app, "search");
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "");
+    app.current_tab_mut().messages.extend([
+        search_tool_message("one", "Completed", "FIRST_QUERY"),
+        search_tool_message("two", "Completed", "SECOND_QUERY"),
+    ]);
+    render_to_text(&mut app, 60, 40);
+    let hit = *app
+        .completed_turn_hits
+        .iter()
+        .find(|hit| {
+            matches!(
+                hit.kind,
+                CompletedTurnHitKind::ActiveToolGroup {
+                    detail_count: 2,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    click_tool_hit(&mut app, hit);
+    let expanded = render_to_text(&mut app, 60, 40);
+    for text in ["FIRST_QUERY", "SECOND_QUERY", "RESULT_one", "RESULT_two"] {
+        assert!(expanded.contains(text), "{expanded}");
+    }
+    assert_eq!(
+        app.completed_turn_hits
+            .iter()
+            .filter(|hit| matches!(hit.kind, CompletedTurnHitKind::ActiveToolCall { .. }))
+            .count(),
+        2
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    assert!(!render_to_text(&mut app, 60, 40).contains("FIRST_QUERY"));
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: DEFAULT_TAB_ID.into(),
+    });
+    render_to_text(&mut app, 60, 40);
+    submit_test_prompt(&mut app, "next search");
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "");
+    app.current_tab_mut()
+        .messages
+        .push(search_tool_message("three", "InProgress", "THIRD_QUERY"));
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    let expanded = render_to_text(&mut app, 60, 40);
+    for text in ["FIRST_QUERY", "SECOND_QUERY", "THIRD_QUERY"] {
+        assert!(expanded.contains(text), "{expanded}");
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    assert!(!render_to_text(&mut app, 60, 40).contains("THIRD_QUERY"));
+}
+
+#[test]
+fn active_tool_disclosure_anchors_header_and_can_scroll_wrapped_details() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_test_prompt(&mut app, "search");
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "");
+    let query = format!("QUERY_START {}", "long search ".repeat(100));
+    app.current_tab_mut()
+        .messages
+        .push(search_tool_message("one", "Completed", &query));
+    render_to_text(&mut app, 42, 20);
+    let hit = *app
+        .completed_turn_hits
+        .iter()
+        .find(|hit| matches!(hit.kind, CompletedTurnHitKind::ActiveToolCall { .. }))
+        .unwrap();
+    click_tool_hit(&mut app, hit);
+    render_to_text(&mut app, 42, 20);
+    let expanded_hit = *app
+        .completed_turn_hits
+        .iter()
+        .find(|candidate| candidate.kind == hit.kind)
+        .unwrap();
+    assert_eq!(hit.row, expanded_hit.row);
+    assert!(app.current_tab().chat_scroll.offset > 0);
+    app.current_tab_mut().scroll_to_bottom();
+    let bottom = render_to_text(&mut app, 42, 20);
+    assert!(bottom.contains("RESULT_one"), "{bottom}");
+    assert!(bottom.contains('…'), "{bottom}");
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    assert!(!app.current_tab().completed_tool_call_expanded("one"));
+}
+
+fn reading_rows(rendered: &str, marker: &str) -> Vec<(usize, String)> {
+    let rows = rendered
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains(marker))
+        .take(5)
+        .map(|(row, line)| (row, line.trim_end_matches([' ', '│', '┃']).to_string()))
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 5, "expected readable rows:\n{rendered}");
+    rows
+}
+
+fn reading_test_app() -> App {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_test_prompt(&mut app, "reading position");
+    app.handle_event(AppEvent::AgentMessageChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: (0..90).map(|index| format!("READ_{index:03}\n")).collect(),
+    });
+    app.current_tab_mut().reveal_chars = usize::MAX;
+    render_to_text(&mut app, 48, 20);
+    app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+    render_to_text(&mut app, 48, 20);
+    app
+}
+
+fn reading_cleanup_errors(app: &mut App, path: &str) {
+    app.current_agent_source = crate::agent_source::AgentSource::Wsl {
+        distro: "test-distro".into(),
+    };
+    let failure = crate::protocol::acp::failure::AgentFailure::AuthRequired {
+        message: "auth".into(),
+    };
+    match path {
+        "error" => app.handle_event(AppEvent::AgentError {
+            session_id: None,
+            failure,
+            message: "auth".into(),
+        }),
+        "recovery" => app.handle_event(AppEvent::PostLoginAuthRecovery {
+            failure,
+            tab_id: None,
+            agent_id: "copilot".into(),
+        }),
+        "timeout" => {
+            app.state = ConnectionState::Connecting("reconnecting".into());
+            app.auth_recovery_state = AuthRecoveryState::Connecting;
+            app.handle_event(AppEvent::AuthRecoveryTimedOut {
+                agent_id: "copilot".into(),
+                generation: app.auth_recovery_generation,
+            });
+        }
+        _ => unreachable!(),
+    }
+    if path != "recovery" {
+        assert!(matches!(app.mode, AppMode::Setup));
+    }
+    // Resume rendering the retained chat without starting a live connection.
+    app.mode = AppMode::Chat;
+    app.state = ConnectionState::Connected;
+    app.setup = None;
+}
+
+#[test]
+fn chat_reading_position_error_cleanup_preserves_visible_message() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    for path in ["error", "recovery", "timeout"] {
+        let mut app = test_app();
+        app.state = ConnectionState::Connected;
+        app.current_tab_mut().messages.extend([
+            ChatMessage::Error("obsolete error".into()),
+            ChatMessage::System(
+                (0..90)
+                    .map(|i| format!("KEEP_{i:03}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            ChatMessage::System("later message".into()),
+        ]);
+        render_to_text(&mut app, 48, 20);
+        app.current_tab_mut().chat_scroll.by(30);
+        let before = reading_rows(&render_to_text(&mut app, 48, 20), "KEEP_");
+        reading_cleanup_errors(&mut app, path);
+        for _ in 0..3 {
+            assert_eq!(
+                reading_rows(&render_to_text(&mut app, 48, 20), "KEEP_"),
+                before,
+                "{path}"
+            );
+        }
+    }
+}
+
+#[test]
+fn chat_reading_position_error_cleanup_clamps_deleted_target() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().messages.extend([
+        ChatMessage::Error(
+            (0..90)
+                .map(|i| format!("ERROR_{i:03}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        ChatMessage::System(
+            (0..90)
+                .map(|i| format!("SURVIVOR_{i:03}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+    ]);
+    render_to_text(&mut app, 48, 20);
+    app.current_tab_mut().chat_scroll.by(110);
+    assert!(render_to_text(&mut app, 48, 20).contains("ERROR_"));
+    reading_cleanup_errors(&mut app, "error");
+    let after = render_to_text(&mut app, 48, 20);
+    assert!(
+        after.lines().next().unwrap().contains("SURVIVOR_000"),
+        "{after}"
+    );
+    assert_eq!(render_to_text(&mut app, 48, 20), after);
+}
+
+#[test]
+fn chat_reading_position_error_cleanup_preserves_thought_source() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    for path in ["error", "recovery", "timeout"] {
+        let mut app = test_app();
+        app.state = ConnectionState::Connected;
+        app.current_tab_mut()
+            .messages
+            .push(ChatMessage::Error("obsolete".into()));
+        app.current_tab_mut().append_thought_chunk(
+            &(0..500)
+                .map(|i| format!("THINK_{i:03}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        render_to_text(&mut app, 48, 20);
+        app.current_tab_mut().chat_scroll.by(130);
+        let before = reading_rows(&render_to_text(&mut app, 48, 20), "THINK_");
+        let source = app
+            .current_tab()
+            .chat_reading_position
+            .unwrap()
+            .thought_source
+            .unwrap();
+        reading_cleanup_errors(&mut app, path);
+        assert_eq!(
+            app.current_tab()
+                .chat_reading_position
+                .unwrap()
+                .thought_source,
+            Some(source)
+        );
+        app.current_tab_mut().append_thought_chunk(
+            &std::iter::once(String::new())
+                .chain((500..510).map(|i| format!("THINK_{i:03}")))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        for _ in 0..3 {
+            assert_eq!(
+                reading_rows(&render_to_text(&mut app, 48, 20), "THINK_"),
+                before,
+                "{path}"
+            );
+        }
+        let retained = app
+            .current_tab()
+            .chat_reading_position
+            .unwrap()
+            .thought_source
+            .unwrap();
+        assert_eq!(retained.0, source.0);
+        assert!(retained.1 < source.1);
+        app.current_tab_mut().retain_current_messages(|_| false);
+        assert!(app.current_tab().chat_reading_position.is_none());
+        app.current_tab_mut().append_thought_chunk(
+            &(0..80)
+                .map(|i| format!("FRESH_{i:03}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        assert!(app.current_tab().chat_reading_position.is_none());
+        let fresh = render_to_text(&mut app, 48, 20);
+        assert!(fresh.contains("FRESH_"));
+        assert!(!fresh.contains("THINK_"));
+        app.current_tab_mut().scroll_to_bottom();
+        render_to_text(&mut app, 48, 20);
+        app.current_tab_mut().chat_scroll.by(30);
+        let fresh = render_to_text(&mut app, 48, 20);
+        assert_ne!(
+            app.current_tab()
+                .chat_reading_position
+                .unwrap()
+                .thought_source
+                .unwrap()
+                .0,
+            source.0
+        );
+        assert_eq!(render_to_text(&mut app, 48, 20), fresh);
+    }
+}
+
+#[test]
+fn chat_reading_position_removed_thought_clamps_to_survivor() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    for label in ["OLD", "FRESH"] {
+        app.current_tab_mut().messages.push(ChatMessage::Thought {
+            id: Default::default(),
+            text: (0..90)
+                .map(|i| format!("{label}_{i:03}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            expanded: true,
+            duration_ms: None,
+        });
+    }
+    render_to_text(&mut app, 48, 20);
+    app.current_tab_mut().chat_scroll.by(110);
+    assert!(render_to_text(&mut app, 48, 20).contains("OLD_"));
+    let old_id = app
+        .current_tab()
+        .chat_reading_position
+        .unwrap()
+        .thought_source
+        .unwrap()
+        .0;
+    app.current_tab_mut().retain_current_messages(
+        |message| !matches!(message, ChatMessage::Thought { id, .. } if *id == old_id),
+    );
+    assert!(app
+        .current_tab()
+        .chat_reading_position
+        .unwrap()
+        .thought_source
+        .is_none());
+    let after = render_to_text(&mut app, 48, 20);
+    assert!(
+        after.lines().nth(1).unwrap().contains("FRESH_000"),
+        "{after}"
+    );
+    assert!(!after.contains("OLD_"));
+    assert_eq!(render_to_text(&mut app, 48, 20), after);
+    app.current_tab_mut().chat_scroll.by(-1);
+    let body = render_to_text(&mut app, 48, 20);
+    assert!(body.lines().next().unwrap().contains("FRESH_000"), "{body}");
+    assert_ne!(
+        app.current_tab()
+            .chat_reading_position
+            .unwrap()
+            .thought_source
+            .unwrap()
+            .0,
+        old_id
+    );
+    assert_eq!(render_to_text(&mut app, 48, 20), body);
+}
+
+#[test]
+fn chat_reading_position_stale_clear_does_not_rebind_new_messages() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_autofix_prompt(&mut app, "pane-1");
+    app.turn_observe_chunk(
+        DEFAULT_TAB_ID,
+        ChunkKind::Thought,
+        &(0..90)
+            .map(|i| format!("OLD_{i:03}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    render_to_text(&mut app, 48, 20);
+    app.current_tab_mut().chat_scroll.by(30);
+    assert!(render_to_text(&mut app, 48, 20).contains("OLD_"));
+    assert!(app
+        .current_tab()
+        .chat_reading_position
+        .unwrap()
+        .thought_source
+        .is_some());
+    let offset = app.current_tab().chat_scroll.offset;
+    app.current_tab_mut()
+        .messages
+        .push(search_tool_message("old-tool", "Completed", "OLD_QUERY"));
+    app.current_tab_mut().active_tool_viewport_anchor = Some(("old-tool".into(), 3));
+    app.current_tab_mut().autofix.generation += 1;
+    app.turn_close(DEFAULT_TAB_ID);
+    let fresh = ChatMessage::System(
+        (0..130)
+            .map(|i| format!("FRESH_{i:03}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    app.current_tab_mut().messages.push(fresh.clone());
+    assert!(app.current_tab().chat_reading_position.is_none());
+    assert!(app.current_tab().active_tool_viewport_anchor.is_none());
+    let mut reference = test_app();
+    reference.state = ConnectionState::Connected;
+    reference.current_tab_mut().messages.push(fresh);
+    render_to_text(&mut reference, 48, 20);
+    reference.current_tab_mut().chat_scroll.by(offset as isize);
+    let expected = reading_rows(&render_to_text(&mut reference, 48, 20), "FRESH_");
+    for _ in 0..3 {
+        assert_eq!(
+            reading_rows(&render_to_text(&mut app, 48, 20), "FRESH_"),
+            expected
+        );
+    }
+}
+
+#[test]
+fn chat_reading_position_completed_history_survives_active_cleanup() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    for stale in [false, true] {
+        let mut app = test_app();
+        app.state = ConnectionState::Connected;
+        submit_autofix_prompt(&mut app, "pane-1");
+        app.current_tab_mut().completed_turns.push(CompletedTurn {
+            prompt: "history".into(),
+            details: vec![ChatMessage::System(
+                (0..90)
+                    .map(|i| format!("HISTORY_{i:03}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )],
+            expanded: true,
+            trailing_marker: None,
+        });
+        app.current_tab_mut()
+            .messages
+            .push(ChatMessage::Error("obsolete".into()));
+        render_to_text(&mut app, 48, 20);
+        app.current_tab_mut().chat_scroll.by(30);
+        let before = reading_rows(&render_to_text(&mut app, 48, 20), "HISTORY_");
+        if stale {
+            app.current_tab_mut().autofix.generation += 1;
+            app.turn_close(DEFAULT_TAB_ID);
+        } else {
+            reading_cleanup_errors(&mut app, "recovery");
+        }
+        assert_eq!(
+            app.current_tab().chat_reading_position.unwrap().turn_index,
+            0
+        );
+        for _ in 0..3 {
+            assert_eq!(
+                reading_rows(&render_to_text(&mut app, 48, 20), "HISTORY_"),
+                before
+            );
+        }
+    }
+}
+
+#[test]
+fn chat_reading_position_background_cancel_preserves_viewport() {
+    let _locale = crate::test_support::lock_locale();
+    for cleanup in ["pane-closed", "transport-retired", "request"] {
+        for offset in [0, 30, 120] {
+            let mut app = test_app();
+            app.state = ConnectionState::Connected;
+            submit_autofix_prompt(&mut app, "pane-1");
+            let lines = |prefix| {
+                (0..90)
+                    .map(|i| format!("{prefix}_{i:03}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            app.current_tab_mut().completed_turns.push(CompletedTurn {
+                prompt: "history".into(),
+                details: vec![ChatMessage::System(lines("HISTORY"))],
+                expanded: true,
+                trailing_marker: None,
+            });
+            app.current_tab_mut()
+                .messages
+                .push(ChatMessage::System(lines("KEEP")));
+            render_to_text(&mut app, 48, 20);
+            app.current_tab_mut().chat_scroll.by(offset);
+            let prefix = if offset > 90 { "HISTORY_" } else { "KEEP_" };
+            let before = reading_rows(&render_to_text(&mut app, 48, 20), prefix);
+            assert!(!before.is_empty());
+            match cleanup {
+                "pane-closed" => app.handle_autofix_pane_closed(Some(DEFAULT_TAB_ID), "pane-1"),
+                "transport-retired" => app.settle_retired_transport_prompts(),
+                "request" => app.request_turn_cancel_for_tab(DEFAULT_TAB_ID),
+                _ => unreachable!(),
+            }
+            assert_eq!(app.current_tab().completed_turns.len(), 2);
+            for _ in 0..3 {
+                let after = render_to_text(&mut app, 48, 20);
+                if offset == 0 {
+                    assert_eq!(app.current_tab().chat_scroll.offset, 0);
+                } else {
+                    assert_eq!(reading_rows(&after, prefix), before, "{cleanup}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn chat_reading_position_foreground_cancel_keeps_bottom_reset() {
+    let _locale = crate::test_support::lock_locale();
+    for action in ["control-c", "stop", "escape"] {
+        let mut app = test_app();
+        app.state = ConnectionState::Connected;
+        submit_autofix_prompt(&mut app, "pane-1");
+        app.current_tab_mut().messages.push(ChatMessage::System(
+            (0..90)
+                .map(|i| format!("KEEP_{i:03}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ));
+        render_to_text(&mut app, 48, 20);
+        app.current_tab_mut().chat_scroll.by(30);
+        render_to_text(&mut app, 48, 20);
+        assert!(app.current_tab().chat_reading_position.is_some());
+        match action {
+            "control-c" => {
+                app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+            }
+            "stop" => app.cmd_stop(true, false),
+            "escape" => app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            _ => unreachable!(),
+        }
+        assert!(
+            app.current_tab().chat_reading_position.is_none(),
+            "{action}"
+        );
+        assert_eq!(app.current_tab().chat_scroll.offset, 0, "{action}");
+        render_to_text(&mut app, 48, 20);
+        assert_eq!(app.current_tab().chat_scroll.offset, 0, "{action}");
+    }
+}
+
+#[test]
+fn chat_reading_position_completed_marker_geometry_and_click() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    for first in ["界".repeat(22), "short".into()] {
+        let mut app = test_app();
+        app.state = ConnectionState::Connected;
+        app.current_tab_mut().completed_turns.push(CompletedTurn {
+            prompt: "history".into(),
+            details: vec![
+                ChatMessage::System(first),
+                ChatMessage::System("LATER_MESSAGE".into()),
+                search_tool_message("later", "Completed", "LATER_QUERY"),
+            ],
+            expanded: true,
+            trailing_marker: Some("MARKER".into()),
+        });
+        let text = render_to_text(&mut app, 48, 24);
+        let tool_row = text
+            .lines()
+            .position(|line| line.contains("Search"))
+            .unwrap();
+        let hit = *app
+            .completed_turn_hits
+            .iter()
+            .find(|hit| hit.kind == (CompletedTurnHitKind::ToolCall { detail_index: 2 }))
+            .expect("later tool must have a click target");
+        assert_eq!(usize::from(hit.row), tool_row, "{text}");
+        click_tool_hit(&mut app, hit);
+        let expanded = render_to_text(&mut app, 48, 24);
+        assert!(expanded.contains("LATER_QUERY"), "{expanded}");
+        assert!(app.current_tab().completed_tool_call_expanded("later"));
+        assert_eq!(render_to_text(&mut app, 48, 24), expanded);
+    }
+}
+
+#[test]
+fn chat_reading_position_completed_marker_preserves_later_message() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "history".into(),
+        details: vec![
+            ChatMessage::System("界".repeat(22)),
+            ChatMessage::System(
+                (0..90)
+                    .map(|i| format!("LATER_{i:03}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            search_tool_message("later", "Completed", "LATER_QUERY"),
+        ],
+        expanded: true,
+        trailing_marker: Some("MARKER".into()),
+    });
+    render_to_text(&mut app, 48, 20);
+    app.current_tab_mut().chat_scroll.by(30);
+    let before = reading_rows(&render_to_text(&mut app, 48, 20), "LATER_");
+    for width in [48, 80, 48, 80] {
+        assert_eq!(
+            reading_rows(&render_to_text(&mut app, width, 20), "LATER_"),
+            before
+        );
+    }
+}
+
+#[test]
+fn chat_reading_position_completed_marker_preserves_thought_source() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "history".into(),
+        details: vec![ChatMessage::Thought {
+            id: Default::default(),
+            text: (0..90)
+                .map(|i| format!("THINK_{i:03}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            expanded: true,
+            duration_ms: Some(12345),
+        }],
+        expanded: true,
+        trailing_marker: Some("(canceled)".into()),
+    });
+    render_to_text(&mut app, 26, 20);
+    app.current_tab_mut().chat_scroll.by(30);
+    let before = reading_rows(&render_to_text(&mut app, 26, 20), "THINK_");
+    assert!(!before.is_empty());
+    for width in [26, 50, 26, 50] {
+        assert_eq!(
+            reading_rows(&render_to_text(&mut app, width, 20), "THINK_"),
+            before
+        );
+    }
+}
+
+#[test]
+fn chat_reading_position_preserves_retained_streaming_thought_lines() {
+    let _locale = crate::test_support::lock_locale();
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_test_prompt(&mut app, "thinking");
+    app.handle_event(AppEvent::AgentThoughtChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: (0..500)
+            .map(|index| format!("THINK_{index:03}\n"))
+            .collect(),
+    });
+    render_to_text(&mut app, 48, 20);
+    app.current_tab_mut().chat_scroll.by(130);
+    let before = reading_rows(&render_to_text(&mut app, 48, 20), "THINK_");
+    for start in [500, 510, 520] {
+        app.handle_event(AppEvent::AgentThoughtChunk {
+            session_id: DEFAULT_TAB_ID.into(),
+            text: (start..start + 10)
+                .map(|index| format!("THINK_{index:03}\n"))
+                .collect(),
+        });
+        for _ in 0..2 {
+            assert_eq!(
+                reading_rows(&render_to_text(&mut app, 48, 20), "THINK_"),
+                before,
+            );
+        }
+    }
+    for start in [530, 540] {
+        app.handle_event(AppEvent::AgentThoughtChunk {
+            session_id: DEFAULT_TAB_ID.into(),
+            text: (start..start + 10)
+                .map(|index| format!("THINK_{index:03}\n"))
+                .collect(),
+        });
+    }
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 48, 20), "THINK_"),
+        before
+    );
+}
+
+#[test]
+fn chat_reading_position_near_width_thought_does_not_drift() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_test_prompt(&mut app, "thinking");
+    let word = "a".repeat(45);
+    app.handle_event(AppEvent::AgentThoughtChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: (0..70).map(|_| format!("a {word}\n")).collect(),
+    });
+    render_to_text(&mut app, 50, 20);
+    app.current_tab_mut().chat_scroll.by(30);
+    let mut before = String::new();
+    for _ in 0..4 {
+        app.current_tab_mut().chat_scroll.by(1);
+        before = render_to_text(&mut app, 50, 20);
+        if before.lines().next().unwrap().contains(&word) {
+            break;
+        }
+    }
+    assert!(before.lines().next().unwrap().contains(&word), "{before}");
+    for _ in 0..3 {
+        assert_eq!(render_to_text(&mut app, 50, 20), before);
+    }
+    let (id, mut byte) = app
+        .current_tab()
+        .chat_reading_position
+        .unwrap()
+        .thought_source
+        .unwrap();
+    for chunk in [["", "tail", ""].join("\n"), "界\n".repeat(400)] {
+        let current = app.current_tab().streaming_thought_text().unwrap();
+        let dropped_chars = (current.chars().count() + chunk.chars().count()).saturating_sub(4000);
+        let dropped_bytes = current.char_indices().nth(dropped_chars).unwrap().0;
+        byte -= dropped_bytes;
+        app.handle_event(AppEvent::AgentThoughtChunk {
+            session_id: DEFAULT_TAB_ID.into(),
+            text: chunk,
+        });
+        for width in [50, 52, 50, 52, 50] {
+            for _ in 0..2 {
+                let rendered = render_to_text(&mut app, width, 20);
+                assert!(
+                    rendered.lines().next().unwrap().contains(&word),
+                    "{rendered}"
+                );
+                assert_eq!(
+                    app.current_tab()
+                        .chat_reading_position
+                        .unwrap()
+                        .thought_source,
+                    Some((id, byte)),
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn chat_reading_position_thought_retention_preserves_duplicate_and_blank_rows() {
+    let _locale = crate::test_support::lock_locale();
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_test_prompt(&mut app, "thinking");
+    app.handle_event(AppEvent::AgentThoughtChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: (0..300)
+            .map(|index| ["SAME", "", &format!("THINK_{index:03}"), ""].join("\r\n"))
+            .collect(),
+    });
+    render_to_text(&mut app, 48, 20);
+    app.current_tab_mut().chat_scroll.by(130);
+    let before = render_to_text(&mut app, 48, 20);
+    let before_rows = reading_rows(&before, "│");
+    let mut split_crlf = false;
+    for _ in 0..30 {
+        app.handle_event(AppEvent::AgentThoughtChunk {
+            session_id: DEFAULT_TAB_ID.into(),
+            text: "界".into(),
+        });
+        split_crlf |= app
+            .current_tab()
+            .streaming_thought_text()
+            .unwrap()
+            .starts_with('\n');
+        let rendered = render_to_text(&mut app, 48, 20);
+        assert_eq!(reading_rows(&rendered, "│"), before_rows);
+    }
+    assert!(
+        split_crlf,
+        "exercise a CRLF split by the retention boundary"
+    );
+}
+
+#[test]
+fn chat_reading_position_preserves_soft_wrapped_thought_source() {
+    let _locale = crate::test_support::lock_locale();
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_test_prompt(&mut app, "thinking");
+    app.handle_event(AppEvent::AgentThoughtChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: (0..500)
+            .map(|index| format!("word{index:03} 界e\u{301} alpha-beta "))
+            .collect(),
+    });
+    render_to_text(&mut app, 48, 20);
+    app.current_tab_mut().chat_scroll.by(49);
+    let before = render_to_text(&mut app, 48, 20);
+    let (id, mut byte) = app
+        .current_tab()
+        .chat_reading_position
+        .unwrap()
+        .thought_source
+        .unwrap();
+    let retained = app.current_tab().streaming_thought_text().unwrap();
+    let anchor_word = retained[byte..]
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_owned();
+    assert!(anchor_word.starts_with("word"), "{anchor_word}");
+    assert!(
+        before.lines().next().unwrap().contains(&anchor_word),
+        "{before}"
+    );
+    assert!(retained.len() > retained.chars().count());
+    // Each update crops a partial paragraph, sometimes inside a word or a
+    // combining sequence. The original source, not the new row start, survives.
+    for chunk in [
+        "界e\u{301} ",
+        "alpha-beta ",
+        "x",
+        "yz",
+        "more words 界 ",
+        "tail ",
+    ] {
+        let current = app.current_tab().streaming_thought_text().unwrap();
+        let cut_at = current.char_indices().nth(chunk.chars().count()).unwrap().0;
+        byte -= cut_at;
+        app.handle_event(AppEvent::AgentThoughtChunk {
+            session_id: DEFAULT_TAB_ID.into(),
+            text: chunk.into(),
+        });
+        for _ in 0..3 {
+            let rendered = render_to_text(&mut app, 48, 20);
+            assert!(
+                rendered.lines().next().unwrap().contains(&anchor_word),
+                "{rendered}"
+            );
+            assert_eq!(
+                app.current_tab()
+                    .chat_reading_position
+                    .unwrap()
+                    .thought_source,
+                Some((id, byte)),
+            );
+        }
+    }
+}
+
+#[test]
+fn chat_reading_position_thought_retention_clamps_deleted_source_and_follows_bottom() {
+    let _locale = crate::test_support::lock_locale();
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_test_prompt(&mut app, "thinking");
+    app.handle_event(AppEvent::AgentThoughtChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: (0..500)
+            .map(|index| format!("THINK_{index:03}\n"))
+            .collect(),
+    });
+    render_to_text(&mut app, 48, 20);
+    app.current_tab_mut().chat_scroll.by(130);
+    render_to_text(&mut app, 48, 20);
+    app.handle_event(AppEvent::AgentThoughtChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: (500..900)
+            .map(|index| format!("THINK_{index:03}\n"))
+            .collect(),
+    });
+    let clamped = render_to_text(&mut app, 48, 20);
+    assert!(
+        clamped.lines().next().unwrap().contains("THINK_500"),
+        "{clamped}"
+    );
+    assert_eq!(render_to_text(&mut app, 48, 20), clamped);
+    assert_eq!(
+        app.current_tab()
+            .chat_reading_position
+            .unwrap()
+            .thought_source
+            .unwrap()
+            .1,
+        0,
+    );
+    app.current_tab_mut().scroll_to_bottom();
+    render_to_text(&mut app, 48, 20);
+    for start in [900, 910] {
+        app.handle_event(AppEvent::AgentThoughtChunk {
+            session_id: DEFAULT_TAB_ID.into(),
+            text: (start..start + 10)
+                .map(|index| format!("THINK_{index:03}\n"))
+                .collect(),
+        });
+        let bottom = render_to_text(&mut app, 48, 20);
+        assert!(
+            bottom.contains(&format!("THINK_{:03}", start + 9)),
+            "{bottom}"
+        );
+        assert_eq!(app.current_tab().chat_scroll.offset, 0);
+    }
+}
+
+#[test]
+fn chat_reading_position_thought_source_tracks_message_moves_and_capture() {
+    let _locale = crate::test_support::lock_locale();
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_test_prompt(&mut app, "thinking");
+    app.current_tab_mut()
+        .messages
+        .push(search_tool_message("removed", "Completed", "query"));
+    app.handle_event(AppEvent::AgentThoughtChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: (0..500)
+            .map(|index| format!("THINK_{index:03}\n"))
+            .collect(),
+    });
+    render_to_text(&mut app, 48, 20);
+    app.current_tab_mut().chat_scroll.by(130);
+    let before = reading_rows(&render_to_text(&mut app, 48, 20), "THINK_");
+    app.handle_event(AppEvent::HideToolCall {
+        session_id: DEFAULT_TAB_ID.into(),
+        id: "removed".into(),
+    });
+    app.switch_tab_session("other".into());
+    app.switch_tab_session(DEFAULT_TAB_ID.into());
+    app.handle_event(AppEvent::AgentThoughtChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: (500..510)
+            .map(|index| format!("THINK_{index:03}\n"))
+            .collect(),
+    });
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 48, 20), "THINK_"),
+        before
+    );
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: DEFAULT_TAB_ID.into(),
+    });
+    let collapsed = render_to_text(&mut app, 48, 20);
+    assert!(!collapsed.contains("THINK_"));
+    assert!(app
+        .current_tab()
+        .chat_reading_position
+        .unwrap()
+        .thought_source
+        .is_none());
+    assert_eq!(render_to_text(&mut app, 48, 20), collapsed);
+}
+
+#[test]
+fn chat_reading_position_survives_reveal_notices_and_turn_completion() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = reading_test_app();
+    let before = reading_rows(&render_to_text(&mut app, 48, 20), "READ_");
+    let shown = app
+        .current_tab()
+        .streaming_agent_text()
+        .unwrap()
+        .chars()
+        .count();
+    app.current_tab_mut().reveal_chars = shown;
+    app.handle_event(AppEvent::AgentMessageChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: "NEW_OUTPUT\n".repeat(25),
+    });
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 48, 20), "READ_"),
+        before
+    );
+    for reveal_chars in [shown + 40, shown + 140, usize::MAX] {
+        app.current_tab_mut().reveal_chars = reveal_chars;
+        assert_eq!(
+            reading_rows(&render_to_text(&mut app, 48, 20), "READ_"),
+            before
+        );
+    }
+    app.handle_event(AppEvent::Plan {
+        session_id: DEFAULT_TAB_ID.into(),
+        entries: vec![PlanEntry {
+            content: "A new plan entry".into(),
+            status: PlanEntryStatus::InProgress,
+        }],
+    });
+    app.handle_event(AppEvent::TabSystemMessage {
+        tab_id: DEFAULT_TAB_ID.into(),
+        message: "passive notice".into(),
+    });
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 48, 20), "READ_"),
+        before
+    );
+    app.handle_event(AppEvent::AgentThoughtChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: "new thought\n".repeat(20),
+    });
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 48, 20), "READ_"),
+        before
+    );
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: DEFAULT_TAB_ID.into(),
+    });
+    assert_eq!(app.current_tab().completed_turns.len(), 1);
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 48, 20), "READ_"),
+        before
+    );
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 48, 20), "READ_"),
+        before
+    );
+}
+
+#[test]
+fn chat_reading_position_keeps_expanded_live_search_through_updates_and_capture() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_test_prompt(&mut app, "search");
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "");
+    let query = (0..150)
+        .map(|index| format!("QUERY_{index:03} "))
+        .collect::<String>();
+    app.current_tab_mut().messages.extend([
+        search_tool_message("hidden", "Completed", "HIDDEN"),
+        search_tool_message("reading", "InProgress", &query),
+    ]);
+    render_to_text(&mut app, 48, 20);
+    let hit = *app
+        .completed_turn_hits
+        .iter()
+        .find(|hit| {
+            matches!(
+                hit.kind,
+                CompletedTurnHitKind::ActiveToolCall { detail_index: 2 }
+            )
+        })
+        .unwrap();
+    click_tool_hit(&mut app, hit);
+    render_to_text(&mut app, 48, 20);
+    app.current_tab_mut().chat_scroll.by(-8);
+    let before = reading_rows(&render_to_text(&mut app, 48, 20), "QUERY_");
+    assert!(app.current_tab().chat_reading_position.unwrap().row_offset > 0);
+
+    app.handle_event(AppEvent::HideToolCall {
+        session_id: DEFAULT_TAB_ID.into(),
+        id: "hidden".into(),
+    });
+    app.handle_event(AppEvent::ToolCallUpdate {
+        session_id: DEFAULT_TAB_ID.into(),
+        id: "reading".into(),
+        title: None,
+        status: Some("Completed".into()),
+        kind: None,
+        query: None,
+        location: None,
+        location_is_command: false,
+        output: Some(ToolCallOutput {
+            text: "additional result\n".repeat(12),
+            truncated: false,
+        }),
+        content: None,
+        locations: None,
+        cwd: None,
+        exit_code: None,
+    });
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 48, 20), "QUERY_"),
+        before
+    );
+    app.handle_event(AppEvent::ToolCall {
+        session_id: DEFAULT_TAB_ID.into(),
+        id: "later".into(),
+        title: "Later tool".into(),
+        status: "InProgress".into(),
+        kind: ToolCallKind::Search,
+        query: None,
+        location: None,
+        location_is_command: false,
+        cwd: None,
+        output: None,
+        exit_code: None,
+        content: Vec::new(),
+        locations: Vec::new(),
+    });
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 48, 20), "QUERY_"),
+        before
+    );
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: DEFAULT_TAB_ID.into(),
+    });
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 48, 20), "QUERY_"),
+        before
+    );
+    assert!(app.current_tab().completed_tool_call_expanded("reading"));
+    assert_eq!(
+        app.current_tab()
+            .chat_reading_position
+            .unwrap()
+            .message_index,
+        Some(0)
+    );
+}
+
+#[test]
+fn chat_reading_position_preserves_viewport_height_changes_and_text_selection() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = reading_test_app();
+    let before = reading_rows(&render_to_text(&mut app, 48, 20), "READ_");
+    let row = before[1].0 as u16;
+    for (kind, column) in [
+        (MouseEventKind::Down(MouseButton::Left), 2),
+        (MouseEventKind::Drag(MouseButton::Left), 9),
+        (MouseEventKind::Up(MouseButton::Left), 9),
+    ] {
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+    let selected = app.text_selection.selected_text().expect("selected text");
+    app.handle_event(AppEvent::AgentMessageChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: "later output\n".repeat(20),
+    });
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 48, 20), "READ_"),
+        before
+    );
+    assert_eq!(app.text_selection.selected_text(), Some(selected));
+    app.text_selection.clear();
+
+    app.current_tab_mut().input = ["a draft", "with several", "input rows"].join("\n");
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 48, 20), "READ_"),
+        before
+    );
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 48, 24), "READ_"),
+        before
+    );
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 40, 24), "READ_"),
+        before
+    );
+    app.current_tab_mut().input.clear();
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 48, 20), "READ_"),
+        before
+    );
+    let (responder, _response) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::PermissionRequest {
+        session_id: DEFAULT_TAB_ID.into(),
+        tool_call_id: "permission".into(),
+        description: "Allow this tool?".into(),
+        title: "Allow this tool?".into(),
+        kind_label: None,
+        target: None,
+        target_is_command: false,
+        options: vec![PermOption {
+            id: "allow-once".into(),
+            name: "Allow".into(),
+            kind: "AllowOnce".into(),
+        }],
+        responder,
+    });
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 48, 20), "READ_"),
+        before
+    );
+    app.current_tab_mut().permission.pop_front();
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 48, 20), "READ_"),
+        before
+    );
+}
+
+#[test]
+fn chat_reading_position_resumes_follow_and_explicit_resets() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = reading_test_app();
+    app.current_tab_mut().chat_scroll.by(-isize::MAX);
+    render_to_text(&mut app, 48, 20);
+    assert_eq!(app.current_tab().chat_scroll.offset, 0);
+    app.handle_event(AppEvent::AgentMessageChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: "FOLLOW_BOTTOM".into(),
+    });
+    assert!(render_to_text(&mut app, 48, 20).contains("FOLLOW_BOTTOM"));
+    assert_eq!(app.current_tab().chat_scroll.offset, 0);
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: DEFAULT_TAB_ID.into(),
+    });
+    assert!(render_to_text(&mut app, 48, 20).contains("FOLLOW_BOTTOM"));
+    assert_eq!(app.current_tab().chat_scroll.offset, 0);
+    app.current_tab_mut().chat_scroll.by(20);
+    render_to_text(&mut app, 48, 20);
+    submit_test_prompt(&mut app, "NEW_PROMPT");
+    assert!(render_to_text(&mut app, 48, 20).contains("NEW_PROMPT"));
+    assert_eq!(app.current_tab().chat_scroll.offset, 0);
+    app.current_tab_mut().chat_scroll.by(20);
+    render_to_text(&mut app, 48, 20);
+    app.cmd_clear();
+    assert!(app.current_tab().chat_reading_position.is_none());
+    assert!(!render_to_text(&mut app, 48, 20).contains("READ_"));
+
+    let mut app = reading_test_app();
+    let (load_session_tx, mut load_session_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.load_session_tx = load_session_tx;
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": DEFAULT_TAB_ID,
+            "session_id": "loaded-session",
+        }),
+    });
+    assert_eq!(
+        load_session_rx.try_recv().unwrap().session_id,
+        "loaded-session"
+    );
+    assert_eq!(app.current_tab().chat_scroll.offset, 0);
+    assert!(app.current_tab().chat_reading_position.is_none());
+    assert!(!render_to_text(&mut app, 48, 20).contains("READ_"));
+}
+
+#[test]
+fn chat_reading_position_is_tab_local_and_keeps_history_navigation_lazy() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = reading_test_app();
+    let before = reading_rows(&render_to_text(&mut app, 48, 20), "READ_");
+    let offset = app.current_tab().chat_scroll.offset;
+    app.tab_id = Some("other".into());
+    app.current_tab_mut().session_id = Some("other-session".into());
+    submit_test_prompt(&mut app, "other prompt");
+    app.handle_event(AppEvent::AgentMessageChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: "background output\n".repeat(20),
+    });
+    render_to_text(&mut app, 48, 20);
+    assert_eq!(app.current_tab().chat_scroll.offset, 0);
+    app.tab_id = None;
+    assert_eq!(app.current_tab().chat_scroll.offset, offset);
+    assert_eq!(
+        reading_rows(&render_to_text(&mut app, 48, 20), "READ_"),
+        before
+    );
+
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: DEFAULT_TAB_ID.into(),
+    });
+    for index in 0..200 {
+        app.current_tab_mut().completed_turns.push(CompletedTurn {
+            prompt: format!("HISTORY_{index:03}"),
+            details: vec![ChatMessage::Agent("detail".into())],
+            expanded: true,
+            trailing_marker: None,
+        });
+    }
+    app.current_tab_mut().select_completed_turn(100);
+    let selected = render_to_text(&mut app, 48, 20);
+    assert!(selected.contains("HISTORY_099"));
+    crate::ui::chat::reset_completed_turn_line_build_count();
+    app.handle_event(AppEvent::TabSystemMessage {
+        tab_id: DEFAULT_TAB_ID.into(),
+        message: "passive notification\n".repeat(20),
+    });
+    let updated = render_to_text(&mut app, 48, 20);
+    assert_eq!(
+        reading_rows(&updated, "HISTORY_"),
+        reading_rows(&selected, "HISTORY_")
+    );
+    assert_eq!(app.current_tab().selected_completed_turn_idx, Some(100));
+    assert!(crate::ui::chat::completed_turn_line_build_count() < 20);
+}
+
+#[test]
+fn chat_reading_position_clamps_collapsed_and_removed_content() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = reading_test_app();
+    app.handle_event(AppEvent::AgentThoughtChunk {
+        session_id: DEFAULT_TAB_ID.into(),
+        text: (0..70)
+            .map(|index| format!("THOUGHT_{index:03}\n"))
+            .collect(),
+    });
+    app.current_tab_mut().scroll_to_bottom();
+    render_to_text(&mut app, 48, 20);
+    app.current_tab_mut().chat_scroll.by(15);
+    let thought = render_to_text(&mut app, 48, 20);
+    assert!(thought.contains("THOUGHT_"));
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: DEFAULT_TAB_ID.into(),
+    });
+    let collapsed = render_to_text(&mut app, 48, 20);
+    assert!(!collapsed.contains("THOUGHT_"));
+    assert!(collapsed.contains("Think"));
+    assert!(app.current_tab().chat_scroll.offset <= app.current_tab().chat_scroll.max);
+    assert_eq!(render_to_text(&mut app, 48, 20), collapsed);
+
+    let mut app = reading_test_app();
+    app.current_tab_mut().messages.push(search_tool_message(
+        "removed",
+        "InProgress",
+        &"QUERY_WORD ".repeat(140),
+    ));
+    app.current_tab_mut()
+        .expanded_completed_tool_calls
+        .insert("removed".into());
+    app.current_tab_mut().scroll_to_bottom();
+    render_to_text(&mut app, 48, 20);
+    app.current_tab_mut().chat_scroll.by(15);
+    assert!(render_to_text(&mut app, 48, 20).contains("QUERY_WORD"));
+    app.handle_event(AppEvent::HideToolCall {
+        session_id: DEFAULT_TAB_ID.into(),
+        id: "removed".into(),
+    });
+    let surviving = render_to_text(&mut app, 48, 20);
+    assert!(!surviving.contains("QUERY_WORD"));
+    assert!(surviving.contains("READ_"));
+    assert_eq!(render_to_text(&mut app, 48, 20), surviving);
+}
+
+#[test]
+fn active_tool_geometry_does_not_create_completed_turn_controls() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_test_prompt(&mut app, "search");
+    app.current_tab_mut().messages.push(search_tool_message(
+        "active",
+        "InProgress",
+        "PROVIDER_QUERY",
+    ));
+    render_to_text(&mut app, 60, 30);
+    assert!(app.current_tab().completed_turns.is_empty());
+    assert_eq!(app.completed_turn_hits.len(), 1);
+    let hit = app.completed_turn_hits[0];
+    assert!(matches!(
+        hit.kind,
+        CompletedTurnHitKind::ActiveToolCall { .. }
+    ));
+    click_tool_hit(&mut app, hit);
+    assert!(render_to_text(&mut app, 60, 30).contains("PROVIDER_QUERY"));
+    assert!(app.current_tab().completed_turns.is_empty());
+    assert!(app.current_tab().selected_completed_turn_idx.is_none());
+    assert!(app.current_tab().completed_turn_viewport_anchor().is_none());
+}
+
+#[test]
+fn active_tool_disclosure_rejects_drag_tab_switch_and_replaced_row() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    for action in ["drag", "tab", "hide", "finish", "outside"] {
+        let mut app = test_app();
+        app.state = ConnectionState::Connected;
+        submit_test_prompt(&mut app, "search");
+        app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Thought, "");
+        app.current_tab_mut().messages.extend([
+            search_tool_message("one", "InProgress", "FIRST_QUERY"),
+            search_tool_message("two", "InProgress", "SECOND_QUERY"),
+        ]);
+        render_to_text(&mut app, 60, 40);
+        let hit = *app
+            .completed_turn_hits
+            .iter()
+            .find(|hit| matches!(hit.kind, CompletedTurnHitKind::ActiveToolCall { .. }))
+            .unwrap();
+        let mouse = |kind, column| {
+            AppEvent::Mouse(MouseEvent {
+                kind,
+                column,
+                row: hit.row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        app.handle_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hit.start_column,
+        ));
+        match action {
+            "drag" => app.handle_event(mouse(
+                MouseEventKind::Drag(MouseButton::Left),
+                hit.start_column + 1,
+            )),
+            "tab" => {
+                app.switch_tab_session("other".into());
+                app.switch_tab_session(DEFAULT_TAB_ID.into());
+            }
+            "hide" => app.handle_event(AppEvent::HideToolCall {
+                session_id: DEFAULT_TAB_ID.into(),
+                id: "one".into(),
+            }),
+            "finish" => app.handle_event(AppEvent::AgentMessageEnd {
+                session_id: DEFAULT_TAB_ID.into(),
+            }),
+            _ => {}
+        }
+        render_to_text(&mut app, 60, 40);
+        let column = if action == "outside" {
+            59
+        } else {
+            hit.start_column
+        };
+        app.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), column));
+        assert!(
+            app.current_tab().expanded_completed_tool_calls.is_empty(),
+            "{action}"
+        );
+    }
+}
+
+#[test]
+fn tool_call_partial_update_preserves_status_and_replaces_reported_output() {
+    let mut app = test_app();
+    let expected_cwd = concat!("C:", "\\", "repo");
+    submit_test_prompt(&mut app, "inspect");
+    app.handle_event(AppEvent::ToolCall {
+        session_id: DEFAULT_TAB_ID.into(),
+        query: None,
+        id: "tool".into(),
+        title: "Preparing command".into(),
+        status: "InProgress".into(),
+        kind: ToolCallKind::Other,
+        location: None,
+        location_is_command: false,
+        cwd: None,
+        output: None,
+        exit_code: None,
+        content: Vec::new(),
+        locations: Vec::new(),
+    });
+    app.handle_event(AppEvent::ToolCallUpdate {
+        session_id: DEFAULT_TAB_ID.into(),
+        query: None,
+        id: "tool".into(),
+        title: Some("bash".into()),
+        status: Some("Completed".into()),
+        kind: Some(ToolCallKind::Execute),
+        location: Some("cargo test".into()),
+        location_is_command: true,
+        output: Some(ToolCallOutput {
+            text: "running tests".into(),
+            truncated: false,
+        }),
+        content: None,
+        locations: None,
+        cwd: Some(expected_cwd.into()),
+        exit_code: Some(7),
+    });
+
+    let Some(ChatMessage::ToolCall {
+        title,
+        status,
+        kind,
+        location,
+        cwd,
+        output,
+        exit_code,
+        ..
+    }) = app.current_tab().messages.last()
+    else {
+        panic!("expected tool-call card");
+    };
+    assert_eq!(title, "bash");
+    assert_eq!(status, "Completed");
+    assert_eq!(*kind, ToolCallKind::Execute);
+    assert_eq!(location.as_deref(), Some("cargo test"));
+    assert_eq!(cwd.as_deref(), Some(expected_cwd));
+    assert_eq!(
+        output.as_ref().map(|output| output.text.as_str()),
+        Some("running tests")
+    );
+    assert_eq!(*exit_code, Some(7));
+    assert!(render_to_text(&mut app, 80, 20).contains("running tests"));
+}
+
+#[test]
+fn tool_call_update_replaces_and_clears_standard_collections() {
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "inspect");
+    app.handle_event(AppEvent::ToolCall {
+        session_id: DEFAULT_TAB_ID.into(),
+        query: None,
+        id: "tool".into(),
+        title: "Edit source".into(),
+        status: "InProgress".into(),
+        kind: ToolCallKind::Edit,
+        location: Some("old.rs".into()),
+        location_is_command: false,
+        cwd: None,
+        output: None,
+        exit_code: None,
+        content: vec![ToolCallContent::Attachment {
+            label: "old attachment".into(),
+            uri: None,
+        }],
+        locations: vec![ToolCallLocation {
+            path: "old.rs".into(),
+            line: Some(1),
+        }],
+    });
+    app.handle_event(AppEvent::ToolCallUpdate {
+        session_id: DEFAULT_TAB_ID.into(),
+        query: None,
+        id: "tool".into(),
+        title: None,
+        status: None,
+        kind: None,
+        location: None,
+        location_is_command: false,
+        output: None,
+        content: Some(Vec::new()),
+        locations: Some(Vec::new()),
+        cwd: None,
+        exit_code: None,
+    });
+
+    let Some(ChatMessage::ToolCall {
+        location,
+        content,
+        locations,
+        ..
+    }) = app.current_tab().messages.last()
+    else {
+        panic!("expected tool-call card");
+    };
+    assert_eq!(location, &None);
+    assert!(content.is_empty());
+    assert!(locations.is_empty());
+}
+
+#[test]
+fn terminal_output_updates_only_the_tool_call_referencing_the_terminal() {
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "run");
+    app.handle_event(AppEvent::ToolCall {
+        session_id: DEFAULT_TAB_ID.into(),
+        query: None,
+        id: "tool-call-1".into(),
+        title: "Run command".into(),
+        status: "InProgress".into(),
+        kind: ToolCallKind::Execute,
+        location: None,
+        location_is_command: false,
+        cwd: None,
+        output: None,
+        exit_code: None,
+        content: vec![ToolCallContent::Terminal {
+            id: "term-1".into(),
+            output: None,
+            exit_code: None,
+        }],
+        locations: Vec::new(),
+    });
+    app.handle_event(AppEvent::ToolCall {
+        session_id: DEFAULT_TAB_ID.into(),
+        query: None,
+        id: "tool-call-2".into(),
+        title: "Run another command".into(),
+        status: "InProgress".into(),
+        kind: ToolCallKind::Execute,
+        location: None,
+        location_is_command: false,
+        cwd: None,
+        output: None,
+        exit_code: None,
+        content: vec![ToolCallContent::Terminal {
+            id: "term-2".into(),
+            output: None,
+            exit_code: None,
+        }],
+        locations: Vec::new(),
+    });
+    app.handle_event(AppEvent::ToolTerminalOutput {
+        session_id: DEFAULT_TAB_ID.into(),
+        terminal_id: "term-1".into(),
+        output: ToolCallOutput {
+            text: "terminal output".into(),
+            truncated: false,
+        },
+        exit_code: Some(0),
+    });
+
+    let cards = app
+        .current_tab()
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            ChatMessage::ToolCall {
+                id,
+                output,
+                exit_code,
+                content,
+                ..
+            } => Some((id.as_str(), output, exit_code, content)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let matching = cards
+        .iter()
+        .find(|(id, ..)| *id == "tool-call-1")
+        .expect("matching tool-call card");
+    assert_eq!(
+        matching.1.as_ref().map(|output| output.text.as_str()),
+        Some("terminal output")
+    );
+    assert_eq!(*matching.2, Some(0));
+    assert!(matches!(
+        &matching.3[0],
+        ToolCallContent::Terminal {
+            output: Some(output),
+            exit_code: Some(0),
+            ..
+        } if output.text == "terminal output"
+    ));
+
+    let unrelated = cards
+        .iter()
+        .find(|(id, ..)| *id == "tool-call-2")
+        .expect("unrelated tool-call card");
+    assert_eq!(unrelated.1, &None);
+    assert_eq!(*unrelated.2, None);
+    assert!(matches!(
+        &unrelated.3[0],
+        ToolCallContent::Terminal {
+            output: None,
+            exit_code: None,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn legacy_tool_call_deserialization_defaults_standard_details() {
+    let message: ChatMessage = serde_json::from_value(json!({
+        "ToolCall": {
+            "id": "legacy",
+            "title": "Read file",
+            "status": "Completed",
+            "kind": "Read",
+            "location": null,
+            "location_is_command": false,
+            "cwd": null,
+            "output": null,
+            "exit_code": null
+        }
+    }))
+    .expect("legacy persisted tool call should deserialize");
+
+    assert!(matches!(
+        message,
+        ChatMessage::ToolCall {
+            content,
+            locations,
+            ..
+        } if content.is_empty() && locations.is_empty()
+    ));
+}
+
+#[test]
+fn completed_tool_call_defaults_compact_and_expands_independently() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "Update source".into(),
+        details: vec![ChatMessage::ToolCall {
+            id: "tool".into(),
+            query: None,
+            title: "Edit source".into(),
+            status: "Completed".into(),
+            kind: ToolCallKind::Edit,
+            location: Some(r"C:\src\main.rs:42".into()),
+            location_is_command: false,
+            cwd: None,
+            output: None,
+            exit_code: None,
+            content: vec![
+                ToolCallContent::Diff {
+                    path: r"C:\src\main.rs".into(),
+                    old_text: Some(ToolCallOutput {
+                        text: "OLD_TYPED_LINE".into(),
+                        truncated: false,
+                    }),
+                    new_text: ToolCallOutput {
+                        text: "NEW_TYPED_LINE".into(),
+                        truncated: false,
+                    },
+                },
+                ToolCallContent::Terminal {
+                    id: "TERM_TYPED_ID".into(),
+                    output: Some(ToolCallOutput {
+                        text: "TERM_TYPED_OUTPUT".into(),
+                        truncated: false,
+                    }),
+                    exit_code: Some(0),
+                },
+                ToolCallContent::Attachment {
+                    label: "image/png".into(),
+                    uri: Some("file:///image.png".into()),
+                },
+            ],
+            locations: vec![ToolCallLocation {
+                path: r"C:\src\main.rs".into(),
+                line: Some(42),
+            }],
+        }],
+        expanded: true,
+        trailing_marker: None,
+    });
+
+    crate::ui::chat::reset_tool_detail_build_count();
+    let compact = render_to_text(&mut app, 100, 40);
+    assert!(compact.contains(r"✓ Edit · src\main.rs:42"));
+    assert!(!compact.contains("OLD_TYPED_LINE"));
+    assert_eq!(
+        crate::ui::chat::tool_detail_build_count(),
+        0,
+        "successful completed tools must skip detail materialization while collapsed",
+    );
+
+    assert!(
+        app.current_tab_mut().toggle_completed_tool_call(0, 0),
+        "tool detail must be independently expandable",
+    );
+    let text = render_to_text(&mut app, 100, 40);
+    assert!(text.contains(r"✓ Edit · src\main.rs:42"));
+    for needle in [
+        r"C:\src\main.rs:42",
+        "OLD_TYPED_LINE",
+        "NEW_TYPED_LINE",
+        "TERM_TYPED_ID",
+        "TERM_TYPED_OUTPUT",
+        "image/png",
+    ] {
+        assert!(
+            text.contains(needle),
+            "missing {needle:?}; rendered:\n{text}"
+        );
+    }
+}
+
+#[test]
+fn failed_completed_tool_keeps_bounded_diagnostic_preview() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "Run checks".into(),
+        details: vec![ChatMessage::ToolCall {
+            id: "failed-tool".into(),
+            query: None,
+            title: "Run checks".into(),
+            status: "Failed: tests failed".into(),
+            kind: ToolCallKind::Execute,
+            location: Some("cargo test".into()),
+            location_is_command: true,
+            cwd: None,
+            output: Some(ToolCallOutput {
+                text: concat!("diagnostic one", "\n", "diagnostic two").into(),
+                truncated: false,
+            }),
+            exit_code: Some(1),
+            content: Vec::new(),
+            locations: Vec::new(),
+        }],
+        expanded: true,
+        trailing_marker: None,
+    });
+
+    let text = render_to_text(&mut app, 80, 20);
+    assert!(text.contains("✗ Run · Run checks"));
+    assert!(text.contains("tests failed"));
+    assert!(!text.contains("exit 1"));
+    assert!(text.contains("diagnostic one"));
+    assert!(text.contains("diagnostic two"));
+}
+
+#[test]
+fn ctrl_o_toggles_all_completed_tool_details_without_folding_turns() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "Inspect files".into(),
+        details: (0..2)
+            .map(|index| ChatMessage::ToolCall {
+                id: format!("tool-{index}"),
+                query: None,
+                title: format!("Read file {index}"),
+                status: "Completed".into(),
+                kind: ToolCallKind::Read,
+                location: Some(format!(r"C:\repo\file-{index}.txt")),
+                location_is_command: false,
+                cwd: None,
+                output: Some(ToolCallOutput {
+                    text: format!("DETAIL_{index}"),
+                    truncated: false,
+                }),
+                exit_code: None,
+                content: Vec::new(),
+                locations: Vec::new(),
+            })
+            .collect(),
+        expanded: true,
+        trailing_marker: None,
+    });
+
+    let compact = render_to_text(&mut app, 80, 20);
+    assert!(!compact.contains("DETAIL_0"));
+    assert!(!compact.contains("DETAIL_1"));
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    let expanded = render_to_text(&mut app, 80, 20);
+    assert!(expanded.contains("DETAIL_0"));
+    assert!(expanded.contains("DETAIL_1"));
+    assert!(app.current_tab().completed_turns[0].expanded);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    let collapsed = render_to_text(&mut app, 80, 20);
+    assert!(!collapsed.contains("DETAIL_0"));
+    assert!(!collapsed.contains("DETAIL_1"));
+    assert!(app.current_tab().completed_turns[0].expanded);
+}
+
+#[test]
+fn completed_tool_expansion_preserves_its_header_row_and_rebuilds_height() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "Anchored tool".into(),
+        details: vec![
+            ChatMessage::ToolCall {
+                id: "anchored-tool".into(),
+                query: None,
+                title: "Run anchored command".into(),
+                status: "Completed".into(),
+                kind: ToolCallKind::Execute,
+                location: Some("run anchored".into()),
+                location_is_command: true,
+                cwd: None,
+                output: Some(ToolCallOutput {
+                    text: (0..10)
+                        .map(|index| format!("ANCHORED_OUTPUT_{index}"))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    truncated: false,
+                }),
+                exit_code: Some(0),
+                content: Vec::new(),
+                locations: Vec::new(),
+            },
+            ChatMessage::Agent("answer below the tool".repeat(8)),
+        ],
+        expanded: true,
+        trailing_marker: None,
+    });
+
+    let compact = render_to_text(&mut app, 60, 12);
+    let compact_row = compact
+        .lines()
+        .position(|line| line.contains("✓ Run ·"))
+        .expect("compact tool header must be visible");
+
+    assert!(app.current_tab_mut().toggle_completed_tool_call(0, 0));
+    crate::ui::chat::reset_completed_turn_line_build_count();
+    let expanded = render_to_text(&mut app, 60, 12);
+    let expanded_row = expanded
+        .lines()
+        .position(|line| line.contains("✓ Run ·"))
+        .expect("expanded tool header must stay visible");
+    assert_eq!(expanded_row, compact_row);
+    assert!(
+        expanded.contains("ANCHORED_OUTPUT_0"),
+        "expanded details must open below the stable tool header:\n{expanded}",
+    );
+    assert!(
+        crate::ui::chat::completed_turn_line_build_count() > 0,
+        "tool disclosure changes must invalidate the containing turn height",
+    );
+}
+
+#[test]
+fn completed_tool_disclosures_anchor_visible_headers_below_clipped_prompts() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+
+    const WIDTH: u16 = 60;
+    const HEIGHT: u16 = 8;
+
+    for grouped in [false, true] {
+        let mut app = test_app();
+        app.state = ConnectionState::Connected;
+        let details = if grouped {
+            [r"C:\repo\GROUP_A.rs", r"C:\repo\GROUP_B.rs"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, path)| ChatMessage::ToolCall {
+                    id: format!("grouped-tool-{index}"),
+                    query: None,
+                    title: format!("Viewing {path}"),
+                    status: "Completed".into(),
+                    kind: ToolCallKind::Read,
+                    location: None,
+                    location_is_command: false,
+                    cwd: None,
+                    output: Some(ToolCallOutput {
+                        text: format!("GROUPED_DETAIL_{index}\n{}", "detail\n".repeat(8)),
+                        truncated: false,
+                    }),
+                    exit_code: None,
+                    content: Vec::new(),
+                    locations: vec![ToolCallLocation {
+                        path: path.into(),
+                        line: None,
+                    }],
+                })
+                .collect()
+        } else {
+            vec![ChatMessage::ToolCall {
+                id: "individual-tool".into(),
+                query: None,
+                title: "Run INDIVIDUAL_ANCHORED_TOOL".into(),
+                status: "Completed".into(),
+                kind: ToolCallKind::Execute,
+                location: Some("run individual".into()),
+                location_is_command: true,
+                cwd: None,
+                output: Some(ToolCallOutput {
+                    text: format!("INDIVIDUAL_DETAIL\n{}", "detail\n".repeat(8)),
+                    truncated: false,
+                }),
+                exit_code: Some(0),
+                content: Vec::new(),
+                locations: Vec::new(),
+            }]
+        };
+        app.current_tab_mut().completed_turns.push(CompletedTurn {
+            prompt: (0..8)
+                .map(|index| format!("CLIPPED_TOOL_PROMPT_{index}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            details,
+            expanded: true,
+            trailing_marker: None,
+        });
+
+        let compact = render_to_text(&mut app, WIDTH, HEIGHT);
+        assert!(!compact.contains("CLIPPED_TOOL_PROMPT_0"));
+        let expected_kind = if grouped {
+            CompletedTurnHitKind::ToolGroup {
+                first_detail_index: 0,
+                detail_count: 2,
+            }
+        } else {
+            CompletedTurnHitKind::ToolCall { detail_index: 0 }
+        };
+        let hit = app
+            .completed_turn_hits
+            .iter()
+            .copied()
+            .find(|hit| hit.kind == expected_kind)
+            .expect("tool header below the clipped prompt must be clickable");
+
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            app.handle_event(AppEvent::Mouse(MouseEvent {
+                kind,
+                column: hit.start_column,
+                row: hit.row,
+                modifiers: KeyModifiers::NONE,
+            }));
+        }
+
+        let expanded = render_to_text(&mut app, WIDTH, HEIGHT);
+        let marker = if grouped {
+            "GROUP_A.rs"
+        } else {
+            "INDIVIDUAL_ANCHORED_TOOL"
+        };
+        let expanded_row = expanded
+            .lines()
+            .position(|line| line.contains(marker))
+            .unwrap_or_else(|| panic!("expanded tool header must remain visible:\n{expanded}"));
+        assert_eq!(
+            expanded_row, hit.row as usize,
+            "{marker} must remain on its clicked row:\n{expanded}",
+        );
+    }
+}
+
+#[test]
+fn thinking_is_pinned_one_row_above_input() {
+    const WIDTH: u16 = 80;
+    const HEIGHT: u16 = 24;
+
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    submit_test_prompt(&mut app, "inspect");
+
+    let input_height = crate::ui::input_height(
+        &app.current_tab().input,
+        app.current_tab().cursor_pos,
+        WIDTH,
+    );
+    let text = render_to_text(&mut app, WIDTH, HEIGHT);
+    let label = t!("chat.activity_thinking").into_owned();
+    let row = text
+        .lines()
+        .position(|line| line.contains(&label))
+        .expect("Thinking row must render");
+    let expected_row = usize::from(HEIGHT - input_height - 1);
+
+    assert_eq!(
+        row, expected_row,
+        "Thinking must sit directly above the input box"
+    );
+}
+
+#[test]
+fn end_with_no_eager_chat_fallback_commits_completed_turn() {
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "why blue?");
+    // Pure prose — won't parse as a RecommendationSet, falls to chat.
+    app.turn_observe_chunk(
+        DEFAULT_TAB_ID,
+        ChunkKind::Message,
+        "Light scatters in the atmosphere.",
+    );
+    app.turn_close("fresh-session");
+    let tab = app.current_tab();
+    assert!(
+        matches!(
+            tab.turn,
+            TurnState::Surfaced {
+                outcome: TurnOutcome::ChatTurn,
+                end_pending: false,
+                ..
+            }
+        ),
+        "got {:?}",
+        tab.turn
+    );
+    assert!(
+        tab.turn.accepts_new_prompt(),
+        "chat fallback unblocks input"
+    );
+    assert_eq!(tab.completed_turns.len(), 1);
+    assert_eq!(tab.completed_turns[0].prompt, "why blue?");
+}
+
+#[test]
+fn end_with_no_chunks_clears_autofix_bottom_bar() {
+    let mut app = test_app();
+    submit_autofix_prompt(&mut app, "pane-7");
+    assert!(app.tab_mut(DEFAULT_TAB_ID).autofix.pane_id.is_some());
+    // No chunks arrived; AgentMessageEnd fires.
+    app.turn_close(DEFAULT_TAB_ID);
+    let tab = app.current_tab();
+    assert!(
+        matches!(
+            tab.turn,
+            TurnState::Surfaced {
+                outcome: TurnOutcome::Empty,
+                end_pending: false,
+                ..
+            }
+        ),
+        "got {:?}",
+        tab.turn
+    );
+    assert!(
+        app.tab_mut(DEFAULT_TAB_ID).autofix.pane_id.is_none(),
+        "autofix.pane_id must be cleared so the bar leaves Pending"
+    );
+}
+
+#[test]
+fn stale_autofix_chunks_dropped_when_generation_diverges() {
+    let mut app = test_app();
+    submit_autofix_prompt(&mut app, "pane-1");
+    // Simulate an Esc cancel or a newer trigger bumping the counter
+    // on the same tab as the in-flight prompt.
+    {
+        let tab = app.tab_mut(DEFAULT_TAB_ID);
+        tab.autofix.generation = tab.autofix.generation.wrapping_add(1);
+    }
+    let advanced = app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Message, "stale");
+    assert!(!advanced, "stale-gen chunks must be dropped");
+    let tab = app.current_tab();
+    assert!(
+        matches!(tab.turn, TurnState::Submitted(_)),
+        "state unchanged on stale drop, got {:?}",
+        tab.turn
+    );
+    assert_eq!(tab.streaming_agent_text(), None);
+}
+
+#[test]
+fn stale_autofix_at_close_resets_to_idle() {
+    let mut app = test_app();
+    submit_autofix_prompt(&mut app, "pane-1");
+    // A chunk advances state to Streaming.
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Message, "partial");
+    // Generation diverges (newer trigger / Esc).
+    {
+        let tab = app.tab_mut(DEFAULT_TAB_ID);
+        tab.autofix.generation = tab.autofix.generation.wrapping_add(1);
+    }
+    app.turn_close(DEFAULT_TAB_ID);
+    assert!(
+        app.current_tab().turn.is_idle(),
+        "stale-close must reset to Idle, got {:?}",
+        app.current_tab().turn
+    );
+    assert!(
+        app.current_tab().messages.is_empty(),
+        "stale-close must discard the invalidated active transcript"
+    );
+}
+
+#[test]
+fn cancel_bumps_generation_and_waits_for_terminal_boundary() {
+    let mut app = test_app();
+    submit_autofix_prompt(&mut app, "pane-1");
+    let gen_before = app.tab_mut(DEFAULT_TAB_ID).autofix.generation;
+    app.turn_cancel(DEFAULT_TAB_ID);
+    assert_eq!(
+        app.tab_mut(DEFAULT_TAB_ID).autofix.generation,
+        gen_before.wrapping_add(1)
+    );
+    assert!(app.current_tab().turn.is_cancelling());
+    assert!(app.tab_mut(DEFAULT_TAB_ID).autofix.pane_id.is_none());
+    app.handle_event(AppEvent::PromptCancellationSettled {
+        prompt_id: 99,
+        started: false,
+    });
+    assert!(app.current_tab().turn.is_idle());
+    assert!(!app.current_tab().has_meaningful_conversation);
+}
+
+#[test]
+fn turn_cancel_signals_prompt_token_and_normal_completion_releases_ui() {
+    let mut app = test_app();
+    let session_id = "session-1";
+    app.session_to_tab
+        .insert(session_id.into(), DEFAULT_TAB_ID.into());
+    app.tab_mut(DEFAULT_TAB_ID).session_id = Some(session_id.into());
+    submit_test_prompt(&mut app, "stop this");
+    let cancellation = app
+        .current_tab()
+        .active_prompt_cancellation
+        .as_ref()
+        .expect("prompt token")
+        .token
+        .clone();
+    app.current_tab_mut().input = "keep this draft".into();
+
+    app.turn_cancel(session_id);
+
+    assert!(cancellation.is_cancelled());
+    assert_eq!(
+        app.current_tab().turn,
+        TurnState::Cancelling { prompt_id: 42 }
+    );
+    assert_eq!(app.current_tab().input, "keep this draft");
+
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: session_id.into(),
+    });
+    assert!(
+        app.current_tab().turn.is_idle(),
+        "normal prompt completion racing cancellation is still a terminal boundary"
+    );
+    assert!(app.current_tab().has_meaningful_conversation);
+}
+
+#[test]
+fn cancelling_lazy_prompt_binds_its_tagged_session_and_becomes_resumable() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    let prompt = PromptSubmission::new("lazy prompt".into(), None);
+    let prompt_id = prompt.id;
+    let cancellation = prompt.cancellation_token();
+    app.turn_submit_prompt_for_tab_with_cancellation(
+        DEFAULT_TAB_ID,
+        SubmittedPrompt {
+            id: prompt_id,
+            text: prompt.text,
+            submitted_at_unix_s: prompt.submitted_at_unix_s,
+            context: TurnContext::default(),
+            autofix: None,
+        },
+        cancellation,
+    );
+    app.request_turn_cancel_for_tab(DEFAULT_TAB_ID);
+
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "lazy-session".into(),
+        prompt_id: Some(prompt_id),
+        available_models: Vec::new(),
+        current_model_id: None,
+    });
+
+    assert_eq!(
+        app.current_tab()
+            .active_prompt_cancellation
+            .as_ref()
+            .and_then(|active| active.session_id.as_deref()),
+        Some("lazy-session")
+    );
+    assert!(app.current_tab().turn.is_cancelling());
+
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: "lazy-session".into(),
+    });
+
+    assert!(app.current_tab().turn.is_idle());
+    assert_eq!(
+        app.current_tab().resumable_session_id(),
+        Some("lazy-session")
+    );
+}
+
+#[test]
+fn reset_invalidates_late_prompt_attachment_and_completion_only_releases_barrier() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    let prompt = PromptSubmission::new("lazy prompt".into(), None);
+    let prompt_id = prompt.id;
+    let cancellation = prompt.cancellation_token();
+    app.turn_submit_prompt_for_tab_with_cancellation(
+        DEFAULT_TAB_ID,
+        SubmittedPrompt {
+            id: prompt_id,
+            text: prompt.text,
+            submitted_at_unix_s: prompt.submitted_at_unix_s,
+            context: TurnContext::default(),
+            autofix: None,
+        },
+        cancellation,
+    );
+
+    app.reset_tab_session_for(DEFAULT_TAB_ID);
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: DEFAULT_TAB_ID.into(),
+        session_id: "retired-lazy-session".into(),
+        prompt_id: Some(prompt_id),
+        available_models: Vec::new(),
+        current_model_id: None,
+    });
+
+    assert!(app.current_tab().session_id.is_none());
+    assert!(!app.session_to_tab.contains_key("retired-lazy-session"));
+    assert!(app.current_tab().turn.is_cancelling());
+
+    app.handle_event(AppEvent::PromptCancellationSettled {
+        prompt_id,
+        started: true,
+    });
+
+    assert!(app.current_tab().turn.is_idle());
+    assert!(!app.current_tab().has_meaningful_conversation);
+    assert_eq!(app.current_tab().resumable_session_id(), None);
+}
+
+#[test]
+fn late_nonterminal_events_from_retired_session_cannot_mutate_replacement() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().session_id = Some("replacement-session".into());
+    app.session_to_tab
+        .insert("replacement-session".into(), DEFAULT_TAB_ID.into());
+
+    app.handle_event(AppEvent::AgentThoughtChunk {
+        session_id: "retired-session".into(),
+        text: "stale thought".into(),
+    });
+    app.handle_event(AppEvent::AgentMessageChunk {
+        session_id: "retired-session".into(),
+        text: "stale message".into(),
+    });
+    app.handle_event(AppEvent::Plan {
+        session_id: "retired-session".into(),
+        entries: Vec::new(),
+    });
+    app.handle_event(AppEvent::TimingMetric {
+        session_id: "retired-session".into(),
+        note: "stale timing".into(),
+    });
+
+    assert!(!app.current_tab().has_meaningful_conversation);
+    assert!(app.current_tab().messages.is_empty());
+    assert!(app.current_tab().timing_note.is_none());
+}
+
+#[test]
+fn queued_prompt_cancel_survives_tab_rename_without_rekeying() {
+    let mut app = test_app();
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.prompt_tx = prompt_tx;
+    let prompt = PromptSubmission::new("queued".into(), None);
+    let prompt_id = prompt.id;
+    let cancellation = prompt.cancellation_token();
+    app.turn_submit_prompt_for_tab_with_cancellation(
+        DEFAULT_TAB_ID,
+        SubmittedPrompt {
+            id: prompt_id,
+            text: prompt.text.clone(),
+            submitted_at_unix_s: prompt.submitted_at_unix_s,
+            context: TurnContext::default(),
+            autofix: None,
+        },
+        cancellation.clone(),
+    );
+    app.prompt_tx.send(prompt).unwrap();
+
+    app.request_turn_cancel_for_tab(DEFAULT_TAB_ID);
+    app.handle_event(AppEvent::TabRenamed {
+        old_tab_id: DEFAULT_TAB_ID.into(),
+        new_tab_id: "renamed-tab".into(),
+        new_window_id: None,
+    });
+
+    let queued = prompt_rx.try_recv().expect("prompt remains queued");
+    assert!(queued.cancellation_token().is_cancelled());
+    assert!(cancellation.is_cancelled());
+    assert!(matches!(
+        app.tab_sessions["renamed-tab"].turn,
+        TurnState::Cancelling {
+            prompt_id: cancelling_id
+        } if cancelling_id == prompt_id
+    ));
+
+    app.handle_event(AppEvent::PromptCancellationSettled {
+        prompt_id,
+        started: false,
+    });
+    assert!(app.tab_sessions["renamed-tab"].turn.is_idle());
+}
+
+#[test]
+fn reset_keeps_cancellation_barrier_and_preserves_next_draft() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.prompt_tx = prompt_tx;
+    let prompt = PromptSubmission::new("old".into(), None);
+    let prompt_id = prompt.id;
+    let cancellation = prompt.cancellation_token();
+    app.turn_submit_prompt_for_tab_with_cancellation(
+        DEFAULT_TAB_ID,
+        SubmittedPrompt {
+            id: prompt_id,
+            text: prompt.text.clone(),
+            submitted_at_unix_s: prompt.submitted_at_unix_s,
+            context: TurnContext::default(),
+            autofix: None,
+        },
+        cancellation.clone(),
+    );
+    app.prompt_tx.send(prompt).unwrap();
+    app.current_tab_mut().input = "keep next draft".into();
+    app.current_tab_mut().cursor_pos = "keep next draft".len();
+
+    app.reset_tab_session_for(DEFAULT_TAB_ID);
+    assert!(cancellation.is_cancelled());
+    assert!(matches!(
+        app.current_tab().turn,
+        TurnState::Cancelling {
+            prompt_id: cancelling_id
+        } if cancelling_id == prompt_id
+    ));
+    assert_eq!(app.current_tab().input, "keep next draft");
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().input, "keep next draft");
+    assert_eq!(
+        prompt_rx.try_recv().expect("old prompt remains queued").id,
+        prompt_id
+    );
+    assert!(
+        prompt_rx.try_recv().is_err(),
+        "reset must not consume a new draft into a phantom Submitted turn"
+    );
+
+    app.handle_event(AppEvent::PromptCancellationSettled {
+        prompt_id,
+        started: false,
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_ne!(
+        prompt_rx
+            .try_recv()
+            .expect("new prompt dispatches after settlement")
+            .id,
+        prompt_id
+    );
+}
+
+#[test]
+fn queued_prompt_lost_to_rebind_is_released_only_after_transport_retirement() {
+    let (mut app, mut restart_rx) = test_app_with_restart_rx();
+    app.owner_tab_id = Some(DEFAULT_TAB_ID.into());
+    app.window_id = Some("window-1".into());
+    app.current_agent_id = "copilot".into();
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.prompt_tx = prompt_tx;
+    let prompt = PromptSubmission::new("queued on old transport".into(), None);
+    let prompt_id = prompt.id;
+    let cancellation = prompt.cancellation_token();
+    app.turn_submit_prompt_for_tab_with_cancellation(
+        DEFAULT_TAB_ID,
+        SubmittedPrompt {
+            id: prompt_id,
+            text: prompt.text.clone(),
+            submitted_at_unix_s: prompt.submitted_at_unix_s,
+            context: TurnContext::default(),
+            autofix: None,
+        },
+        cancellation.clone(),
+    );
+    app.prompt_tx.send(prompt).unwrap();
+    app.current_tab_mut().input = "preserve this draft".into();
+
+    app.handle_event(agent_rebind_event(DEFAULT_TAB_ID, 1, "claude"));
+    assert!(matches!(
+        restart_rx.try_recv(),
+        Ok(AgentLifecycleRequest::RebindAgent(_))
+    ));
+    assert!(cancellation.is_cancelled());
+    assert!(app.current_tab().turn.is_cancelling());
+    assert_eq!(app.current_tab().input, "preserve this draft");
+
+    app.handle_event(AppEvent::AgentTransportRetired);
+
+    assert!(app.current_tab().turn.is_idle());
+    assert!(app.current_tab().active_prompt_cancellation.is_none());
+    assert_eq!(app.current_tab().input, "preserve this draft");
+    assert_eq!(
+        prompt_rx
+            .try_recv()
+            .expect("submission was still queued on old client")
+            .id,
+        prompt_id
+    );
+}
+
+#[test]
+fn manual_fix_does_not_replace_a_cancelling_turn() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "stop this");
+    app.turn_cancel(DEFAULT_TAB_ID);
+    let cancelling = app.current_tab().turn.clone();
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.prompt_tx = prompt_tx;
+    app.current_tab_mut().input = "/fix".into();
+    app.current_tab_mut().cursor_pos = "/fix".len();
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.current_tab().turn, cancelling);
+    assert!(
+        prompt_rx.try_recv().is_err(),
+        "/fix must not enqueue a prompt while cancellation is settling"
+    );
+}
+
+#[test]
+fn slash_new_does_not_replace_a_cancelling_turn() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let (mut app, mut new_session_rx) = test_app_with_new_session_rx();
+    submit_test_prompt(&mut app, "stop this");
+    app.turn_cancel(DEFAULT_TAB_ID);
+    let cancelling = app.current_tab().turn.clone();
+    app.current_tab_mut().input = "/new".into();
+    app.current_tab_mut().cursor_pos = "/new".len();
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.current_tab().turn, cancelling);
+    assert!(
+        new_session_rx.try_recv().is_err(),
+        "/new must not request a replacement session while cancellation is settling"
+    );
+}
+
+#[test]
+fn cancellation_settlement_requires_exact_prompt() {
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "stop this");
+    app.turn_cancel(DEFAULT_TAB_ID);
+    app.handle_event(AppEvent::PromptCancellationSettled {
+        prompt_id: 41,
+        started: false,
+    });
+    assert_eq!(
+        app.current_tab().turn,
+        TurnState::Cancelling { prompt_id: 42 }
+    );
+
+    app.handle_event(AppEvent::PromptCancellationSettled {
+        prompt_id: 42,
+        started: false,
+    });
+    assert!(app.current_tab().turn.is_idle());
+}
+
+#[test]
+fn started_cancellation_settlement_marks_session_meaningful() {
+    let mut app = test_app();
+    app.current_tab_mut().session_id = Some("session-1".into());
+    submit_test_prompt(&mut app, "stop this");
+    app.turn_cancel(DEFAULT_TAB_ID);
+
+    app.handle_event(AppEvent::PromptCancellationSettled {
+        prompt_id: 42,
+        started: true,
+    });
+
+    assert!(app.current_tab().turn.is_idle());
+    assert!(app.current_tab().has_meaningful_conversation);
+    let projection = super::app_status_projection::build_agent_state_changed_event(
+        DEFAULT_TAB_ID,
+        app.current_tab(),
+        None,
+    );
+    assert_eq!(
+        projection["params"]["agent_session_id"],
+        serde_json::json!("session-1"),
+        "started no-output cancellation must immediately project a resumable session"
+    );
+}
+
+#[test]
+fn transport_retirement_releases_submitted_and_cancelling_turns() {
+    let mut app = test_app();
+    app.tab_id = Some("submitted-tab".into());
+    app.tab_mut("submitted-tab").session_id = Some("submitted-session".into());
+    app.session_to_tab
+        .insert("submitted-session".into(), "submitted-tab".into());
+    app.turn_submit_prompt(
+        "submitted-session",
+        SubmittedPrompt {
+            id: 60,
+            text: "queued".into(),
+            submitted_at_unix_s: 0.0,
+            context: TurnContext::default(),
+            autofix: None,
+        },
+    );
+    let submitted_token = app.tab_sessions["submitted-tab"]
+        .active_prompt_cancellation
+        .as_ref()
+        .expect("submitted token")
+        .token
+        .clone();
+
+    app.tab_mut("cancelling-tab").session_id = Some("cancelling-session".into());
+    app.session_to_tab
+        .insert("cancelling-session".into(), "cancelling-tab".into());
+    app.turn_submit_prompt(
+        "cancelling-session",
+        SubmittedPrompt {
+            id: 61,
+            text: "running".into(),
+            submitted_at_unix_s: 0.0,
+            context: TurnContext::default(),
+            autofix: None,
+        },
+    );
+    app.turn_cancel("cancelling-session");
+
+    app.handle_event(AppEvent::AgentTransportRetired);
+
+    assert!(submitted_token.is_cancelled());
+    assert!(app.tab_sessions["submitted-tab"].turn.is_idle());
+    assert!(app.tab_sessions["cancelling-tab"].turn.is_idle());
+    assert!(app.tab_sessions["submitted-tab"]
+        .active_prompt_cancellation
+        .is_none());
+    assert!(app.tab_sessions["cancelling-tab"]
+        .active_prompt_cancellation
+        .is_none());
+}
+
+#[test]
+fn unexpected_transport_exit_releases_reset_cancellation_barrier() {
+    let mut app = test_app();
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some(DEFAULT_TAB_ID.into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+    app.current_tab_mut().session_id = Some("old-session".into());
+    app.session_to_tab
+        .insert("old-session".into(), DEFAULT_TAB_ID.into());
+    app.turn_submit_prompt(
+        "old-session",
+        SubmittedPrompt {
+            id: 62,
+            text: "running".into(),
+            submitted_at_unix_s: 0.0,
+            context: TurnContext::default(),
+            autofix: None,
+        },
+    );
+
+    app.handle_event(AppEvent::MasterDisconnected);
+    assert!(app.current_tab().turn.is_cancelling());
+    app.handle_event(AppEvent::AgentTransportRetired);
+
+    assert!(app.current_tab().turn.is_idle());
+    assert!(app.current_tab().active_prompt_cancellation.is_none());
+    assert!(app.pending_acp_start);
+}
+
+#[test]
+fn rebind_after_master_disconnect_uses_closed_receiver_fallback() {
+    let (mut app, mut restart_rx) = test_app_with_restart_rx();
+    app.owner_tab_id = Some(DEFAULT_TAB_ID.into());
+    app.window_id = Some("window-1".into());
+    app.current_agent_id = "copilot".into();
+    app.set_master_pipe_acp_params(
+        "master-pipe".into(),
+        "copilot --acp".into(),
+        Some("copilot".into()),
+        None,
+        None,
+        crate::agent_source::AgentSource::Host,
+        None,
+        Some(DEFAULT_TAB_ID.into()),
+        Arc::clone(&app.shell_mgr),
+        true,
+    );
+
+    restart_rx.close();
+    app.handle_event(AppEvent::MasterDisconnected);
+    app.handle_event(agent_rebind_event(DEFAULT_TAB_ID, 1, "claude"));
+
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Disconnecting(request)
+            if request.agent_id == "claude" && request.generation == 1
+    ));
+    assert!(!app.reconnect_after_transport_retired);
+
+    app.handle_event(AppEvent::AgentTransportRetired);
+    assert!(matches!(
+        &app.agent_reconnect_state,
+        AgentReconnectState::Preflighting(request)
+            if request.agent_id == "claude" && request.generation == 1
+    ));
+
+    app.handle_event(AppEvent::AgentReconnectPreflightComplete {
+        operation_id: "op-1".into(),
+        generation: 1,
+        result: passed_preflight("claude", "Claude"),
+    });
+    assert!(app.pending_acp_start);
+}
+
+fn prepare_retired_cancellation(
+    app: &mut App,
+    tab_id: &str,
+    old_session_id: &str,
+    new_session_id: &str,
+    prompt_id: u64,
+) {
+    app.tab_mut(tab_id).session_id = Some(old_session_id.into());
+    app.session_to_tab
+        .insert(old_session_id.into(), tab_id.into());
+    app.turn_submit_prompt(
+        old_session_id,
+        SubmittedPrompt {
+            id: prompt_id,
+            text: "old prompt".into(),
+            submitted_at_unix_s: 0.0,
+            context: TurnContext::default(),
+            autofix: None,
+        },
+    );
+    app.turn_cancel(old_session_id);
+    app.reset_tab_session_for(tab_id);
+    app.handle_event(AppEvent::SessionAttached {
+        tab_id: tab_id.into(),
+        session_id: new_session_id.into(),
+        prompt_id: None,
+        available_models: Vec::new(),
+        current_model_id: None,
+    });
+}
+
+#[test]
+fn late_old_terminal_events_release_exact_barriers_without_blessing_new_sessions() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.tab_id = Some("active-tab".into());
+    app.tab_mut("active-tab").session_id = Some("active-session".into());
+    app.session_to_tab
+        .insert("active-session".into(), "active-tab".into());
+    app.tab_mut("active-tab")
+        .messages
+        .push(ChatMessage::info("keep me"));
+
+    prepare_retired_cancellation(
+        &mut app,
+        "ended-tab",
+        "old-ended-session",
+        "new-ended-session",
+        70,
+    );
+    prepare_retired_cancellation(
+        &mut app,
+        "error-tab",
+        "old-error-session",
+        "new-error-session",
+        71,
+    );
+    prepare_retired_cancellation(
+        &mut app,
+        "settled-tab",
+        "old-settled-session",
+        "new-settled-session",
+        72,
+    );
+
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: "new-ended-session".into(),
+    });
+    assert!(app.tab_sessions["ended-tab"].turn.is_cancelling());
+    assert!(!app.tab_sessions["ended-tab"].has_meaningful_conversation);
+
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: "old-ended-session".into(),
+    });
+    app.handle_event(AppEvent::AgentError {
+        session_id: Some("old-error-session".into()),
+        failure: crate::protocol::acp::failure::AgentFailure::Protocol {
+            code: -32000,
+            message: "late failure".into(),
+        },
+        message: "late failure".into(),
+    });
+    app.handle_event(AppEvent::PromptCancellationSettled {
+        prompt_id: 72,
+        started: true,
+    });
+
+    for tab_id in ["ended-tab", "error-tab", "settled-tab"] {
+        let tab = &app.tab_sessions[tab_id];
+        assert!(tab.turn.is_idle());
+        assert!(!tab.has_meaningful_conversation);
+        assert_eq!(tab.resumable_session_id(), None);
+        assert!(tab.messages.is_empty());
+    }
+    assert_eq!(
+        app.tab_sessions["ended-tab"].session_id.as_deref(),
+        Some("new-ended-session")
+    );
+    assert_eq!(
+        app.tab_sessions["error-tab"].session_id.as_deref(),
+        Some("new-error-session")
+    );
+    assert_eq!(
+        app.tab_sessions["settled-tab"].session_id.as_deref(),
+        Some("new-settled-session")
+    );
+    assert_eq!(app.tab_sessions["active-tab"].messages.len(), 1);
+    assert!(matches!(app.state, ConnectionState::Connected));
+}
+
+#[test]
+fn unknown_old_terminal_events_do_not_mutate_the_active_tab() {
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().session_id = Some("active-session".into());
+    app.session_to_tab
+        .insert("active-session".into(), DEFAULT_TAB_ID.into());
+    submit_test_prompt(&mut app, "still running");
+    let turn_before = app.current_tab().turn.clone();
+    let messages_before = app.current_tab().messages.clone();
+
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: "unknown-old-session".into(),
+    });
+    app.handle_event(AppEvent::AgentError {
+        session_id: Some("unknown-old-session".into()),
+        failure: crate::protocol::acp::failure::AgentFailure::Protocol {
+            code: -32000,
+            message: "stale".into(),
+        },
+        message: "stale".into(),
+    });
+
+    assert_eq!(app.current_tab().turn, turn_before);
+    assert_eq!(app.current_tab().messages, messages_before);
+    assert!(matches!(app.state, ConnectionState::Connected));
+}
+
+#[test]
+fn old_tab_cancellation_settlement_finds_renamed_exact_prompt() {
+    let mut app = test_app();
+    app.current_tab_mut().session_id = Some("old-session".into());
+    app.session_to_tab
+        .insert("old-session".into(), DEFAULT_TAB_ID.into());
+    submit_test_prompt(&mut app, "stop this");
+    app.turn_cancel(DEFAULT_TAB_ID);
+    app.handle_event(AppEvent::TabRenamed {
+        old_tab_id: DEFAULT_TAB_ID.into(),
+        new_tab_id: "renamed-tab".into(),
+        new_window_id: None,
+    });
+
+    app.handle_event(AppEvent::PromptCancellationSettled {
+        prompt_id: 42,
+        started: false,
+    });
+
+    assert!(app.tab_sessions["renamed-tab"].turn.is_idle());
+    assert!(!app.tab_sessions.contains_key(DEFAULT_TAB_ID));
+}
+
+#[test]
+fn old_tab_cancellation_settlement_does_not_settle_different_prompt() {
+    let mut app = test_app();
+    app.current_tab_mut().session_id = Some("old-session".into());
+    app.session_to_tab
+        .insert("old-session".into(), DEFAULT_TAB_ID.into());
+    submit_test_prompt(&mut app, "stop this");
+    app.turn_cancel(DEFAULT_TAB_ID);
+    app.handle_event(AppEvent::TabRenamed {
+        old_tab_id: DEFAULT_TAB_ID.into(),
+        new_tab_id: "renamed-tab".into(),
+        new_window_id: None,
+    });
+
+    app.handle_event(AppEvent::PromptCancellationSettled {
+        prompt_id: 41,
+        started: true,
+    });
+
+    assert_eq!(
+        app.tab_sessions["renamed-tab"].turn,
+        TurnState::Cancelling { prompt_id: 42 }
+    );
+}
+
+#[test]
+fn cancellation_settlement_does_not_recreate_dropped_tab() {
+    let mut app = test_app();
+    app.tab_sessions.remove(DEFAULT_TAB_ID);
+
+    app.handle_event(AppEvent::PromptCancellationSettled {
+        prompt_id: 99,
+        started: false,
+    });
+
+    assert!(!app.tab_sessions.contains_key(DEFAULT_TAB_ID));
+}
+
+#[test]
+fn cancellation_settlement_finds_renamed_turn_when_old_tab_key_was_recreated() {
+    let mut app = test_app();
+    app.current_tab_mut().session_id = Some("old-session".into());
+    app.session_to_tab
+        .insert("old-session".into(), DEFAULT_TAB_ID.into());
+    submit_test_prompt(&mut app, "old prompt");
+    app.turn_cancel(DEFAULT_TAB_ID);
+    app.handle_event(AppEvent::TabRenamed {
+        old_tab_id: DEFAULT_TAB_ID.into(),
+        new_tab_id: "renamed-tab".into(),
+        new_window_id: None,
+    });
+    app.tab_sessions
+        .insert(DEFAULT_TAB_ID.into(), Default::default());
+
+    app.handle_event(AppEvent::PromptCancellationSettled {
+        prompt_id: 42,
+        started: false,
+    });
+
+    assert!(app.tab_sessions["renamed-tab"].turn.is_idle());
+    assert!(app.tab_sessions[DEFAULT_TAB_ID].turn.is_idle());
+}
+
+#[test]
+fn stale_cancellation_settlement_does_not_close_newer_turn() {
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "old prompt");
+    app.turn_cancel(DEFAULT_TAB_ID);
+    app.current_tab_mut().turn = TurnState::Submitted(SubmittedPrompt {
+        id: 43,
+        text: "new prompt".into(),
+        submitted_at_unix_s: 0.0,
+        context: TurnContext::default(),
+        autofix: None,
+    });
+
+    app.handle_event(AppEvent::PromptCancellationSettled {
+        prompt_id: 42,
+        started: false,
+    });
+
+    assert!(matches!(
+        app.current_tab().turn,
+        TurnState::Submitted(SubmittedPrompt { id: 43, .. })
+    ));
+}
+
+#[test]
+fn cancel_mid_stream_preserves_visible_prose_with_canceled_marker() {
+    // Esc while prose is streaming → commit partial prose as a
+    // CompletedTurn (default-expanded) with the trailing_marker set
+    // so the user sees what arrived and that they cancelled it.
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "tell me a story");
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Message, "\n\nOnce upon a time");
+    app.turn_cancel(DEFAULT_TAB_ID);
+    let tab = app.current_tab();
+    assert!(tab.turn.is_cancelling(), "got {:?}", tab.turn);
+    assert_eq!(tab.completed_turns.len(), 1);
+    let committed = &tab.completed_turns[0];
+    assert_eq!(committed.prompt, "tell me a story");
+    assert!(
+        committed.expanded,
+        "cancel-committed turns default expanded"
+    );
+    assert!(committed
+        .details
+        .iter()
+        .any(|m| matches!(m, ChatMessage::Agent(t) if t.contains("Once upon a time"))));
+    assert!(
+        committed
+            .trailing_marker
+            .as_deref()
+            .map_or(false, |m| m.contains("canceled")),
+        "trailing_marker should hold (canceled), got {:?}",
+        committed.trailing_marker
+    );
+    assert!(tab.messages.is_empty(), "messages cleared on cancel");
+
+    app.turn_observe_chunk(
+        DEFAULT_TAB_ID,
+        ChunkKind::Message,
+        " stale text after cancel",
+    );
+    assert_eq!(
+        app.current_tab().completed_turns.len(),
+        1,
+        "late cancelled-turn chunks must be discarded"
+    );
+    app.handle_event(AppEvent::PromptCancellationSettled {
+        prompt_id: 42,
+        started: true,
+    });
+    assert!(app.current_tab().turn.is_idle());
+    app.turn_cancel(DEFAULT_TAB_ID);
+    assert_eq!(
+        app.current_tab().completed_turns.len(),
+        1,
+        "cancelling an already-idle turn must not commit the transcript twice"
+    );
+}
+
+#[test]
+fn cancel_mid_stream_preserves_raw_json_with_canceled_marker() {
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "kill pid 1234");
+    let json = r#"{"recommended_choice":1,"choices":[{"choice":1,"#;
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Message, json);
+    app.turn_cancel(DEFAULT_TAB_ID);
+    let tab = app.current_tab();
+    assert!(tab.turn.is_cancelling());
+    assert_eq!(tab.completed_turns.len(), 1);
+    let committed = &tab.completed_turns[0];
+    assert_eq!(committed.prompt, "kill pid 1234");
+    assert!(
+        committed
+            .details
+            .iter()
+            .any(|m| matches!(m, ChatMessage::Agent(text) if text == json)),
+        "raw JSON must remain visible assistant text"
+    );
+    assert!(
+        committed
+            .trailing_marker
+            .as_deref()
+            .map_or(false, |m| m.contains("canceled")),
+        "trailing_marker should hold (canceled), got {:?}",
+        committed.trailing_marker
+    );
+    assert!(tab.messages.is_empty());
+    app.handle_event(AppEvent::PromptCancellationSettled {
+        prompt_id: 42,
+        started: true,
+    });
+    assert!(app.current_tab().turn.is_idle());
+}
+
+#[test]
+fn raw_json_assistant_text_commits_as_chat_turn() {
+    let mut app = test_app();
+    submit_test_prompt(&mut app, "first");
+    let json = r#"{"recommended_choice":1,"choices":[]}"#;
+    app.turn_observe_chunk(DEFAULT_TAB_ID, ChunkKind::Message, json);
+    app.turn_close(DEFAULT_TAB_ID);
+
+    let tab = app.current_tab();
+    assert!(
+        matches!(
+            tab.turn,
+            TurnState::Surfaced {
+                outcome: TurnOutcome::ChatTurn,
+                end_pending: false,
+                ..
+            }
+        ),
+        "expected chat turn, got {:?}",
+        tab.turn
+    );
+    assert!(tab.completed_turns[0]
+        .details
+        .iter()
+        .any(|message| matches!(message, ChatMessage::Agent(text) if text == json)));
+}
+
+fn stage_proposal_session(app: &mut App, session_id: &str) {
+    app.session_to_tab
+        .insert(session_id.to_string(), DEFAULT_TAB_ID.to_string());
+    app.tab_mut(DEFAULT_TAB_ID).session_id = Some(session_id.to_string());
+}
+
+fn submit_proposal_prompt(app: &mut App, session_id: &str) {
+    app.turn_submit_prompt(
+        session_id,
+        SubmittedPrompt {
+            id: 99,
+            text: "restart it".into(),
+            submitted_at_unix_s: 0.0,
+            context: TurnContext::with_target_pane("pane-9"),
+            autofix: None,
+        },
+    );
+}
+
+const TERMINAL_AGENT_PROPOSAL_PAYLOAD: &str = r#"{"schema_version":1,"origin":"terminal_agent","recommended_choice":1,"choices":[{"choice":1,"title":"restart service","rationale":"r","actions":[{"type":"send","input":"Restart-Service foo"}]}]}"#;
+
+fn stage_error_fix_telemetry_proposal(
+    app: &mut App,
+    is_autofix: bool,
+) -> (
+    String,
+    tokio::sync::oneshot::Receiver<
+        crate::agent_tools::action_proposal::channel::ProposalFinalStatus,
+    >,
+) {
+    use crate::agent_tools::action_proposal::{
+        channel::{ProposalChannelManager, ProposalValidationStatus},
+        pipe::ProposalPayloadSource,
+        schema::McpActionTool,
+    };
+    app.state = ConnectionState::Connected;
+    app.mode = AppMode::Chat;
+    stage_proposal_session(app, "fix-telemetry");
+    submit_proposal_prompt(app, "fix-telemetry");
+    let tab = app.current_tab_mut();
+    tab.pane_open = true;
+    if is_autofix {
+        tab.turn.prompt_mut().unwrap().autofix = Some(AutofixContext {
+            generation: tab.autofix.generation,
+        });
+    }
+    let manager = Arc::new(ProposalChannelManager::new());
+    app.set_proposal_channels(Arc::clone(&manager));
+    let channel = manager
+        .issue(
+            "fix-telemetry".into(),
+            99,
+            Some("pane-9".into()),
+            is_autofix,
+        )
+        .unwrap();
+    let context = manager.begin_validation(&channel).unwrap();
+    let proposal_id = context.proposal_id.clone();
+    let decision = app.evaluate_direct_terminal_action_proposal(
+        &context,
+        r#"{"summary":"Repair the failure","command":"Get-Date"}"#,
+        ProposalPayloadSource::Mcp(McpActionTool::RunCommandInCurrentShell),
+    );
+    assert_eq!(decision.status, ProposalValidationStatus::Accepted);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    assert!(manager.accept_validation(&proposal_id, tx));
+    (proposal_id, rx)
+}
+
+fn flush_error_fix_telemetry_frame(app: &mut App, width: u16, height: u16) -> String {
+    let text = render_to_text(app, width, height);
+    app.log_error_fix_offered_if_visible();
+    text
+}
+
+#[test]
+fn error_fix_telemetry_requires_display_then_run_and_deduplicates() {
+    use crate::telemetry::capture::{take, Event};
+    take();
+    let mut app = test_app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.recommendation_tx = tx;
+    let (proposal_id, mut final_rx) = stage_error_fix_telemetry_proposal(&mut app, true);
+    assert!(take().is_empty(), "validation is not an offer");
+    assert!(app.commit_terminal_action_proposal(&proposal_id));
+    assert!(!app.commit_terminal_action_proposal(&proposal_id));
+    assert!(take().is_empty(), "committing a hidden card is not display");
+    assert!(flush_error_fix_telemetry_frame(&mut app, 100, 30).contains("Get-Date"));
+    let offer_id = app.current_tab().autofix.offer.as_ref().unwrap().id;
+    assert_eq!(take(), vec![Event::ErrorFixOffered(offer_id)]);
+
+    flush_error_fix_telemetry_frame(&mut app, 100, 30);
+    app.project_active_tab_state();
+    app.turn_close("fix-telemetry");
+    flush_error_fix_telemetry_frame(&mut app, 100, 30);
+    assert!(
+        take().is_empty(),
+        "redraw, projection and completion are not offers"
+    );
+
+    app.turn_execute_card("fix-telemetry");
+    assert_eq!(take(), vec![Event::ErrorFixAccepted(offer_id)]);
+    assert!(!rx.try_recv().unwrap().insert_only);
+    assert_eq!(
+        final_rx.try_recv().unwrap(),
+        crate::agent_tools::action_proposal::channel::ProposalFinalStatus::Confirmed
+    );
+    app.turn_execute_card("fix-telemetry");
+    flush_error_fix_telemetry_frame(&mut app, 100, 30);
+    assert!(take().is_empty());
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn error_fix_telemetry_nonoverlapping_autocomplete_allows_offer_and_enter_acceptance() {
+    use crate::telemetry::capture::{take, Event};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    take();
+    let mut app = test_app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.recommendation_tx = tx;
+    let (proposal_id, mut final_rx) = stage_error_fix_telemetry_proposal(&mut app, true);
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    assert!(app.command_popup_state().is_some());
+    assert!(app.commit_terminal_action_proposal(&proposal_id));
+    assert_eq!(
+        app.current_tab().recommendation_focus,
+        RecommendationFocus::Button
+    );
+    assert_eq!(app.current_tab().selected_button, 0);
+
+    let text = flush_error_fix_telemetry_frame(&mut app, 100, 40);
+    let command_row = text
+        .lines()
+        .position(|line| line.contains("Get-Date"))
+        .unwrap();
+    let popup_row = text
+        .lines()
+        .position(|line| line.contains("/help"))
+        .unwrap();
+    assert!(
+        command_row < popup_row,
+        "the card and autocomplete must both be visible"
+    );
+    assert!(app.command_popup_state().is_some());
+    let offer_id = app.current_tab().autofix.offer.as_ref().unwrap().id;
+    assert_eq!(take(), vec![Event::ErrorFixOffered(offer_id)]);
+    flush_error_fix_telemetry_frame(&mut app, 100, 40);
+    assert!(take().is_empty(), "redrawing must not offer twice");
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(take(), vec![Event::ErrorFixAccepted(offer_id)]);
+    let execution = rx.try_recv().unwrap();
+    assert!(!execution.insert_only);
+    assert_eq!(execution.context.target_pane_id(), Some("pane-9"));
+    assert!(matches!(
+        execution.choice.actions.as_slice(),
+        [crate::coordinator::RecommendedAction::Send { input, .. }] if input == "Get-Date"
+    ));
+    assert_eq!(
+        final_rx.try_recv().unwrap(),
+        crate::agent_tools::action_proposal::channel::ProposalFinalStatus::Confirmed
+    );
+    assert_eq!(app.current_tab().input, "/", "Run must preserve the draft");
+    assert!(app.current_tab().turn.recommendations().is_none());
+    flush_error_fix_telemetry_frame(&mut app, 100, 40);
+    assert!(take().is_empty());
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn error_fix_telemetry_overlapping_autocomplete_and_clipping_suppress_offer() {
+    use crate::telemetry::capture::{take, Event};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    take();
+    let mut app = test_app();
+    let (proposal_id, _final_rx) = stage_error_fix_telemetry_proposal(&mut app, true);
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    assert!(app.commit_terminal_action_proposal(&proposal_id));
+    for (width, height) in [(100, 12), (1, 1)] {
+        assert!(app.command_popup_state().is_some());
+        let text = flush_error_fix_telemetry_frame(&mut app, width, height);
+        assert!(!text.contains("Get-Date"), "command is obscured or clipped");
+        assert!(!app.recommendation_rendered);
+        assert!(take().is_empty(), "no offer at {width}x{height}");
+    }
+    let offer_id = app.current_tab().autofix.offer.as_ref().unwrap().id;
+    assert!(flush_error_fix_telemetry_frame(&mut app, 100, 40).contains("Get-Date"));
+    assert_eq!(take(), vec![Event::ErrorFixOffered(offer_id)]);
+}
+
+#[test]
+fn error_fix_telemetry_waits_for_unobscured_open_card() {
+    use crate::telemetry::capture::{take, Event};
+    take();
+    let mut app = test_app();
+    let (proposal_id, _final_rx) = stage_error_fix_telemetry_proposal(&mut app, true);
+    assert!(app.commit_terminal_action_proposal(&proposal_id));
+    app.current_tab_mut().pane_open = false;
+    flush_error_fix_telemetry_frame(&mut app, 100, 30);
+    assert!(take().is_empty(), "stashed pane");
+    app.current_tab_mut().pane_open = true;
+    app.current_tab_mut().current_view = View::Agents;
+    flush_error_fix_telemetry_frame(&mut app, 100, 30);
+    assert!(take().is_empty(), "session picker");
+    app.current_tab_mut().current_view = View::Chat;
+    app.help_overlay_visible = true;
+    flush_error_fix_telemetry_frame(&mut app, 100, 30);
+    assert!(take().is_empty(), "help overlay");
+    app.help_overlay_visible = false;
+    flush_error_fix_telemetry_frame(&mut app, 1, 1);
+    assert!(take().is_empty(), "no space for card content");
+    flush_error_fix_telemetry_frame(&mut app, 100, 6);
+    let offer_id = app.current_tab().autofix.offer.as_ref().unwrap().id;
+    assert_eq!(
+        take(),
+        vec![Event::ErrorFixOffered(offer_id)],
+        "compact card"
+    );
+}
+
+#[test]
+fn error_fix_telemetry_excludes_insert_cancel_and_failed_dispatch() {
+    use crate::telemetry::capture::take;
+    for action in ["insert", "cancel", "failed", "revoked"] {
+        take();
+        let mut app = test_app();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        if action != "failed" {
+            app.recommendation_tx = tx;
+        }
+        let (proposal_id, _final_rx) = stage_error_fix_telemetry_proposal(&mut app, true);
+        assert!(app.commit_terminal_action_proposal(&proposal_id));
+        flush_error_fix_telemetry_frame(&mut app, 100, 30);
+        assert_eq!(take().len(), 1);
+        match action {
+            "cancel" => app.turn_cancel("fix-telemetry"),
+            "revoked" => {
+                app.proposal_channels.resolve_final(
+                    &proposal_id,
+                    crate::agent_tools::action_proposal::channel::ProposalFinalStatus::Superseded,
+                );
+                app.turn_execute_card("fix-telemetry");
+            }
+            _ => {
+                app.current_tab_mut().selected_button = usize::from(action == "insert");
+                app.turn_execute_card("fix-telemetry");
+            }
+        }
+        flush_error_fix_telemetry_frame(&mut app, 100, 30);
+        assert!(
+            take().is_empty(),
+            "{action} must not count as Run acceptance"
+        );
+    }
+}
+
+#[test]
+fn error_fix_telemetry_excludes_generic_actions_and_undisplayed_acceptance() {
+    use crate::telemetry::capture::take;
+    for is_autofix in [false, true] {
+        take();
+        let mut app = test_app();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.recommendation_tx = tx;
+        let (proposal_id, _final_rx) = stage_error_fix_telemetry_proposal(&mut app, is_autofix);
+        assert!(app.commit_terminal_action_proposal(&proposal_id));
+        if !is_autofix {
+            flush_error_fix_telemetry_frame(&mut app, 100, 30);
+        }
+        app.turn_execute_card("fix-telemetry");
+        assert!(
+            rx.try_recv().is_ok(),
+            "existing execution behavior preserved"
+        );
+        assert!(take().is_empty());
+    }
+}
+
+#[test]
+fn error_fix_telemetry_excludes_analysis_explanation_and_stale_proposals() {
+    use crate::telemetry::capture::take;
+    take();
+    let mut app = test_app();
+    let (proposal_id, _final_rx) = stage_error_fix_telemetry_proposal(&mut app, true);
+    flush_error_fix_telemetry_frame(&mut app, 100, 30);
+    assert!(take().is_empty(), "analysis is not a recommendation");
+    app.turn_observe_chunk(
+        "fix-telemetry",
+        ChunkKind::Message,
+        "Here is why it failed.",
+    );
+    app.turn_close("fix-telemetry");
+    flush_error_fix_telemetry_frame(&mut app, 100, 30);
+    assert!(take().is_empty(), "explanation is not executable");
+    assert!(!app.commit_terminal_action_proposal(&proposal_id));
+    assert!(take().is_empty(), "stale commit is not an offer");
+}
+
+#[test]
+fn error_fix_telemetry_ignores_stale_generation_and_new_turn_gets_new_id() {
+    use crate::telemetry::capture::{take, Event};
+    take();
+    let mut app = test_app();
+    let (proposal_id, _final_rx) = stage_error_fix_telemetry_proposal(&mut app, true);
+    assert!(app.commit_terminal_action_proposal(&proposal_id));
+    let old_id = app.current_tab().autofix.offer.as_ref().unwrap().id;
+    app.current_tab_mut().autofix.generation += 1;
+    flush_error_fix_telemetry_frame(&mut app, 100, 30);
+    assert!(take().is_empty(), "invalidated autofix generation");
+    let (proposal_id, _final_rx) = stage_error_fix_telemetry_proposal(&mut app, true);
+    assert!(app.commit_terminal_action_proposal(&proposal_id));
+    let new_id = app.current_tab().autofix.offer.as_ref().unwrap().id;
+    assert_ne!(old_id, new_id);
+    flush_error_fix_telemetry_frame(&mut app, 100, 30);
+    assert_eq!(take(), vec![Event::ErrorFixOffered(new_id)]);
+}
+
+#[test]
+fn error_fix_telemetry_policy_is_independent_of_effective_setting() {
+    use crate::telemetry::{
+        capture::{take, Event},
+        AutoFixPolicyState,
+    };
+    let mut app = test_app();
+    assert_eq!(app.autofix_policy_state, AutoFixPolicyState::Unknown);
+    for (wire, policy) in [
+        ("disabled", AutoFixPolicyState::Disabled),
+        ("notConfigured", AutoFixPolicyState::NotConfigured),
+        ("enabled", AutoFixPolicyState::Enabled),
+        ("invalid-private-string", AutoFixPolicyState::Unknown),
+    ] {
+        take();
+        app.handle_event(AppEvent::WtEvent {
+            method: "agent_config_changed".into(),
+            pane_id: String::new(),
+            tab_id: None,
+            params: json!({"autofix_enabled": false, "autofix_policy_state": wire}),
+        });
+        app.handle_event(AppEvent::WtEvent {
+            method: "vt_sequence".into(),
+            pane_id: "failing-pane".into(),
+            tab_id: Some(DEFAULT_TAB_ID.into()),
+            params: json!({"sequence": "osc:133;D;1"}),
+        });
+        assert_eq!(
+            take(),
+            vec![Event::ErrorDetected {
+                policy,
+                enabled: false
+            }]
+        );
+        assert!(!app.autofix_enabled);
+    }
+}
+
+fn stage_direct_proposal(
+    app: &mut App,
+    manager: &std::sync::Arc<crate::agent_tools::action_proposal::channel::ProposalChannelManager>,
+    session_id: &str,
+) -> (
+    String,
+    tokio::sync::oneshot::Receiver<
+        crate::agent_tools::action_proposal::channel::ProposalFinalStatus,
+    >,
+) {
+    let channel = manager
+        .issue(
+            session_id.to_string(),
+            99,
+            Some("pane-9".to_string()),
+            false,
+        )
+        .unwrap();
+    let context = manager.begin_validation(&channel).unwrap();
+    let proposal_id = context.proposal_id.clone();
+    let (decision_tx, decision_rx) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::DirectTerminalActionProposal {
+        context,
+        payload: TERMINAL_AGENT_PROPOSAL_PAYLOAD.to_string(),
+        source: crate::agent_tools::action_proposal::pipe::ProposalPayloadSource::Cli,
+        responder: decision_tx,
+    });
+    assert_eq!(
+        decision_rx.blocking_recv().unwrap().status,
+        crate::agent_tools::action_proposal::channel::ProposalValidationStatus::Accepted
+    );
+    let (final_tx, final_rx) = tokio::sync::oneshot::channel();
+    assert!(manager.accept_validation(&proposal_id, final_tx));
+    (proposal_id, final_rx)
+}
+
+#[test]
+fn direct_proposal_confirm_resolves_waiting_cli() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    let (recommendation_tx, mut recommendation_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.recommendation_tx = recommendation_tx;
+    let manager = std::sync::Arc::new(
+        crate::agent_tools::action_proposal::channel::ProposalChannelManager::new(),
+    );
+    app.set_proposal_channels(std::sync::Arc::clone(&manager));
+    let session_id = "direct-confirm";
+    stage_proposal_session(&mut app, session_id);
+    submit_proposal_prompt(&mut app, session_id);
+    let (proposal_id, final_rx) = stage_direct_proposal(&mut app, &manager, session_id);
+
+    let (commit_tx, commit_rx) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::DirectTerminalActionProposalCommit {
+        proposal_id,
+        responder: commit_tx,
+    });
+    assert!(commit_rx.blocking_recv().unwrap());
+    app.turn_execute_card(session_id);
+
+    assert_eq!(
+        final_rx.blocking_recv().unwrap(),
+        crate::agent_tools::action_proposal::channel::ProposalFinalStatus::Confirmed
+    );
+    let execution = recommendation_rx.try_recv().unwrap();
+    assert_eq!(execution.context.target_pane_id(), Some("pane-9"));
+
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: session_id.into(),
+    });
+    let tab = app.session_tab(session_id);
+    assert_eq!(tab.completed_turns.len(), 1);
+    assert_eq!(
+        tab.completed_turns[0].details.last(),
+        Some(&ChatMessage::Agent("Run: Restart-Service foo".into()))
+    );
+    assert_eq!(tab.completed_turns[0].trailing_marker, None);
+}
+
+#[test]
+fn executing_committed_recommendation_keeps_compact_summary() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    let (recommendation_tx, _recommendation_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.recommendation_tx = recommendation_tx;
+    let manager = std::sync::Arc::new(
+        crate::agent_tools::action_proposal::channel::ProposalChannelManager::new(),
+    );
+    app.set_proposal_channels(std::sync::Arc::clone(&manager));
+    let session_id = "direct-confirm-after-end";
+    stage_proposal_session(&mut app, session_id);
+    submit_proposal_prompt(&mut app, session_id);
+    let (proposal_id, _final_rx) = stage_direct_proposal(&mut app, &manager, session_id);
+    let (commit_tx, commit_rx) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::DirectTerminalActionProposalCommit {
+        proposal_id,
+        responder: commit_tx,
+    });
+    assert!(commit_rx.blocking_recv().unwrap());
+
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: session_id.into(),
+    });
+    assert!(matches!(
+        app.session_tab(session_id).completed_turns[0].details.last(),
+        Some(ChatMessage::Agent(text)) if text == "Restart-Service foo"
+    ));
+
+    app.turn_execute_card(session_id);
+
+    let turn = &app.session_tab(session_id).completed_turns[0];
+    assert_eq!(
+        turn.details.last(),
+        Some(&ChatMessage::Agent("Run: Restart-Service foo".into()))
+    );
+    assert_eq!(turn.trailing_marker, None);
+
+    let rendered = render_to_text(&mut app, 80, 24);
+    assert!(rendered.contains("Run: Restart-Service foo"));
+    assert!(!rendered.contains("Suggested 1 option:"));
+    assert!(!rendered.contains("1. Run:"));
+    assert!(!rendered.contains("executed:"));
+}
+
+#[test]
+fn direct_proposal_history_distinguishes_localized_insert_and_run() {
+    let _locale = crate::test_support::lock_locale();
+    for (locale, run_label, insert_label) in [("en-US", "Run", "Insert"), ("zh-CN", "运行", "插入")]
+    {
+        rust_i18n::set_locale(locale);
+        for insert_only in [false, true] {
+            for end_before_action in [false, true] {
+                let mut app = test_app();
+                let (recommendation_tx, mut recommendation_rx) =
+                    tokio::sync::mpsc::unbounded_channel();
+                app.recommendation_tx = recommendation_tx;
+                let manager = std::sync::Arc::new(
+                    crate::agent_tools::action_proposal::channel::ProposalChannelManager::new(),
+                );
+                app.set_proposal_channels(std::sync::Arc::clone(&manager));
+                let session_id = "localized-action";
+                stage_proposal_session(&mut app, session_id);
+                submit_proposal_prompt(&mut app, session_id);
+                let (proposal_id, final_rx) = stage_direct_proposal(&mut app, &manager, session_id);
+                let (commit_tx, commit_rx) = tokio::sync::oneshot::channel();
+                app.handle_event(AppEvent::DirectTerminalActionProposalCommit {
+                    proposal_id,
+                    responder: commit_tx,
+                });
+                assert!(commit_rx.blocking_recv().unwrap());
+                if end_before_action {
+                    app.turn_close(session_id);
+                }
+                app.session_tab_mut(session_id).selected_button = usize::from(insert_only);
+                app.turn_execute_card(session_id);
+                assert_eq!(
+                    recommendation_rx.try_recv().unwrap().insert_only,
+                    insert_only
+                );
+                assert_eq!(
+                    final_rx.blocking_recv().unwrap(),
+                    crate::agent_tools::action_proposal::channel::ProposalFinalStatus::Confirmed
+                );
+                if !end_before_action {
+                    app.turn_close(session_id);
+                }
+
+                let label = if insert_only { insert_label } else { run_label };
+                let expected = format!("{label}: Restart-Service foo");
+                let turns = &app.session_tab(session_id).completed_turns;
+                assert_eq!(turns.len(), 1);
+                assert_eq!(turns[0].details, vec![ChatMessage::Agent(expected.clone())]);
+                assert_eq!(turns[0].trailing_marker, None);
+                let rendered = render_to_text(&mut app, 80, 24);
+                // TestBackend includes blank continuation cells after wide glyphs.
+                let compact_rendered: String =
+                    rendered.chars().filter(|c| !c.is_whitespace()).collect();
+                let compact_expected: String =
+                    expected.chars().filter(|c| !c.is_whitespace()).collect();
+                assert!(
+                    compact_rendered.contains(&compact_expected),
+                    "{locale}: {rendered}"
+                );
+                assert!(!rendered.contains("Suggested"));
+                assert!(!rendered.contains("executed:"));
+            }
+        }
+    }
+}
+
+#[test]
+fn direct_proposal_cancel_history_marks_action_not_title() {
+    let _locale = crate::test_support::lock_locale();
+    for (locale, canceled) in [("en-US", "(canceled)"), ("zh-CN", "(已取消)")] {
+        rust_i18n::set_locale(locale);
+        for end_before_cancel in [false, true] {
+            for has_prose in [false, true] {
+                let mut app = test_app();
+                let (recommendation_tx, mut recommendation_rx) =
+                    tokio::sync::mpsc::unbounded_channel();
+                app.recommendation_tx = recommendation_tx;
+                let manager = std::sync::Arc::new(
+                    crate::agent_tools::action_proposal::channel::ProposalChannelManager::new(),
+                );
+                app.set_proposal_channels(std::sync::Arc::clone(&manager));
+                let session_id = "compact-cancel";
+                stage_proposal_session(&mut app, session_id);
+                submit_proposal_prompt(&mut app, session_id);
+                let (proposal_id, final_rx) = stage_direct_proposal(&mut app, &manager, session_id);
+                let (commit_tx, commit_rx) = tokio::sync::oneshot::channel();
+                app.handle_event(AppEvent::DirectTerminalActionProposalCommit {
+                    proposal_id,
+                    responder: commit_tx,
+                });
+                assert!(commit_rx.blocking_recv().unwrap());
+                if has_prose {
+                    app.handle_event(AppEvent::AgentMessageChunk {
+                        session_id: session_id.into(),
+                        text: "Service explanation.".into(),
+                    });
+                }
+                if end_before_cancel {
+                    app.turn_close(session_id);
+                }
+                app.turn_cancel(session_id);
+                assert_eq!(
+                    final_rx.blocking_recv().unwrap(),
+                    crate::agent_tools::action_proposal::channel::ProposalFinalStatus::Cancelled
+                );
+                assert!(recommendation_rx.try_recv().is_err());
+                app.handle_event(AppEvent::PromptCancellationSettled {
+                    prompt_id: 99,
+                    started: true,
+                });
+                app.turn_cancel(session_id);
+
+                let turns = &app.session_tab(session_id).completed_turns;
+                assert_eq!(turns.len(), 1);
+                let mut expected_details = if has_prose {
+                    vec![ChatMessage::Agent("Service explanation.".into())]
+                } else {
+                    Vec::new()
+                };
+                let action = format!("Restart-Service foo {canceled}");
+                expected_details.push(ChatMessage::Agent(action.clone()));
+                assert_eq!(turns[0].details, expected_details);
+                assert_eq!(turns[0].trailing_marker, None);
+                assert!(!turns[0].prompt.contains(canceled));
+                let rendered = render_to_text(&mut app, 100, 30);
+                let compact: String = rendered.chars().filter(|c| !c.is_whitespace()).collect();
+                let compact_action: String =
+                    action.chars().filter(|c| !c.is_whitespace()).collect();
+                assert!(compact.contains(&compact_action), "{locale}: {rendered}");
+                assert!(!rendered.contains("Suggested"));
+                for label in ["Run:", "Insert:", "运行:", "插入:"] {
+                    assert!(!compact.contains(label), "{locale}: {rendered}");
+                }
+                assert!(!rendered.contains("1. Run:"));
+                assert!(!rendered.contains('✓'));
+            }
+        }
+    }
+}
+
+#[test]
+fn replayed_recommendations_do_not_assume_run_or_insert() {
+    let _locale = crate::test_support::lock_locale();
+    for locale in ["en-US", "zh-CN"] {
+        rust_i18n::set_locale(locale);
+        let mut tab = TabSession::default();
+        tab.messages = vec![
+            ChatMessage::User("show dates".into()),
+            ChatMessage::Agent(
+                serde_json::json!({
+                    "recommended_choice": 2,
+                    "choices": [
+                        {"choice": 1, "title": "Local date", "rationale": "",
+                         "actions": [{"type": "send", "parent": "", "input": "Get-Date"}]},
+                        {"choice": 2, "title": "UTC date", "rationale": "",
+                         "actions": [{"type": "send", "parent": "", "input": "Get-Date -AsUTC"}]}
+                    ]
+                })
+                .to_string(),
+            ),
+        ];
+        tab.pack_replayed_messages_into_turns();
+        assert_eq!(
+            tab.completed_turns[0].details,
+            vec![ChatMessage::Agent("Get-Date\nGet-Date -AsUTC".into())]
+        );
+    }
+}
+
+#[test]
+fn direct_proposal_defers_history_until_tool_updates_finish() {
+    let mut app = test_app();
+    let manager = std::sync::Arc::new(
+        crate::agent_tools::action_proposal::channel::ProposalChannelManager::new(),
+    );
+    app.set_proposal_channels(std::sync::Arc::clone(&manager));
+    let session_id = "direct-tool-update";
+    stage_proposal_session(&mut app, session_id);
+    submit_proposal_prompt(&mut app, session_id);
+    app.handle_event(AppEvent::ToolCall {
+        session_id: session_id.into(),
+        query: None,
+        id: "tool-1".into(),
+        title: "Inspect files".into(),
+        status: "Running".into(),
+        kind: ToolCallKind::Search,
+        location: None,
+        location_is_command: false,
+        cwd: None,
+        output: None,
+        exit_code: None,
+        content: Vec::new(),
+        locations: Vec::new(),
+    });
+
+    let (proposal_id, _final_rx) = stage_direct_proposal(&mut app, &manager, session_id);
+    let (commit_tx, commit_rx) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::DirectTerminalActionProposalCommit {
+        proposal_id,
+        responder: commit_tx,
+    });
+    assert!(commit_rx.blocking_recv().unwrap());
+    assert!(
+        app.session_tab(session_id).completed_turns.is_empty(),
+        "surfacing a card must not move an in-flight transcript into history"
+    );
+
+    app.handle_event(AppEvent::ToolCallUpdate {
+        session_id: session_id.into(),
+        query: None,
+        id: "tool-1".into(),
+        title: None,
+        status: Some("Completed".into()),
+        kind: None,
+        location: None,
+        location_is_command: false,
+        output: None,
+        content: None,
+        locations: None,
+        cwd: None,
+        exit_code: Some(0),
+    });
+    app.handle_event(AppEvent::AgentMessageChunk {
+        session_id: session_id.into(),
+        text: "Everything is ready.".into(),
+    });
+    app.handle_event(AppEvent::AgentMessageEnd {
+        session_id: session_id.into(),
+    });
+
+    let tab = app.session_tab(session_id);
+    assert!(tab.messages.is_empty());
+    assert_eq!(tab.completed_turns.len(), 1);
+    assert!(tab.completed_turns[0].details.iter().any(|detail| {
+        matches!(
+            detail,
+            ChatMessage::ToolCall { id, status, .. }
+                if id == "tool-1" && status == "Completed"
+        )
+    }));
+    assert!(tab.completed_turns[0].details.iter().any(
+        |detail| matches!(detail, ChatMessage::Agent(text) if text == "Everything is ready.")
+    ));
+}
+
+#[test]
+fn cancel_after_direct_proposal_commits_trailing_transcript_once() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let mut app = test_app();
+    let manager = std::sync::Arc::new(
+        crate::agent_tools::action_proposal::channel::ProposalChannelManager::new(),
+    );
+    app.set_proposal_channels(std::sync::Arc::clone(&manager));
+    let session_id = "direct-cancel-trailing";
+    stage_proposal_session(&mut app, session_id);
+    submit_proposal_prompt(&mut app, session_id);
+    let (proposal_id, final_rx) = stage_direct_proposal(&mut app, &manager, session_id);
+    let (commit_tx, commit_rx) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::DirectTerminalActionProposalCommit {
+        proposal_id,
+        responder: commit_tx,
+    });
+    assert!(commit_rx.blocking_recv().unwrap());
+    app.handle_event(AppEvent::AgentMessageChunk {
+        session_id: session_id.into(),
+        text: "Trailing explanation.".into(),
+    });
+
+    app.turn_cancel(session_id);
+    app.handle_event(AppEvent::PromptCancellationSettled {
+        prompt_id: 99,
+        started: true,
+    });
+    app.turn_cancel(session_id);
+
+    let tab = app.session_tab(session_id);
+    assert!(tab.messages.is_empty());
+    assert_eq!(tab.completed_turns.len(), 1);
+    assert!(tab.completed_turns[0].details.iter().any(
+        |detail| matches!(detail, ChatMessage::Agent(text) if text == "Trailing explanation.")
+    ));
+    assert_eq!(tab.completed_turns[0].trailing_marker, None);
+    assert_eq!(
+        tab.completed_turns[0].details.last(),
+        Some(&ChatMessage::Agent("Restart-Service foo (canceled)".into()))
+    );
+    assert_eq!(
+        final_rx.blocking_recv().unwrap(),
+        crate::agent_tools::action_proposal::channel::ProposalFinalStatus::Cancelled
+    );
+}
+
+#[test]
+fn direct_proposal_cancel_before_commit_does_not_surface() {
+    let mut app = test_app();
+    let manager = std::sync::Arc::new(
+        crate::agent_tools::action_proposal::channel::ProposalChannelManager::new(),
+    );
+    app.set_proposal_channels(std::sync::Arc::clone(&manager));
+    let session_id = "direct-cancel";
+    stage_proposal_session(&mut app, session_id);
+    submit_proposal_prompt(&mut app, session_id);
+    let (proposal_id, final_rx) = stage_direct_proposal(&mut app, &manager, session_id);
+
+    app.turn_cancel(session_id);
+    let (commit_tx, commit_rx) = tokio::sync::oneshot::channel();
+    app.handle_event(AppEvent::DirectTerminalActionProposalCommit {
+        proposal_id,
+        responder: commit_tx,
+    });
+    assert!(!commit_rx.blocking_recv().unwrap());
+
+    assert!(app.session_tab(session_id).turn.is_cancelling());
+    app.handle_event(AppEvent::PromptCancellationSettled {
+        prompt_id: 99,
+        started: true,
+    });
+    assert!(app.session_tab(session_id).turn.is_idle());
+    assert_eq!(
+        final_rx.blocking_recv().unwrap(),
+        crate::agent_tools::action_proposal::channel::ProposalFinalStatus::Cancelled
+    );
+}
+
+// ─── card / panel height math ───────────────────────────────────────────
+
+use crate::app::turn_state::{SubmittedPrompt, TurnOutcome, TurnState};
+use crate::coordinator::{OpenTarget, RecommendationChoice, RecommendationSet, RecommendedAction};
+use crate::ui::action_panel::{
+    permission_card_height, permission_queue_card_height, recommendation_card_height,
+    recommendation_panel_height,
+};
+use crate::ui::card::{card_content_width, CARD_H_CHROME, CARD_MIN_SIZE};
+
+fn perm_with(desc: &str) -> PermissionState {
+    PermissionState {
+        tool_call_id: "tool".into(),
+        description: desc.to_string(),
+        title: desc.to_string(),
+        kind_label: None,
+        target: None,
+        target_is_command: false,
+        options: vec![PermOption {
+            id: "allow_once".into(),
+            name: "Allow".into(),
+            kind: "allow_once".into(),
+        }],
+        selected: 0,
+        responder: None,
+    }
+}
+
+fn rec_send(input: &str) -> RecommendationChoice {
+    RecommendationChoice {
+        choice: 0,
+        title: "t".into(),
+        rationale: String::new(),
+        actions: vec![RecommendedAction::Send {
+            parent: String::new(),
+            input: input.into(),
+        }],
+    }
+}
+
+fn install_recs(app: &mut App, choices: Vec<RecommendationChoice>) {
+    let tab = app.current_tab_mut();
+    tab.turn = TurnState::Surfaced {
+        prompt: SubmittedPrompt {
+            id: 1,
+            text: "p".into(),
+            submitted_at_unix_s: 0.0,
+            context: TurnContext::default(),
+            autofix: None,
+        },
+        outcome: TurnOutcome::Recommendation(RecommendationSet {
+            recommended_choice: Some(0),
+            choices,
+        }),
+        end_pending: false,
+    };
+}
+
+#[test]
+fn card_content_width_subtracts_chrome_and_floors_at_1() {
+    assert_eq!(card_content_width(80), 80 - CARD_H_CHROME as usize);
+    assert_eq!(card_content_width(CARD_H_CHROME + 1), 1);
+    assert_eq!(card_content_width(CARD_H_CHROME), 1);
+    assert_eq!(card_content_width(0), 1);
+}
+
+#[test]
+fn permission_card_height_single_line_is_card_min() {
+    let perm = perm_with("ok");
+    assert_eq!(permission_card_height(&perm, 80) as u16, CARD_MIN_SIZE);
+}
+
+#[test]
+fn permission_queue_card_height_counts_preview_and_overflow_rows() {
+    let perm = perm_with("current");
+    let queued = ["two", "three", "four"].into_iter().map(str::to_string);
+    assert_eq!(
+        permission_queue_card_height(&perm, 6, queued, 2, 80),
+        CARD_MIN_SIZE as usize + 4
+    );
+}
+
+#[test]
+fn permission_card_height_counts_wrap_at_actual_panel_width() {
+    let perm = perm_with(&"a".repeat(200));
+    // Full-width terminal: wrap at 80 - 8 = 72.
+    let inner_full = 80 - CARD_H_CHROME as usize;
+    assert_eq!(
+        permission_card_height(&perm, 80),
+        CARD_MIN_SIZE as usize + 200_usize.div_ceil(inner_full) - 1
+    );
+    // Debug panel open: 60% of 80 = 48 → wrap at 40.
+    let inner_split = 48 - CARD_H_CHROME as usize;
+    assert_eq!(
+        permission_card_height(&perm, 48),
+        CARD_MIN_SIZE as usize + 200_usize.div_ceil(inner_split) - 1
+    );
+    // The two should differ — proves the panel_width input matters
+    // (the PR #20 reviewer-3 bug).
+    assert_ne!(
+        permission_card_height(&perm, 80),
+        permission_card_height(&perm, 48)
+    );
+}
+
+#[test]
+fn permission_card_height_treats_blank_lines_as_one_row() {
+    let perm = perm_with("line1\n\nline2");
+    // 3 logical lines (blank counts as 1).
+    assert_eq!(
+        permission_card_height(&perm, 80),
+        CARD_MIN_SIZE as usize + 2
+    );
+}
+
+#[test]
+fn permission_card_height_counts_wrapped_formatted_command_rows() {
+    let mut perm = perm_with("Run command?");
+    perm.target = Some("a".repeat(150));
+    perm.target_is_command = true;
+
+    let inner_width = card_content_width(28);
+    // command_format truncates the statement to 100 chars plus an ellipsis,
+    // and permission rendering prepends "$ " before wrapping.
+    let rendered_command_width = 2_usize + 101;
+    assert_eq!(
+        permission_card_height(&perm, 28),
+        CARD_MIN_SIZE as usize + rendered_command_width.div_ceil(inner_width)
+    );
+}
+
+#[test]
+fn permission_card_height_counts_each_wrapped_split_command_line() {
+    let mut perm = perm_with("Run commands?");
+    perm.target = Some(format!("{}; {}", "a".repeat(45), "b".repeat(45)));
+    perm.target_is_command = true;
+
+    let inner_width = card_content_width(28);
+    let rows_per_command = (2_usize + 45).div_ceil(inner_width);
+    assert_eq!(
+        permission_card_height(&perm, 28),
+        CARD_MIN_SIZE as usize + rows_per_command * 2
+    );
+}
+
+#[test]
+fn rec_card_height_includes_inter_card_gap() {
+    let h = recommendation_card_height(&rec_send("ls"), 80);
+    assert_eq!(h as u16, CARD_MIN_SIZE + 1);
+}
+
+#[test]
+fn rec_card_height_handles_open_action_synthesis() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let choice = RecommendationChoice {
+        choice: 0,
+        title: "t".into(),
+        rationale: String::new(),
+        actions: vec![RecommendedAction::Open {
+            target: OpenTarget::Tab,
+            parent: None,
+            cwd: Some("C:/repo".into()),
+            title: Some("logs".into()),
+            direction: Some("left".into()),
+            profile: None,
+        }],
+    };
+    // The rendered "New tab (logs) in C:/repo" fits on one row at width 72.
+    // Directions are ignored for tab targets.
+    assert_eq!(
+        recommendation_card_height(&choice, 80) as u16,
+        CARD_MIN_SIZE + 1
+    );
+}
+
+#[test]
+fn rec_card_height_uses_localized_open_panel_direction_display() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("en-US");
+    let choice = RecommendationChoice {
+        choice: 0,
+        title: "t".into(),
+        rationale: String::new(),
+        actions: vec![RecommendedAction::Open {
+            target: OpenTarget::Panel,
+            parent: None,
+            cwd: Some("C:/repo".into()),
+            title: Some("logs".into()),
+            direction: Some("left".into()),
+            profile: None,
+        }],
+    };
+
+    // The renderer displays "New panel (left) (logs) in C:/repo", which wraps
+    // at the 32-cell content width. The old planner omitted "(left)".
+    assert_eq!(
+        recommendation_card_height(&choice, 40) as u16,
+        CARD_MIN_SIZE + 2
+    );
+}
+
+#[test]
+fn rec_card_height_uses_localized_open_and_send_fallback() {
+    let _locale = crate::test_support::lock_locale();
+    rust_i18n::set_locale("es-ES");
+    let choice = RecommendationChoice {
+        choice: 0,
+        title: "t".into(),
+        rationale: String::new(),
+        actions: vec![RecommendedAction::OpenAndSend {
+            target: OpenTarget::Tab,
+            parent: None,
+            input: "aaaaaaaa".into(),
+            agent: None,
+            cwd: None,
+            title: None,
+            direction: None,
+            profile: None,
+        }],
+    };
+
+    // The localized renderer text is "agente: aaaaaaaa" (16 chars), which
+    // wraps at the 15-character content width. The old hard-coded "agent"
+    // label fit on one row.
+    assert_eq!(
+        recommendation_card_height(&choice, 23) as u16,
+        CARD_MIN_SIZE + 2
+    );
+}
+
+#[test]
+fn recommendation_panel_height_sums_card_canvases() {
+    let mut app = test_app();
+    install_recs(&mut app, vec![rec_send("a"), rec_send("b"), rec_send("c")]);
+    assert_eq!(
+        recommendation_panel_height(app.current_tab().turn.recommendations().unwrap(), 80),
+        18
+    );
+}
+
+#[test]
+fn main_area_width_reflects_debug_panel_split() {
+    let mut app = test_app();
+    app.terminal_cols = 100;
+    assert_eq!(app.main_area_width(), 100);
+    app.show_debug_panel = true;
+    assert_eq!(app.main_area_width(), 60);
+}
+
+/// Regression: `ui::recommendations::render` used `area.width` (= `h_rec[1]`
+/// = `main_area.width - 2`) when calling the card-height helper, while the
+/// panel planner / scroll bound used `main_area.width`. The
+/// 2-cell desync clipped the bottom card and undercounted scroll bounds
+/// whenever a card's wrap row count differed between the two widths.
+///
+/// This test pins both code paths to `main_area.width`, and picks a
+/// text length that lies in the critical window `(W-10, W-8]` so the
+/// old buggy width (`W-2`, content `W-10`) would wrap to a different
+/// row count than the correct width (`W`, content `W-8`).
+#[test]
+fn rec_card_height_matches_predict_and_render_paths() {
+    let w: u16 = 50;
+    // text length 42 sits exactly at the boundary: fits on 1 row at
+    // inner_width 42 (W=50, chrome=8), but spills to 2 rows at
+    // inner_width 40 (the old buggy basis).
+    let text = "a".repeat(42);
+    let choice = rec_send(&text);
+    let mut app = test_app();
+    app.terminal_cols = w;
+    app.terminal_rows = 30;
+    install_recs(&mut app, vec![choice.clone()]);
+
+    let predict = recommendation_panel_height(
+        app.current_tab().turn.recommendations().unwrap(),
+        app.main_area_width(),
+    ) as usize;
+    let render = recommendation_card_height(&choice, app.main_area_width());
+    assert_eq!(predict, render);
+
+    // Sanity: confirm the chosen text *is* a sensitive input — i.e. the
+    // old buggy basis (h_rec[1] width = W-2) would have produced a
+    // different height. If this ever fails the test no longer guards
+    // the regression.
+    let buggy = recommendation_card_height(&choice, app.main_area_width() - 2);
+    assert_ne!(
+        render, buggy,
+        "text length 42 should wrap differently at width 50 vs 48 — \
+         pick a different critical input"
+    );
+}
+
+#[test]
+fn recommendation_navigation_preserves_offset_for_fully_visible_card() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    stage_surfaced_recommendation(
+        &mut app,
+        vec![
+            send_choice("pane-A", "a"),
+            send_choice("pane-B", "b"),
+            send_choice("pane-C", "c"),
+        ],
+        0,
+        None,
+    );
+    app.sync_rec_scroll_max(80, 12);
+    app.current_tab_mut().rec_scroll.set(2);
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+
+    assert_eq!(app.current_tab().selected_recommendation, 1);
+    assert_eq!(app.current_tab().rec_scroll.offset, 2);
+}
+
+#[test]
+fn recommendation_navigation_scrolls_clipped_card_into_view() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    stage_surfaced_recommendation(
+        &mut app,
+        vec![
+            send_choice("pane-A", "a"),
+            send_choice("pane-B", "b"),
+            send_choice("pane-C", "c"),
+        ],
+        0,
+        None,
+    );
+    app.sync_rec_scroll_max(80, 10);
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+
+    assert_eq!(app.current_tab().selected_recommendation, 1);
+    assert_eq!(
+        app.current_tab().rec_scroll.offset,
+        recommendation_card_height(&rec_send("a"), 80)
+    );
+}
+
+#[test]
+fn compact_recommendation_navigation_resets_canvas_scroll() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    stage_surfaced_recommendation(
+        &mut app,
+        vec![
+            send_choice("pane-A", "a"),
+            send_choice("pane-B", "b"),
+            send_choice("pane-C", "c"),
+        ],
+        0,
+        None,
+    );
+    app.sync_rec_scroll_max(80, crate::ui::action_panel::COMPACT_RECOMMENDATION_HEIGHT);
+    app.current_tab_mut().rec_scroll.set(4);
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+
+    assert_eq!(app.current_tab().selected_recommendation, 1);
+    assert_eq!(app.current_tab().rec_scroll.offset, 0);
+}
+
+// ─── Per-tab input history ──────────────────────────────────────────
+
+#[test]
+fn mouse_wheel_scrolls_chat_without_changing_input_history() {
+    use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+    let mut app = test_app();
+    app.current_tab_mut()
+        .record_input_history("previous prompt");
+    app.current_tab_mut().chat_scroll.set_max(20);
+
+    app.handle_event(AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert_eq!(app.current_tab().chat_scroll.offset, 3);
+    assert!(app.current_tab().input.is_empty());
+
+    app.handle_event(AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert_eq!(app.current_tab().chat_scroll.offset, 0);
+    assert!(app.current_tab().input.is_empty());
+}
+
+#[test]
+fn alt_mouse_wheel_scrolls_chat_one_line() {
+    use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+    let mut app = test_app();
+    app.current_tab_mut().chat_scroll.set_max(20);
+
+    app.handle_event(AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::ALT,
+    }));
+    assert_eq!(app.current_tab().chat_scroll.offset, 1);
+}
+
+#[test]
+fn mouse_wheel_does_not_scroll_hidden_chat() {
+    use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+    let mut app = test_app();
+    app.current_tab_mut().chat_scroll.set_max(20);
+    app.current_tab_mut().current_view = View::Agents;
+
+    app.handle_event(AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert_eq!(app.current_tab().chat_scroll.offset, 0);
+}
+
+#[test]
+fn mouse_wheel_moves_session_management_selection() {
+    use crate::agent_sessions::SessionOrigin;
+    use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+
+    let mut app = test_app();
+    let mut first = session_info_for_test("first");
+    first.origin = Some(SessionOrigin::Unknown);
+    first.last_activity_at_ms = Some(300);
+    let mut second = session_info_for_test("second");
+    second.origin = Some(SessionOrigin::Unknown);
+    second.last_activity_at_ms = Some(200);
+    let mut third = session_info_for_test("third");
+    third.origin = Some(SessionOrigin::Unknown);
+    third.last_activity_at_ms = Some(100);
+
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_view.snapshot = Some(vec![first, second, third]);
+    app.current_tab_mut().agents_list_state.select(Some(1));
+
+    app.handle_event(AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert_eq!(app.current_tab().agents_list_state.selected(), Some(2));
+
+    app.handle_event(AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert_eq!(app.current_tab().agents_list_state.selected(), Some(1));
+}
+
+#[test]
+fn input_history_navigates_newest_first_and_restores_draft() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    let tab = app.current_tab_mut();
+    tab.record_input_history("older");
+    tab.record_input_history("newer");
+    tab.input = "draft".into();
+    tab.cursor_pos = 2;
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().input, "newer");
+    assert_eq!(app.current_tab().cursor_pos, "newer".len());
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().input, "older");
+
+    // The oldest boundary clamps instead of wrapping.
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().input, "older");
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().input, "newer");
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().input, "draft");
+    assert_eq!(app.current_tab().cursor_pos, 2);
+    assert!(!app.current_tab().input_history_is_browsing());
+}
+
+#[test]
+fn message_list_focus_routes_arrows_to_completed_turn_selection() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    let tab = app.current_tab_mut();
+    tab.record_input_history("historical prompt");
+    tab.completed_turns.push(CompletedTurn {
+        prompt: "older prompt".into(),
+        details: Vec::new(),
+        expanded: false,
+        trailing_marker: None,
+    });
+    tab.completed_turns.push(CompletedTurn {
+        prompt: "newer prompt".into(),
+        details: Vec::new(),
+        expanded: false,
+        trailing_marker: None,
+    });
+    tab.selected_completed_turn_idx = Some(1);
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().selected_completed_turn_idx, Some(0));
+    assert!(app.current_tab().input.is_empty());
+    assert!(!app.current_tab().input_history_is_browsing());
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().selected_completed_turn_idx, Some(1));
+    assert!(app.current_tab().input.is_empty());
+    assert!(!app.current_tab().input_history_is_browsing());
+}
+
+#[test]
+fn empty_completed_turn_navigation_clears_pending_visibility() {
+    let mut app = test_app();
+
+    app.current_tab_mut()
+        .completed_turn_selection_visible_pending = true;
+    app.current_tab_mut().select_older_completed_turn();
+    assert_eq!(app.current_tab().selected_completed_turn_idx, None);
+    assert!(!app.current_tab().completed_turn_selection_visible_pending);
+
+    app.current_tab_mut()
+        .completed_turn_selection_visible_pending = true;
+    app.current_tab_mut().select_newer_completed_turn();
+    assert_eq!(app.current_tab().selected_completed_turn_idx, None);
+    assert!(!app.current_tab().completed_turn_selection_visible_pending);
+}
+
+#[test]
+fn render_chat_keeps_keyboard_selected_completed_turn_visible() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    for index in 0..12 {
+        app.current_tab_mut().completed_turns.push(CompletedTurn {
+            prompt: format!("SELECT_SCROLL_TURN_{index:02}"),
+            details: vec![ChatMessage::Agent(format!(
+                "ACK_SELECT_SCROLL_TURN_{index:02}"
+            ))],
+            expanded: true,
+            trailing_marker: None,
+        });
+    }
+
+    let before = render_to_text(&mut app, 80, 16);
+    assert!(before.contains("SELECT_SCROLL_TURN_11"));
+    assert!(!before.contains("SELECT_SCROLL_TURN_00"));
+
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let newest_selected = render_to_text(&mut app, 80, 16);
+    assert!(newest_selected.contains("SELECT_SCROLL_TURN_11"));
+    assert_eq!(
+        app.current_tab().chat_scroll.offset,
+        0,
+        "selecting an already-visible turn must not move the viewport",
+    );
+    for _ in 0..11 {
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    }
+    assert_eq!(app.current_tab().selected_completed_turn_idx, Some(0));
+
+    crate::ui::chat::reset_completed_turn_line_build_count();
+    let after = render_to_text(&mut app, 80, 16);
+    let built_turns = crate::ui::chat::completed_turn_line_build_count();
+    assert!(
+        built_turns < app.current_tab().completed_turns.len(),
+        "selection-follow rendering must reuse cached heights for intermediate turns; built {built_turns}",
+    );
+    assert!(
+        after.contains("SELECT_SCROLL_TURN_00"),
+        "the viewport must follow keyboard selection to the oldest completed turn; rendered:\n{after}",
+    );
+
+    for _ in 0..11 {
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    let newest_again = render_to_text(&mut app, 80, 16);
+    assert!(newest_again.contains("SELECT_SCROLL_TURN_11"));
+    assert_eq!(app.current_tab().chat_scroll.offset, 0);
+
+    app.current_tab_mut().chat_scroll.offset = 4;
+    let manually_scrolled = render_to_text(&mut app, 80, 16);
+    assert_eq!(
+        app.current_tab().chat_scroll.offset,
+        4,
+        "a later manual scroll must not be overridden after selection visibility is consumed",
+    );
+    assert!(!manually_scrolled.contains("SELECT_SCROLL_TURN_11"));
+}
+
+#[test]
+fn input_history_deduplicates_and_caps_at_fifty() {
+    let mut tab = TabSession::default();
+    for index in 0..55 {
+        tab.record_input_history(&format!("prompt-{index}"));
+    }
+    assert_eq!(tab.input_history.entries.len(), INPUT_HISTORY_MAX_ENTRIES);
+    assert_eq!(tab.input_history.entries.front().unwrap(), "prompt-54");
+    assert_eq!(tab.input_history.entries.back().unwrap(), "prompt-5");
+
+    tab.record_input_history("prompt-20");
+    assert_eq!(tab.input_history.entries.len(), INPUT_HISTORY_MAX_ENTRIES);
+    assert_eq!(tab.input_history.entries.front().unwrap(), "prompt-20");
+    assert_eq!(
+        tab.input_history
+            .entries
+            .iter()
+            .filter(|entry| entry.as_str() == "prompt-20")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn editing_recalled_input_detaches_without_overwriting_history() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    app.current_tab_mut().record_input_history("original");
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
+    assert_eq!(app.current_tab().input, "original!");
+    assert!(!app.current_tab().input_history_is_browsing());
+    assert_eq!(app.current_tab().input_history.entries[0], "original");
+
+    // Down is a no-op after editing; the edited buffer is now the live draft.
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().input, "original!");
+
+    app.current_tab_mut().record_input_history("original!");
+    assert_eq!(app.current_tab().input_history.entries[0], "original!");
+    assert_eq!(app.current_tab().input_history.entries[1], "original");
+}
+
+#[test]
+fn input_history_preserves_multiline_entries_atomically() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    app.current_tab_mut()
+        .record_input_history("first line\nsecond line");
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+
+    assert_eq!(app.current_tab().input, "first line\nsecond line");
+    assert_eq!(app.current_tab().cursor_pos, app.current_tab().input.len());
+}
+
+#[test]
+fn submitting_prompt_records_only_that_tab_conversation() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    app.tab_sessions
+        .insert("another-tab".into(), TabSession::default());
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().session_id = Some(DEFAULT_TAB_ID.into());
+    app.current_tab_mut().input = "remember me".into();
+    app.current_tab_mut().cursor_pos = "remember me".len();
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.current_tab().input.is_empty());
+    assert_eq!(app.current_tab().input_history.entries[0], "remember me");
+    assert!(app
+        .tab_sessions
+        .get("another-tab")
+        .is_some_and(|tab| tab.input_history.entries.is_empty()));
+}
+
+#[test]
+fn clearing_chat_keeps_input_history_for_the_tab() {
+    let mut tab = TabSession::default();
+    tab.record_input_history("keep me");
+    tab.selected_completed_turn_idx = Some(0);
+    tab.completed_turn_selection_visible_pending = true;
+
+    tab.clear_chat_history();
+
+    assert_eq!(tab.input_history.entries[0], "keep me");
+    assert_eq!(tab.selected_completed_turn_idx, None);
+    assert!(!tab.completed_turn_selection_visible_pending);
+}
+
+#[test]
+fn local_slash_command_is_not_recorded_in_input_history() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    app.current_tab_mut().input = "/help".into();
+    app.current_tab_mut().cursor_pos = "/help".len();
+    app.current_tab_mut().refresh_command_popup();
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.help_overlay_visible);
+    assert!(app.current_tab().input_history.entries.is_empty());
+}
+
+#[test]
+fn recommendation_card_cycles_buttons_and_input_with_arrows() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    stage_surfaced_recommendation(
+        &mut app,
+        vec![send_choice("pane-A", "ls"), send_choice("pane-B", "pwd")],
+        0,
+        None,
+    );
+    app.current_tab_mut().input = "draft ".into();
+    app.current_tab_mut().cursor_pos = "draft ".len();
+    app.current_tab_mut().chat_scroll.offset = 7;
+
+    assert!(
+        !app.current_tab().input_has_nav_focus(),
+        "a visible card owns focus even when the input keeps draft text",
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().selected_recommendation, 1);
+    assert_eq!(app.current_tab().input, "draft ");
+    assert_eq!(
+        app.current_tab().chat_scroll.offset,
+        7,
+        "card navigation must not fall through to chat scrolling",
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().selected_recommendation, 0);
+
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().selected_button, 1);
+    assert!(!app.current_tab().input_has_nav_focus());
+
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().selected_button, 0);
+    assert!(!app.current_tab().input_has_nav_focus());
+
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().selected_button, 1);
+    assert!(!app.current_tab().input_has_nav_focus());
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert!(app.current_tab().input_has_nav_focus());
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert_eq!(app.current_tab().input, "draft x");
+
+    let cursor_before = app.current_tab().cursor_pos;
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().cursor_pos, cursor_before - 1);
+    assert!(app.current_tab().input_has_nav_focus());
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().selected_recommendation, 1);
+    assert!(!app.current_tab().input_has_nav_focus());
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(app.current_tab().input_has_nav_focus());
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().selected_recommendation, 0);
+    assert!(!app.current_tab().input_has_nav_focus());
+
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().selected_button, 0);
+    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    assert_eq!(app.current_tab().selected_button, 0);
+    assert!(!app.current_tab().input_has_nav_focus());
+}
+
+#[test]
+fn recommendation_card_enter_wins_over_draft_input() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().session_id = Some(DEFAULT_TAB_ID.into());
+    stage_surfaced_recommendation(&mut app, vec![send_choice("pane-A", "ls")], 0, None);
+    app.current_tab_mut().input = "/help".into();
+    app.current_tab_mut().cursor_pos = "/help".len();
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        app.current_tab().input,
+        "/help",
+        "executing the card must preserve the user's draft",
+    );
+    assert!(
+        app.current_tab().turn.recommendations().is_none(),
+        "Enter should execute the visible card, not submit or slash-parse the draft",
+    );
+    assert!(
+        !app.help_overlay_visible,
+        "draft slash commands must not run while a recommendation card owns focus",
+    );
+}
+
+#[test]
+fn recommendation_input_focus_submits_draft_instead_of_executing_card() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    app.state = ConnectionState::Connected;
+    app.current_tab_mut().session_id = Some(DEFAULT_TAB_ID.into());
+    stage_surfaced_recommendation(&mut app, vec![send_choice("pane-A", "ls")], 0, None);
+    app.current_tab_mut().input = "new prompt".into();
+    app.current_tab_mut().cursor_pos = "new prompt".len();
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert!(app.current_tab().input_has_nav_focus());
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.current_tab().input.is_empty());
+    assert!(
+        app.current_tab().turn.recommendations().is_none(),
+        "submitting from the input must dismiss the old recommendation",
+    );
+    assert!(
+        matches!(app.current_tab().turn, TurnState::Submitted(_)),
+        "Enter must submit the draft instead of executing the selected card",
+    );
+}
+
+#[test]
+fn recommendation_card_swallow_tabs_without_completing_slash_command() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    stage_surfaced_recommendation(&mut app, vec![send_choice("pane-A", "ls")], 0, None);
+    app.current_tab_mut().input = "/h".into();
+    app.current_tab_mut().cursor_pos = 2;
+    app.current_tab_mut().refresh_command_popup();
+    assert!(app.command_popup_visible());
+
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+
+    assert_eq!(app.current_tab().input, "/h");
+    assert_eq!(
+        app.current_tab().recommendation_focus,
+        RecommendationFocus::Button,
+    );
+}
+
+#[test]
+fn typing_is_ignored_while_a_past_turn_is_selected() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "old prompt".into(),
+        details: Vec::new(),
+        expanded: false,
+        trailing_marker: None,
+    });
+    // Highlight the past turn, as Tab would.
+    app.current_tab_mut().selected_completed_turn_idx = Some(0);
+    assert!(!app.current_tab().input_has_nav_focus());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+
+    assert!(
+        app.current_tab().input.is_empty(),
+        "typing must be ignored while a past turn is highlighted (input locked)",
+    );
+    assert_eq!(
+        app.current_tab().selected_completed_turn_idx,
+        Some(0),
+        "selection must survive the keystroke so Tab/Shift+Tab navigation keeps working",
+    );
+}
+
+#[test]
+fn typing_returns_to_input_after_clearing_selection() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    app.current_tab_mut().completed_turns.push(CompletedTurn {
+        prompt: "old prompt".into(),
+        details: Vec::new(),
+        expanded: false,
+        trailing_marker: None,
+    });
+    app.current_tab_mut().selected_completed_turn_idx = Some(0);
+    app.current_tab_mut()
+        .completed_turn_selection_visible_pending = true;
+
+    // Esc backs out of history nav, then typing lands in the input again.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().selected_completed_turn_idx, None);
+    assert!(
+        !app.current_tab().completed_turn_selection_visible_pending,
+        "clearing selection must also clear its pending visibility request",
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert_eq!(app.current_tab().input, "x");
+}
+
+#[test]
+fn command_popup_keeps_arrow_priority_over_input_history() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    app.current_tab_mut()
+        .record_input_history("historical prompt");
+    app.current_tab_mut().input.push('/');
+    app.current_tab_mut().cursor_pos = 1;
+    app.current_tab_mut().refresh_command_popup();
+    assert!(
+        app.command_popup_visible(),
+        "test prerequisite: command popup must be visible after typing '/'",
+    );
+    assert!(app.current_tab().command_popup_candidates.len() > 1);
+    app.current_tab_mut().command_popup_selected = 1;
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().command_popup_selected, 0);
+    assert_eq!(app.current_tab().input, "/");
+    assert!(!app.current_tab().input_history_is_browsing());
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.current_tab().command_popup_selected, 1);
+    assert_eq!(app.current_tab().input, "/");
+}
+
+// ─── compute_chip_card_target ───────────────────────────────────────────
+
+/// Stage a tab into `Surfaced { Recommendation(...) }` with the given
+/// choices and selected index. Mirrors the side-effects the real
+/// `turn_surface_recommendation` would have but skips all the
+/// chat-history / scroll bookkeeping so the resulting state stays
+/// minimal for the chip-target calculator.
+fn stage_surfaced_recommendation(
+    app: &mut App,
+    choices: Vec<crate::coordinator::RecommendationChoice>,
+    selected: usize,
+    target_pane_id: Option<&str>,
+) {
+    let prompt = SubmittedPrompt {
+        id: 1,
+        text: "p".into(),
+        submitted_at_unix_s: 0.0,
+        context: TurnContext {
+            target_pane_id: target_pane_id.map(str::to_string),
+        },
+        autofix: target_pane_id.map(|_| AutofixContext { generation: 0 }),
+    };
+    let recs = crate::coordinator::RecommendationSet {
+        recommended_choice: Some(selected),
+        choices,
+    };
+    let tab = app.tab_mut(DEFAULT_TAB_ID);
+    tab.selected_recommendation = selected;
+    tab.turn = TurnState::Surfaced {
+        prompt,
+        outcome: TurnOutcome::Recommendation(recs),
+        end_pending: false,
+    };
+}
+
+fn send_choice(parent: &str, input: &str) -> crate::coordinator::RecommendationChoice {
+    crate::coordinator::RecommendationChoice {
+        choice: 1,
+        title: "Run".into(),
+        rationale: String::new(),
+        actions: vec![crate::coordinator::RecommendedAction::Send {
+            parent: parent.into(),
+            input: input.into(),
+        }],
+    }
+}
+
+fn open_choice() -> crate::coordinator::RecommendationChoice {
+    crate::coordinator::RecommendationChoice {
+        choice: 2,
+        title: "Open".into(),
+        rationale: String::new(),
+        actions: vec![crate::coordinator::RecommendedAction::Open {
+            target: crate::coordinator::OpenTarget::Tab,
+            parent: None,
+            cwd: None,
+            title: None,
+            direction: None,
+            profile: None,
+        }],
+    }
+}
+
+#[test]
+fn chip_target_returns_none_when_idle() {
+    let app = test_app();
+    assert_eq!(app.current_tab().compute_chip_card_target(), None);
+}
+
+#[test]
+fn chip_target_uses_turn_context_instead_of_model_parent() {
+    let mut app = test_app();
+    stage_surfaced_recommendation(
+        &mut app,
+        vec![send_choice("pane-A", "ls")],
+        0,
+        Some("pane-host"),
+    );
+    assert_eq!(
+        app.current_tab().compute_chip_card_target(),
+        Some("pane-host".to_string()),
+    );
+}
+
+#[test]
+fn chip_target_falls_back_to_autofix_target_when_send_parent_empty() {
+    let mut app = test_app();
+    // Planner-emitted Send actions in autofix turns leave `parent`
+    // blank — `turn_execute_card` fills it from `target_pane_id` at
+    // execute time. The chip should already point there now.
+    stage_surfaced_recommendation(
+        &mut app,
+        vec![send_choice("", "fix --auto")],
+        0,
+        Some("pane-failing"),
+    );
+    assert_eq!(
+        app.current_tab().compute_chip_card_target(),
+        Some("pane-failing".to_string()),
+    );
+}
+
+#[test]
+fn chip_target_filters_empty_autofix_target() {
+    // C++ treats `pane_session_id == ""` as "no override", so emitting
+    // Some("") would let the helper's dedupe believe it pinned the chip
+    // while WT silently ignores the event.
+    let mut app = test_app();
+    stage_surfaced_recommendation(&mut app, vec![send_choice("", "fix")], 0, Some(""));
+    assert_eq!(app.current_tab().compute_chip_card_target(), None);
+}
+
+#[test]
+fn chip_target_is_none_for_non_send_card() {
+    let mut app = test_app();
+    stage_surfaced_recommendation(&mut app, vec![open_choice()], 0, None);
+    assert_eq!(app.current_tab().compute_chip_card_target(), None);
+}
+
+#[test]
+fn chip_target_tracks_selected_index() {
+    let mut app = test_app();
+    stage_surfaced_recommendation(
+        &mut app,
+        vec![send_choice("pane-A", "ls"), send_choice("pane-B", "pwd")],
+        0,
+        Some("pane-host"),
+    );
+    assert_eq!(
+        app.current_tab().compute_chip_card_target(),
+        Some("pane-host".to_string()),
+    );
+    app.current_tab_mut().selected_recommendation = 1;
+    assert_eq!(
+        app.current_tab().compute_chip_card_target(),
+        Some("pane-host".to_string()),
+    );
+}
+
+#[test]
+fn chip_recompute_dedupes_and_releases_on_idle() {
+    // After surfacing a Send card, recompute should record an override.
+    // Transitioning back to Idle (here: clear the recs) should make
+    // the next recompute observe a different value and clear the
+    // last_emitted slot.
+    let mut app = test_app();
+    stage_surfaced_recommendation(
+        &mut app,
+        vec![send_choice("pane-A", "ls")],
+        0,
+        Some("pane-host"),
+    );
+    app.recompute_chip_override(DEFAULT_TAB_ID);
+    assert_eq!(
+        app.tab_mut(DEFAULT_TAB_ID).last_emitted_chip_override,
+        Some("pane-host".to_string()),
+    );
+
+    // Drop the surfaced state — chip target now resolves to None and
+    // the dedupe slot must follow so a fresh surface re-emits cleanly.
+    app.tab_mut(DEFAULT_TAB_ID).turn = TurnState::Idle;
+    app.recompute_chip_override(DEFAULT_TAB_ID);
+    assert_eq!(app.tab_mut(DEFAULT_TAB_ID).last_emitted_chip_override, None,);
+}
+
+#[test]
+fn known_cli_id_returns_some_for_all_first_party_clis() {
+    use crate::agent_sessions::CliSource;
+    assert_eq!(known_cli_id(&CliSource::Claude), Some("claude"));
+    assert_eq!(known_cli_id(&CliSource::Codex), Some("codex"));
+    assert_eq!(known_cli_id(&CliSource::Copilot), Some("copilot"));
+    assert_eq!(known_cli_id(&CliSource::Gemini), Some("gemini"));
+    assert_eq!(known_cli_id(&CliSource::OpenCode), Some("opencode"));
+}
+
+#[test]
+fn known_cli_id_returns_none_for_unknown_variant() {
+    use crate::agent_sessions::CliSource;
+    assert_eq!(
+        known_cli_id(&CliSource::Unknown("anything".to_string())),
+        None
+    );
+}
+
+#[test]
+fn enter_on_wsl_history_row_resumes_inside_distro() {
+    use crate::agent_sessions::{AgentStatus, CliSource, SessionLocation, SessionOrigin};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let row = crate::agent_sessions::AgentSession {
+        key: "abc-123".to_string(),
+        cli_source: CliSource::Copilot,
+        pane_session_id: None,
+        window_id: None,
+        tab_id: None,
+        title: "t".to_string(),
+        cwd: std::path::PathBuf::from("/home/u/proj"),
+        started_at: std::time::SystemTime::UNIX_EPOCH,
+        last_activity_at: std::time::SystemTime::UNIX_EPOCH,
+        status: AgentStatus::Historical,
+        last_error: None,
+        current_tool: None,
+        attention_reason: None,
+        log_path: None,
+        origin: SessionOrigin::Unknown,
+        location: SessionLocation::Wsl {
+            distro: "Ubuntu".to_string(),
+        },
+    };
+    let mut app = test_app();
+    app.window_id = Some("42".into());
+    app.current_agent_source = crate::agent_source::AgentSource::Wsl {
+        distro: "Ubuntu".into(),
+    };
+    app.agent_sessions.merge_historical(vec![row]);
+    app.current_tab_mut().current_view = View::Agents;
+    app.current_tab_mut().agents_list_state.select(Some(0));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let cmd = app
+        .last_dispatched_command_for_test()
+        .expect("a command was dispatched");
+    assert_eq!(cmd.kind, DispatchedCommandKind::NewTabResume);
+    let argv = cmd.argv.join(" ");
+    assert!(
+        argv.contains(
+            "wsl -d Ubuntu --cd \"/home/u/proj\" -- bash -lc \"copilot --resume abc-123\""
+        ),
+        "expected in-distro resume; argv: {argv}"
+    );
+    // The loading banner keeps the short session id and also names the
+    // distro for WSL rows.
+    assert!(
+        argv.contains("Resuming copilot session abc-123 in Ubuntu (WSL)"),
+        "expected distro-named WSL banner; argv: {argv}"
+    );
+    // WSL rows must not also pass the Windows `-d <cwd>` flag.
+    assert!(
+        !argv.contains(" -d /home"),
+        "WSL row must not pass Windows -d cwd"
+    );
+}
+
+fn usage_snapshot() -> crate::usage::UsageSnapshot {
+    crate::usage::UsageSnapshot {
+        context: Some(crate::usage::UsageContext {
+            used: 20,
+            size: 100,
+        }),
+        context_display: None,
+        cost: None,
+        provider_metrics: Vec::new(),
+    }
+}
+
+#[test]
+fn usage_reported_updates_only_the_session_owner_tab() {
+    let mut app = test_app();
+    app.tab_id = Some("ACTIVE-TAB".to_string());
+    app.tab_sessions
+        .insert("ACTIVE-TAB".to_string(), TabSession::default());
+    app.tab_sessions
+        .insert("OWNER-TAB".to_string(), TabSession::default());
+    app.tab_sessions.get_mut("OWNER-TAB").unwrap().session_id = Some("usage-session".to_string());
+    app.session_to_tab
+        .insert("usage-session".to_string(), "OWNER-TAB".to_string());
+    let snapshot = usage_snapshot();
+
+    app.handle_event(AppEvent::UsageReported {
+        session_id: "usage-session".to_string(),
+        snapshot: snapshot.clone(),
+    });
+
+    assert_eq!(app.tab_sessions["OWNER-TAB"].usage, Some(snapshot));
+    assert!(app.tab_sessions["ACTIVE-TAB"].usage.is_none());
+}
+
+#[test]
+fn usage_reported_merges_independent_metrics_for_the_same_session() {
+    let mut app = test_app();
+    app.current_tab_mut().session_id = Some("usage-session".to_string());
+    app.session_to_tab
+        .insert("usage-session".to_string(), DEFAULT_TAB_ID.to_string());
+    app.handle_event(AppEvent::UsageReported {
+        session_id: "usage-session".to_string(),
+        snapshot: usage_snapshot(),
+    });
+    app.handle_event(AppEvent::UsageReported {
+        session_id: "usage-session".to_string(),
+        snapshot: crate::usage::UsageSnapshot {
+            context: None,
+            context_display: None,
+            cost: Some(crate::usage::UsageCost {
+                amount_decimal_text: "0.004".to_string(),
+                currency: "USD".to_string(),
+            }),
+            provider_metrics: Vec::new(),
+        },
+    });
+
+    let snapshot = app.current_tab().usage.as_ref().expect("merged usage");
+    assert_eq!(
+        snapshot.context,
+        Some(crate::usage::UsageContext {
+            used: 20,
+            size: 100
+        })
+    );
+    assert_eq!(snapshot.cost.as_ref().expect("cost").currency, "USD");
+}
+
+#[test]
+fn usage_cleared_removes_only_owner_snapshot_without_changing_chat() {
+    let mut app = test_app();
+    let snapshot = usage_snapshot();
+    app.state = ConnectionState::Connected;
+    app.tab_sessions.insert(
+        "OWNER-TAB".to_string(),
+        TabSession {
+            messages: vec![ChatMessage::System("keep this message".to_string())],
+            usage: Some(snapshot.clone()),
+            session_id: Some("usage-session".to_string()),
+            ..Default::default()
+        },
+    );
+    app.tab_sessions.insert(
+        "OTHER-TAB".to_string(),
+        TabSession {
+            usage: Some(snapshot.clone()),
+            ..Default::default()
+        },
+    );
+    app.session_to_tab
+        .insert("usage-session".to_string(), "OWNER-TAB".to_string());
+
+    app.handle_event(AppEvent::UsageCleared {
+        session_id: "usage-session".to_string(),
+    });
+
+    assert!(app.tab_sessions["OWNER-TAB"].usage.is_none());
+    assert_eq!(
+        app.tab_sessions["OWNER-TAB"].messages,
+        vec![ChatMessage::System("keep this message".to_string())]
+    );
+    assert_eq!(app.tab_sessions["OTHER-TAB"].usage, Some(snapshot));
+    assert_eq!(app.state, ConnectionState::Connected);
+}
+
+#[test]
+fn usage_lifecycle_clear_preserves_but_session_boundaries_clear() {
+    let (mut app, _new_session_rx) = test_app_with_new_session_rx();
+    let snapshot = usage_snapshot();
+    app.current_tab_mut().usage = Some(snapshot.clone());
+    app.cmd_clear();
+    assert_eq!(app.current_tab().usage, Some(snapshot));
+
+    app.cmd_new(false);
+    assert!(app.current_tab().usage.is_none());
+
+    app.current_tab_mut().usage = Some(usage_snapshot());
+    app.cmd_restart();
+    assert!(app.current_tab().usage.is_none());
+
+    app.current_tab_mut().usage = Some(usage_snapshot());
+    app.reset_tab_session_for(DEFAULT_TAB_ID);
+    assert!(app.current_tab().usage.is_none());
+}
+
+#[test]
+fn usage_lifecycle_load_and_new_connection_clear_but_model_change_preserves() {
+    let (mut app, _load_session_rx) = make_app_with_load_session_channel();
+    app.owner_tab_id = Some("OWNER-TAB".to_string());
+    app.tab_sessions.insert(
+        "OWNER-TAB".to_string(),
+        TabSession {
+            usage: Some(usage_snapshot()),
+            ..Default::default()
+        },
+    );
+    app.handle_event(AppEvent::WtEvent {
+        method: "load_session".to_string(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "tab_id": "OWNER-TAB",
+            "session_id": "loaded-session",
+            "cwd": "",
+        }),
+    });
+    assert!(app.tab_sessions["OWNER-TAB"].usage.is_none());
+
+    app.tab_id = Some("OWNER-TAB".to_string());
+    let snapshot = usage_snapshot();
+    app.current_tab_mut().usage = Some(snapshot.clone());
+    let agent_id = app.current_agent_id.clone();
+    app.apply_global_acp_model(&agent_id, Some("new-model".to_string()));
+    assert_eq!(app.current_tab().usage, Some(snapshot));
+
+    app.current_tab_mut().session_id = Some("old-session".to_string());
+    app.handle_event(AppEvent::AgentConnected {
+        name: "Agent".to_string(),
+        model: None,
+        version: None,
+        session_id: "new-session".to_string(),
+        available_models: Vec::new(),
+        current_model_id: None,
+        load_session_supported: false,
+        image_supported: false,
+        session_capabilities_ready: true,
+        telemetry_byok_binding: None,
+    });
+    assert!(app.current_tab().usage.is_none());
+}
+
+#[test]
+fn usage_projection_contains_context_cost_and_explicit_null() {
+    let tab = TabSession {
+        usage: Some(crate::usage::UsageSnapshot {
+            context: Some(crate::usage::UsageContext {
+                used: 1_024,
+                size: 8_192,
+            }),
+            context_display: None,
+            cost: Some(crate::usage::UsageCost {
+                amount_decimal_text: "0.004".to_string(),
+                currency: "USD".to_string(),
+            }),
+            provider_metrics: Vec::new(),
+        }),
+        ..Default::default()
+    };
+    let event = super::app_status_projection::build_agent_state_changed_event("TAB-1", &tab, None);
+    let items = event["params"]["usage"]["items"]
+        .as_array()
+        .expect("usage items");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["metric_id"], "acp.context.window");
+    assert_eq!(items[0]["display_kind"], "context");
+    assert_eq!(items[1]["metric_id"], "acp.billing.cost");
+    assert_eq!(items[1]["display_kind"], "billing");
+    assert_eq!(items[1]["unit_display_text"], "USD");
+    assert!(items.iter().all(|item| item["stale"] == false));
+
+    let cleared = super::app_status_projection::build_agent_state_changed_event(
+        "TAB-1",
+        &TabSession::default(),
+        None,
+    );
+    assert!(cleared["params"]["usage"].is_null());
+}
+
+#[test]
+fn agent_state_projection_includes_agent_session_id() {
+    let mut tab = TabSession {
+        session_id: Some("agent-session-1".to_string()),
+        has_meaningful_conversation: true,
+        ..Default::default()
+    };
+
+    let event = super::app_status_projection::build_agent_state_changed_event(
+        "TAB-1",
+        &tab,
+        Some(crate::app_contracts::YoloControlOwner::Manual),
+    );
+    assert_eq!(
+        event["params"]["agent_session_id"],
+        serde_json::json!("agent-session-1")
+    );
+    assert_eq!(event["params"]["yolo_control_owner"], "manual");
+
+    tab.loading_target_session_id = Some("agent-session-2".to_string());
+    let loading =
+        super::app_status_projection::build_agent_state_changed_event("TAB-1", &tab, None);
+    assert_eq!(
+        loading["params"]["agent_session_id"],
+        serde_json::json!("agent-session-2")
+    );
+
+    let cleared = super::app_status_projection::build_agent_state_changed_event(
+        "TAB-1",
+        &TabSession::default(),
+        None,
+    );
+    assert!(cleared["params"]["agent_session_id"].is_null());
+}
+
+#[test]
+fn resumable_session_id_requires_a_meaningful_conversation() {
+    let mut tab = TabSession {
+        session_id: Some("fresh-session".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(tab.resumable_session_id(), None);
+
+    tab.has_meaningful_conversation = true;
+    assert_eq!(tab.resumable_session_id(), Some("fresh-session"));
+}
+
+// Switching agents rebinds the helper and the new agent opens a session of its
+// own, empty until the user talks to it. Everything else that constitutes a
+// conversation is cleared on rebind, and the meaningfulness flag has to be
+// cleared with it — otherwise the previous agent's conversation makes the new
+// agent's untouched session look resumable, and a save records a session the
+// new agent never wrote to disk (`session/load` then fails with
+// "Resource not found").
+#[test]
+fn agent_rebind_clears_meaningful_conversation() {
+    let (mut app, _restart_rx) = test_app_with_restart_rx();
+    app.owner_tab_id = Some("owner-tab".into());
+    app.window_id = Some("window-1".into());
+    app.tab_id = Some("owner-tab".into());
+    app.current_agent_id = "copilot".into();
+
+    {
+        let tab = app.tab_mut("owner-tab");
+        tab.session_id = Some("copilot-session".to_string());
+        tab.has_meaningful_conversation = true;
+        assert_eq!(tab.resumable_session_id(), Some("copilot-session"));
+    }
+
+    app.handle_event(AppEvent::WtEvent {
+        method: "rebind_agent".into(),
+        pane_id: String::new(),
+        tab_id: None,
+        params: json!({
+            "operation_id": "agent-rebind",
+            "generation": 1,
+            "window_id": "window-1",
+            "tab_id": "owner-tab",
+            "agent_id": "claude",
+            "agent_source": "host",
+        }),
+    });
+
+    let tab = app.tab_mut("owner-tab");
+    assert!(!tab.has_meaningful_conversation);
+    assert_eq!(tab.meaningful_conversation_before_load, None);
+    assert_eq!(tab.resumable_session_id(), None);
+}
+
+#[test]
+fn resumable_session_id_uses_the_load_target_during_replay() {
+    let tab = TabSession {
+        loading_session: true,
+        loading_target_session_id: Some("loaded-session".to_string()),
+        has_meaningful_conversation: true,
+        ..Default::default()
+    };
+    assert_eq!(tab.resumable_session_id(), Some("loaded-session"));
+}
+
+// Submitting a prompt is not yet proof the agent has taken it: the caller
+// still has to dispatch it over ACP, and the agent only writes the session to
+// disk once it starts handling it. A save landing in that window would record
+// a `session/new` id the agent never persisted, and the restore would fail
+// with "Resource not found" — the same class of failure the rebind fix
+// addresses. Agent activity for the turn is what makes the id safe to keep.
+#[test]
+fn a_submitted_prompt_is_not_resumable_until_the_agent_answers() {
+    let mut app = test_app();
+    app.tab_mut(DEFAULT_TAB_ID).session_id = Some("fresh-session".to_string());
+
+    submit_test_prompt(&mut app, "hello");
+    assert_eq!(
+        app.tab_mut(DEFAULT_TAB_ID).resumable_session_id(),
+        None,
+        "a prompt the agent has not answered yet must not be persisted as resumable"
+    );
+
+    app.turn_observe_chunk("fresh-session", ChunkKind::Message, "hi");
+    assert_eq!(
+        app.tab_mut(DEFAULT_TAB_ID).resumable_session_id(),
+        Some("fresh-session")
+    );
+}
+
+// A turn can finish without ever streaming a visible chunk (a tool-only turn).
+// The turn boundary itself is still proof the agent processed the prompt.
+#[test]
+fn a_turn_with_no_chunks_still_makes_the_session_resumable() {
+    let mut app = test_app();
+    app.tab_mut(DEFAULT_TAB_ID).session_id = Some("fresh-session".to_string());
+
+    submit_test_prompt(&mut app, "hello");
+    assert_eq!(app.tab_mut(DEFAULT_TAB_ID).resumable_session_id(), None);
+
+    app.turn_close(DEFAULT_TAB_ID);
+    assert_eq!(
+        app.tab_mut(DEFAULT_TAB_ID).resumable_session_id(),
+        Some("fresh-session")
+    );
+}

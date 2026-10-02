@@ -1,17 +1,17 @@
 # Installing dependencies for Intelligent Terminal
 
 Intelligent Terminal's **first-run experience (FRE)** is designed to install
-the dependencies it owns for you automatically — the default agent
-(GitHub Copilot), Node.js when it is needed, shell integration for both
-PowerShell flavors, and so on. For most users on a typical Windows
-machine who stay with the default agent, finishing the FRE is all you
-ever need to do.
+the blocking prerequisites it owns for you automatically — Node.js when it is
+needed, shell integration for the shells it supports (PowerShell, bash, and
+WSL bash), and agent session hooks. GitHub Copilot CLI setup is deferred to
+the agent pane so a missing or failed Copilot installation cannot prevent you
+from reaching the terminal.
 
 This document exists for the circumstances where the FRE cannot do the job
 on its own, including:
 
-- You are switching to (or adding) **Claude Code**, **OpenAI Codex**, or
-  **Gemini** — agent CLIs the FRE does **not** install for you.
+- You are switching to (or adding) **Claude Code**, **OpenAI Codex**,
+  **Gemini**, or **OpenCode** — agent CLIs the FRE does **not** install for you.
 - An FRE step failed — for example, `winget` is missing or blocked, your
   PowerShell execution policy is locked down by Group Policy, or the
   Node.js install did not pick up on `PATH` — and you need to finish the
@@ -25,22 +25,25 @@ on its own, including:
 1. [WinGet (Windows Package Manager)](#1-winget-windows-package-manager)
 2. [Node.js LTS — shared prerequisite](#2-nodejs-lts--shared-prerequisite)
 3. [Agent CLIs](#agent-clis) — install and sign in to an agent
-   - 3.1 [GitHub Copilot CLI](#31-github-copilot-cli) (installed by the FRE)
+   - 3.1 [GitHub Copilot CLI](#31-github-copilot-cli) (installed from the agent pane)
    - 3.2 [Claude Code (bring your own)](#32-claude-code-bring-your-own)
    - 3.3 [OpenAI Codex (bring your own)](#33-openai-codex-bring-your-own)
    - 3.4 [Gemini CLI (bring your own)](#34-gemini-cli-bring-your-own)
    - 3.5 [Signing in to your agent](#35-signing-in-to-your-agent)
    - 3.6 [Agent hooks for session management](#36-agent-hooks-for-session-management)
-4. [PowerShell shell integration](#4-powershell-shell-integration)
+4. [Shell integration](#4-shell-integration) — supported shells + setup
+   - 4.1 [PowerShell](#41-powershell) (PowerShell 7+ and Windows PowerShell 5.1)
+   - 4.2 [Bash (Git Bash)](#42-bash-git-bash)
+   - 4.3 [WSL bash](#43-wsl-bash)
 
 ---
 
 ## 1. WinGet (Windows Package Manager)
 
 **Why you need it:** Intelligent Terminal can use `winget` to install
-GitHub Copilot CLI and Node.js for you during the first-run experience,
-depending on which agent you choose. Several sections below also use
-`winget` as the recommended manual install method.
+Node.js during the first-run experience and GitHub Copilot CLI later from the
+agent pane. Several sections below also use `winget` as the recommended manual
+install method.
 
 ### Check whether winget is already installed
 
@@ -87,8 +90,8 @@ new `winget.exe` is picked up on `PATH`, then verify with
 **Why you need it:** Claude Code, OpenAI Codex, and Gemini CLI are all
 distributed as npm packages. Intelligent Terminal also launches Claude and
 Codex through `npx` wrappers
-(`npx -y @zed-industries/claude-code-acp` and
-`npx -y @zed-industries/codex-acp`), which require a working Node.js +
+(`npx -y @agentclientprotocol/claude-agent-acp@0.65.0` and
+`npx -y @agentclientprotocol/codex-acp@1.1.13`), which require a working Node.js +
 `npm` + `npx` toolchain on `PATH`. You can skip this section if you only
 plan to use GitHub Copilot CLI.
 
@@ -122,15 +125,15 @@ finishes, close and reopen your terminal so `PATH` picks up `node.exe`,
 
 ## Agent CLIs
 
-Intelligent Terminal supports four agents out of the box — **GitHub
-Copilot**, **Claude Code**, **OpenAI Codex**, and **Gemini**. The
-first-run experience installs **GitHub Copilot** (the default) for you;
-the other three are **bring-your-own** — install the CLI yourself
-(sub-sections below) before selecting it in the FRE.
+Intelligent Terminal supports five agents out of the box — **GitHub
+Copilot**, **Claude Code**, **OpenAI Codex**, **Gemini**, and **OpenCode**. The
+agent pane can install **GitHub Copilot** (the default) after the FRE;
+the other four are **bring-your-own** — install the CLI yourself
+(sub-sections below) before selecting it.
 
-Intelligent Terminal talks to all four through the
-[**Agent Control Protocol (ACP)**](https://agentclientprotocol.com/get-started/agents).
-**Copilot** and **Gemini** speak ACP natively, so no extra layer is
+Intelligent Terminal talks to all five through the
+[**Agent Client Protocol (ACP)**](https://agentclientprotocol.com/get-started/agents).
+**Copilot**, **Gemini**, and **OpenCode** speak ACP natively, so no extra layer is
 required. **Claude Code** and **OpenAI Codex** do not speak ACP directly
 — Intelligent Terminal launches them through an `npx` wrapper that is
 fetched on demand at run time, so its only prerequisite is Node.js.
@@ -140,20 +143,21 @@ fetched on demand at run time, so its only prerequisite is Node.js.
 > wired up from **Settings → AI Agents → Add custom agent**. Custom
 > agents work in the agent pane today, but **session management** (the
 > multi-session sidebar in the agent pane) is not yet supported for
-> custom agents — only the four built-in agents above get the full
+> custom agents — only the five built-in agents above get the full
 > session experience.
 
 ### 3.1 GitHub Copilot CLI
 
 **Why you need it:** GitHub Copilot is the **default agent** in Intelligent
-Terminal and the only agent the first-run experience installs on your
-behalf. It powers the agent pane, the `?<prompt>` command-palette
-delegation, and the auto-fix workflow.
+Terminal. It powers the agent pane, the `?<prompt>` command-palette delegation,
+and the auto-fix workflow.
 
-#### Installed automatically by the first-run experience
+#### Install from the agent pane
 
-When you complete the FRE with Copilot selected, Intelligent Terminal
-installs the Copilot CLI for you (skipped if it is already on `PATH`):
+When you complete the FRE with Copilot selected, Intelligent Terminal opens
+the agent pane. If the Copilot CLI is missing, choose **Install** there.
+The terminal remains usable while Copilot setup is incomplete or fails.
+The installer runs:
 
 ```powershell
 winget install --id GitHub.Copilot --exact --silent `
@@ -164,10 +168,9 @@ winget install --id GitHub.Copilot --exact --silent `
 
 Copilot speaks ACP natively, so no wrapper is required.
 
-#### Install manually (only if you are not using the FRE)
+#### Install manually
 
-If the FRE did not install Copilot CLI for you, run the `winget` command
-above, then verify:
+You can instead run the `winget` command above yourself, then verify:
 
 ```powershell
 copilot --version
@@ -187,7 +190,7 @@ install directory is added to `PATH`.
 **Status:** Supported, but **not installed by Intelligent Terminal**. You
 must install Anthropic's Claude Code CLI yourself before selecting Claude
 in the FRE. Intelligent Terminal launches Claude through the
-`@zed-industries/claude-code-acp` npx wrapper.
+`@agentclientprotocol/claude-agent-acp` npx wrapper.
 
 #### Step 3.2.1 — Install Node.js
 
@@ -210,13 +213,13 @@ claude --version
 
 #### Step 3.2.3 — ACP wrapper (no install action required)
 
-Claude Code does not speak the Agent Control Protocol (ACP) directly, so
+Claude Code does not speak the Agent Client Protocol (ACP) directly, so
 Intelligent Terminal launches it through the
-[`@zed-industries/claude-code-acp`](https://www.npmjs.com/package/@zed-industries/claude-code-acp)
+[`@agentclientprotocol/claude-agent-acp`](https://www.npmjs.com/package/@agentclientprotocol/claude-agent-acp)
 wrapper. The wrapper is fetched on demand at run time with:
 
 ```powershell
-npx -y @zed-industries/claude-code-acp
+npx -y @agentclientprotocol/claude-agent-acp@0.65.0
 ```
 
 You do **not** need to install anything for this — the only prerequisite
@@ -234,7 +237,7 @@ The first launch may take a few seconds while `npx` downloads the wrapper.
 **Status:** Supported, but **not installed by Intelligent Terminal**. You
 must install OpenAI's Codex CLI yourself before selecting Codex in the FRE.
 Intelligent Terminal launches Codex through the
-`@zed-industries/codex-acp` npx wrapper.
+`@agentclientprotocol/codex-acp` npx wrapper.
 
 #### Step 3.3.1 — Install Node.js
 
@@ -257,13 +260,13 @@ codex --version
 
 #### Step 3.3.3 — ACP wrapper (no install action required)
 
-Codex does not speak the Agent Control Protocol (ACP) directly, so
+Codex does not speak the Agent Client Protocol (ACP) directly, so
 Intelligent Terminal launches it through the
-[`@zed-industries/codex-acp`](https://www.npmjs.com/package/@zed-industries/codex-acp)
+[`@agentclientprotocol/codex-acp`](https://www.npmjs.com/package/@agentclientprotocol/codex-acp)
 wrapper. The wrapper is fetched on demand at run time with:
 
 ```powershell
-npx -y @zed-industries/codex-acp
+npx -y @agentclientprotocol/codex-acp@1.1.13
 ```
 
 You do **not** need to install anything for this — the only prerequisite
@@ -280,7 +283,7 @@ The first launch may take a few seconds while `npx` downloads the wrapper.
 
 **Status:** Supported, but **not installed by Intelligent Terminal**. You
 must install Google's Gemini CLI yourself before selecting Gemini in the
-FRE. Gemini speaks the Agent Control Protocol (ACP) natively, so no
+FRE. Gemini speaks the Agent Client Protocol (ACP) natively, so no
 wrapper is required at runtime, but the CLI itself is still distributed as
 an npm package.
 
@@ -334,15 +337,18 @@ up the new credentials.
 parallel conversations on the same tab — is powered by a small bundle of
 **agent hooks** (`wt-agent-hooks`) that the agent CLI loads as a plugin /
 extension. The first-run experience installs these hooks for you the
-first time you save the FRE with **Session management** enabled.
+first time you save the FRE with **Session management** enabled. FRE installs
+only the selected agent's hooks. After FRE, Intelligent Terminal automatically
+reconciles hooks at `wta-master` startup, when Session management changes from
+off to on, and when you select a different built-in agent.
 
 You only need to follow this section if:
 
 - The FRE reported that hooks installation failed (for example because
   the agent CLI was not yet on `PATH`, or your network blocked the agent
   CLI's plugin store).
-- You installed the agent CLI **after** completing the FRE and now want
-  to enable session management.
+- Automatic reconciliation failed and you need to repair the installation
+  manually.
 
 #### Step 3.6.1 — Make sure the agent CLI is installed and on PATH
 
@@ -354,23 +360,29 @@ sub-section above before continuing:
 - **Claude Code** → [Section 3.2](#32-claude-code-bring-your-own)
 - **OpenAI Codex** → [Section 3.3](#33-openai-codex-bring-your-own)
 - **Gemini CLI** → [Section 3.4](#34-gemini-cli-bring-your-own)
+- **OpenCode** → install and authenticate the CLI using the [OpenCode documentation](https://opencode.ai/docs/)
 
 Verify the CLI you intend to use prints a version number, then close and
 reopen your terminal so any new install directory is on `PATH`.
 
-#### Step 3.6.2 — Run `wta hooks install`
+#### Step 3.6.2 — Let Intelligent Terminal reconcile hooks
 
-Intelligent Terminal ships a `wta hooks install` command that runs the
-same installer the FRE uses. Open a **new** Intelligent Terminal window
-(so `wta` and the agent CLI both pick up the current `PATH`) and run
-**one** of the following — whichever matches the agent you selected in
-the FRE:
+Open a **new** Intelligent Terminal window so `wta-master` and the agent CLI
+pick up the current `PATH`. In **Settings → AI Agents**, turn **Sessions** on
+and select the installed built-in agent. Intelligent Terminal
+checks the agent asynchronously and installs missing hooks or upgrades stale
+ones.
+
+If automatic reconciliation fails, `wta hooks install` remains the supported
+manual retry command. It applies the same smart reconciliation used by
+automatic triggers:
 
 ```powershell
 wta hooks install --cli copilot
 wta hooks install --cli claude
 wta hooks install --cli codex
 wta hooks install --cli gemini
+wta hooks install --cli opencode
 ```
 
 Or install for every agent CLI that is currently on `PATH` in one go:
@@ -379,8 +391,8 @@ Or install for every agent CLI that is currently on `PATH` in one go:
 wta hooks install
 ```
 
-Under the hood this runs each agent CLI's native plugin / extension
-command against the `wt-agent-hooks` bundle shipped inside the
+When reconciliation selects Install, it runs the agent CLI's native plugin /
+extension command against the `wt-agent-hooks` bundle shipped inside the
 Intelligent Terminal package:
 
 | Agent          | Native commands invoked by `wta hooks install`                                                                              |
@@ -389,10 +401,28 @@ Intelligent Terminal package:
 | Claude Code    | `claude plugin marketplace add <bundle>\claude` then `claude plugin install wt-agent-hooks@wt-local`                        |
 | OpenAI Codex   | `codex plugin marketplace add <bundle>\codex` then `codex plugin add wt-agent-hooks@wt-local` *(note: `add`, not `install`)* |
 | Gemini CLI     | `gemini extensions install <bundle>\gemini-extension --consent --skip-settings` *(with `GEMINI_CLI_TRUST_WORKSPACE=true` to bypass Gemini's folder-trust prompt)* |
+| OpenCode       | Copies the bundled plugin to `%XDG_CONFIG_HOME%\opencode\plugins\wt-agent-hooks.js` when `XDG_CONFIG_HOME` is set; otherwise it uses `%USERPROFILE%\.config\opencode\plugins\wt-agent-hooks.js`, without modifying `opencode.json` |
+
+For OpenCode, the plugin is globally discoverable but emits events only from
+interactive sessions running inside Intelligent Terminal. OpenCode ACP
+processes used by the agent pane remain tracked through ACP, preventing
+duplicate session rows. The installer will not overwrite a same-name plugin
+file unless it carries Intelligent Terminal's managed-file marker.
 
 You do not need to run these directly — `wta hooks install` is the
 supported entry point and handles bundle staging, idempotency, and
 diagnostic logging for you.
+
+If status looks healthy but the hooks still do not run, use the explicit
+force-recovery path:
+
+```powershell
+wta hooks install --force --cli codex
+```
+
+`--force` reruns the first-install flow even when the hook bridge already
+appears installed. Close running sessions for that agent first so its plugin
+manager cannot overwrite the registration while it is being repaired.
 
 > [!IMPORTANT]
 > **Codex needs a one-time `/hooks` trust step.** After
@@ -400,9 +430,9 @@ diagnostic logging for you.
 > until you launch Codex once and run the `/hooks` slash command to
 > trust the `wt-agent-hooks` plugin. This is a Codex security
 > requirement that no external installer can satisfy on your behalf;
-> the other three CLIs do not need this step.
+> the other four CLIs do not need this step.
 
-#### Step 3.6.3 — Verify the install and re-enable session management
+#### Step 3.6.3 — Verify the install
 
 Check the status report to confirm each agent CLI is wired up:
 
@@ -410,18 +440,21 @@ Check the status report to confirm each agent CLI is wired up:
 wta hooks status
 ```
 
-You should see `installed` for the agent you selected. Then, back in
-**Settings → AI Agents**, turn **Session management** back on (the FRE
-turns it off when hooks installation fails so you can save and continue
-without it) and restart Intelligent Terminal once.
+You should see `installed` for the agent you selected, followed by the
+installed hook version (for example `v0.1.5`). When a CLI's hooks were
+registered by a different build, the row also names the version this
+Intelligent Terminal ships — `v0.1.4 (bundle v0.1.5)` means the CLI is
+loading older hooks and should be reinstalled with `wta hooks install`.
+If Session management is off, turn it on to retry automatic reconciliation.
 
 > [!TIP]
 > If `wta hooks install` still fails, diagnostics are written to
-> `wta-install-hooks.log` under the Intelligent Terminal package's log
-> directory:
+> `wta-install-hooks*.log` under the Intelligent Terminal package's log
+> directory. This is normally `wta-install-hooks.<UTC-date>.log`; the fixed
+> `wta-install-hooks.log` name is used if daily logging cannot initialize.
 >
 > ```text
-> %LOCALAPPDATA%\Packages\<PackageFamilyName>\LocalCache\Local\IntelligentTerminal\logs\<version>\wta-install-hooks.log
+> %LOCALAPPDATA%\Packages\<PackageFamilyName>\LocalCache\Local\IntelligentTerminal\logs\<version>\wta-install-hooks*.log
 > ```
 >
 > The most common causes of failure are: the agent CLI was not on
@@ -434,23 +467,47 @@ without it) and restart Intelligent Terminal once.
 > [!WARNING]
 > If your organization disables agent session hooks through Group
 > Policy, the **Session management** toggle in the FRE and in
-> **Settings → AI Agents** is locked off and the FRE will not run the
-> hooks installer for you. Contact your IT administrator if you
-> believe this is in error.
+> **Settings → AI Agents** is locked off and neither FRE nor automatic
+> reconciliation will run the hooks installer. Contact your IT administrator
+> if you believe this is in error.
 
 ---
 
-## 4. PowerShell shell integration
+## 4. Shell integration
 
-**Why you need it:** Shell integration teaches PowerShell to emit
-**OSC 133** marks after every prompt. Intelligent Terminal uses these marks
-to detect command boundaries and exit codes, which powers the auto-fix
-feature, command navigation, and the bottom-bar agent state. Without these
-marks Intelligent Terminal cannot tell when a command finished or whether
-it failed.
+**Why you need it:** Shell integration teaches your shell to emit **OSC 133**
+marks after every prompt. Intelligent Terminal uses these marks to detect
+command boundaries and exit codes, which powers the auto-fix feature, command
+navigation, and the bottom-bar agent state. Without these marks Intelligent
+Terminal cannot tell when a command finished or whether it failed.
 
-The first-run experience writes the shell-integration profile snippet for
-you, for both **PowerShell 7+** (`pwsh.exe`) and **Windows PowerShell 5.1**
+The first-run experience installs shell integration automatically for every
+**supported shell it detects** on your system — you usually don't have to do
+anything. This section documents which shells are supported and the only
+manual step you may occasionally need (adjusting the PowerShell execution
+policy).
+
+### What's supported
+
+| Shell | Supported | Where integration is installed |
+|---|---|---|
+| PowerShell 7+ (`pwsh.exe`) | ✅ | `$PROFILE` (see [4.1](#41-powershell)) |
+| Windows PowerShell 5.1 (`powershell.exe`) | ✅ | `$PROFILE` (see [4.1](#41-powershell)) |
+| Bash — Git Bash on Windows | ✅ | `~/.bashrc` (see [4.2](#42-bash-git-bash)) |
+| WSL bash | ✅ | `\\wsl$\<distro>\…\.bashrc` (see [4.3](#43-wsl-bash)) |
+| Command Prompt (`cmd.exe`) | ❌ | `cmd.exe` cannot emit OSC 133 marks |
+| Other shells (zsh, fish, Nushell, …) | ❌ | Not yet supported |
+| Non-bash WSL login shells (zsh, fish, …) | ❌ | Only WSL distros whose login shell is bash are covered |
+
+> [!NOTE]
+> The set of supported shells grows over time. This page is the **authoritative
+> list** — if a shell you use isn't here yet, check back after updating
+> Intelligent Terminal.
+
+### 4.1 PowerShell
+
+The first-run experience writes the shell-integration profile snippet for you,
+for both **PowerShell 7+** (`pwsh.exe`) and **Windows PowerShell 5.1**
 (`powershell.exe`). The snippet is appended to each host's
 **current-user / current-host profile** — the same file `$PROFILE` (also
 known as `$PROFILE.CurrentUserCurrentHost`) points at when you run that
@@ -467,10 +524,12 @@ You can always resolve the exact location from inside either host with:
 $PROFILE.CurrentUserCurrentHost
 ```
 
-The only step you may need to perform by hand is adjusting the PowerShell
-execution policy so the profile is allowed to run.
+During the first-run experience, Intelligent Terminal automatically changes a
+blocking CurrentUser execution policy to `RemoteSigned` before installing shell
+integration. If an organization policy overrides that setting, or automatic
+remediation otherwise fails, use the following steps.
 
-### Step 4.1 — Set the PowerShell execution policy
+#### Set the PowerShell execution policy
 
 Shell-integration scripts are PowerShell `.ps1` files loaded from your
 profile. PowerShell will refuse to run them under the default `Restricted`
@@ -480,6 +539,12 @@ to **at least** `RemoteSigned`:
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 ```
+
+> [!IMPORTANT]
+> Make sure to run this command in **both** hosts:
+>
+> - **PowerShell 7+** (`pwsh.exe`)
+> - **Windows PowerShell 5.1** (`powershell.exe`)
 
 `RemoteSigned` allows local scripts (such as your profile) to run while
 still requiring a signature on scripts downloaded from the internet, which
@@ -509,12 +574,56 @@ is the recommended Microsoft default for developer machines.
 > shows `Restricted` or `AllSigned` for your scope after running the
 > command above.
 
-### Step 4.2 — Enable auto-error detection and auto-error fix
+### 4.2 Bash (Git Bash)
 
-Once the execution policy is set, open **Settings → AI Agents** inside
-Intelligent Terminal and turn on **Auto-error detection** (and, optionally,
-the auto-fix follow-up). With shell integration loading correctly, the
-agent pane will now:
+For **Git Bash on Windows**, the first-run experience installs a small,
+versioned script under `~/.intelligent-terminal/` (resolved from your
+`%USERPROFILE%`) and sources it from a guarded block appended to **`~/.bashrc`**:
+
+| What | Path |
+|---|---|
+| Integration script | `%USERPROFILE%\.intelligent-terminal\shell-integration_v1.sh` |
+| Sourced from | `%USERPROFILE%\.bashrc` |
+
+There is **no execution-policy equivalent** for bash, so no manual step is
+normally required. A few notes:
+
+- The script targets **bash 3.2+** and is safe to source multiple times. It
+  silently no-ops in non-interactive shells and in non-bash shells, so a
+  `.bashrc` that roams (via dotfiles / OneDrive) to a machine without
+  Intelligent Terminal won't break.
+- To uninstall, remove the Intelligent Terminal block from `~/.bashrc`. The
+  versioned script files under `~/.intelligent-terminal/` are intentionally
+  left in place to support side-by-side rollback; delete that directory by
+  hand if you want a full sweep.
+
+### 4.3 WSL bash
+
+For **WSL** distributions, integration is installed **per distro** using the
+same bash script as above, written through the distro's `\\wsl$\` UNC mount:
+
+| What | Path |
+|---|---|
+| Integration script | `\\wsl$\<distro>\<home>\.intelligent-terminal\shell-integration_v1.sh` |
+| Sourced from | `\\wsl$\<distro>\<home>\.bashrc` |
+
+Notes and limitations:
+
+- The `\\wsl$\` mount requires **Windows 10 1903 (build 18362)+**, which every
+  supported Intelligent Terminal host meets. The first access auto-starts the
+  distro, so the very first install pays a one-time VM cold-start cost.
+- Only distros whose **login shell is bash** are covered (integration is
+  written to `~/.bashrc`). Distros that default to — or where you have
+  changed your default shell to — **zsh, fish, or another non-bash shell**,
+  or that ship **without bash** (for example, Alpine), are **not yet
+  supported**.
+
+### Enable auto-error detection and auto-error fix
+
+Once shell integration is in place, open **Settings → AI Agents** inside
+Intelligent Terminal and turn on **Auto-error detection** (and, optionally, the
+auto-fix follow-up). With shell integration loading correctly, the agent pane
+will now:
 
 - Detect failing commands automatically (via the OSC 133 exit-code marks).
 - Offer to diagnose and propose a fix for the most recent failure.

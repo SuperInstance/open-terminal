@@ -23,7 +23,7 @@
 // each action. This is _NOT_ something that should be used when any individual
 // case should be customized.
 
-#define ALL_SHORTCUT_ACTIONS                \
+#define LEGACY_SHORTCUT_ACTIONS             \
     ON_ALL_ACTIONS(CopyText)                \
     ON_ALL_ACTIONS(PasteText)               \
     ON_ALL_ACTIONS(OpenNewTabDropdown)      \
@@ -121,7 +121,18 @@
     ON_ALL_ACTIONS(TriggerAutofix)          \
     ON_ALL_ACTIONS(OpenBackgroundAgent)     \
     ON_ALL_ACTIONS(ShowProtocolInfo)        \
-    ON_ALL_ACTIONS(BugReport)
+    ON_ALL_ACTIONS(BugReport)               \
+    ON_ALL_ACTIONS(OpenWorkspace)           \
+    ON_ALL_ACTIONS(Workspaces)
+
+// Append new public actions here so existing enum values and dispatch ABI slots
+// remain ahead of them, including the original internal actions.
+#define ADDITIONAL_SHORTCUT_ACTIONS \
+    ON_ALL_ACTIONS(ToggleSidebar)
+
+#define ALL_SHORTCUT_ACTIONS \
+    LEGACY_SHORTCUT_ACTIONS  \
+    ADDITIONAL_SHORTCUT_ACTIONS
 
 #define ALL_SHORTCUT_ACTIONS_WITH_ARGS             \
     ON_ALL_ACTIONS_WITH_ARGS(AdjustFontSize)       \
@@ -166,7 +177,8 @@
     ON_ALL_ACTIONS_WITH_ARGS(Suggestions)          \
     ON_ALL_ACTIONS_WITH_ARGS(SelectCommand)        \
     ON_ALL_ACTIONS_WITH_ARGS(SelectOutput)         \
-    ON_ALL_ACTIONS_WITH_ARGS(ColorSelection)
+    ON_ALL_ACTIONS_WITH_ARGS(ColorSelection)       \
+    ON_ALL_ACTIONS_WITH_ARGS(OpenWorkspace)
 
 // These two macros here are for actions that we only use as internal currency.
 // They don't need to be parsed by the settings model, or saved as actions to
@@ -175,4 +187,9 @@
     ON_ALL_ACTIONS(SaveSnippet)
 
 #define INTERNAL_SHORTCUT_ACTIONS_WITH_ARGS \
-    ON_ALL_ACTIONS_WITH_ARGS(SaveSnippet)\
+    ON_ALL_ACTIONS_WITH_ARGS(SaveSnippet)
+
+#define ALL_SHORTCUT_ACTIONS_IN_ABI_ORDER \
+    LEGACY_SHORTCUT_ACTIONS              \
+    INTERNAL_SHORTCUT_ACTIONS            \
+    ADDITIONAL_SHORTCUT_ACTIONS

@@ -1,9 +1,7 @@
 # Setup screen titles
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.title.first_run: "Sveiki atvykę į Išmanusis Terminalas!"
 setup.title.agent_missing: "Agentas nerastas"
 setup.title.agent_error: "Nepavyko prisijungti prie agento"
-setup.title.switch_agent: "Pakeisti agentą"
 setup.title.not_available: "Agentas nepasiekiamas"
 setup.title.sign_in: "Reikia prisijungti"
 
@@ -12,10 +10,9 @@ setup.subtitle.copilot_missing: "Jūsų agentas \"%{agent}\" neįdiegtas. Norėd
 setup.subtitle.agent_missing: "Jūsų agentas \"%{agent}\" neįdiegtas. Įdiekite jį iš naujo rankiniu būdu, tada bandykite dar kartą. Norėdami pakeisti agentą, eikite į Išmanusis Terminalas Settings > Agent."
 setup.subtitle.copilot_auth: "Jūsų agentas \"%{agent}\" reikalauja autentifikavimo. Norėdami prisijungti, atlikite toliau nurodytus veiksmus. Norėdami pakeisti agentą, eikite į Išmanusis Terminalas Settings > Agent."
 setup.subtitle.agent_auth: "Jūsų agentas \"%{agent}\" reikalauja autentifikavimo. Prisijunkite per agentą, tada pasirinkite \"Prisijungiau\" žemiau. Norėdami pakeisti agentą, eikite į Išmanusis Terminalas Settings > Agent."
+setup.subtitle.connection_failed: "Nepavyko paleisti %{agent}."
 
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.description.fre_line1: "Pasirinkite numatytąjį agentą, kurį norite naudoti Išmanusis Terminalas. Galite"
-setup.description.fre_line2: "eiti į Settings, kad sukonfigūruotumėte ir nustatytumėte savo darbo sritį."
 
 setup.option.install: "Įdiegti %{agent}"
 setup.option.install_hint: "(Bus įdiegta automatiškai)"
@@ -23,10 +20,14 @@ setup.option.signin: "Prisijungti prie %{agent}"
 setup.option.retry_detection: "Bandyti dar kartą"
 setup.option.retry_auth: "Prisijungiau — bandyti prisijungti dar kartą"
 setup.option.retry_connection: "Bandyti prisijungti dar kartą"
-setup.option.switch_to: "Perjungti į %{agent}"
 setup.status.installing: "Diegiama..."
+setup.status.installing_copilot_cli: "Diegiamas GitHub Copilot CLI"
+setup.status.connecting_agent: "Jungiamasi prie %{agent}"
 setup.status.install_failed: "Diegimas nepavyko: "
 setup.status.installing_winget: " Diegiama per winget..."
+setup.error.install_start_failed: "Nepavyko paleisti diegimo programos. Norėdami bandyti dar kartą, pasirinkite \"Bandyti dar kartą\"."
+setup.error.install_timed_out: "Baigėsi diegimui skirtas laikas. Prieš pradėdami kitą diegimą pasirinkite \"Bandyti dar kartą\"."
+setup.error.install_detection_timed_out: "Diegimas baigtas, bet Copilot dar nematomas. Norėdami patikrinti dar kartą, pasirinkite \"Bandyti dar kartą\"."
 
 # ── Auth flow (src/ui/auth.rs) ──────────────────────────────────────────────
 # {Locked="CLI"} - acronym, common usage across Microsoft localizations
@@ -35,17 +36,19 @@ auth.agent_selected_with_status: "Agent %{name} — "
 auth.checking_authentication: "  %{spinner} Tikrinama autentifikacija..."
 auth.waiting_for_authorization: "  %{spinner} Laukiama autorizavimo..."
 auth.code_copied_hint: "  Kodas nukopijuotas į iškarpinę — įklijuokite jį naršyklėje."
-auth.sign_in_prompt: "Prisijunkite, kad galėtumėte naudoti savo agentą:"
+auth.device_code_prompt: "Apsilankykite %{url} ir įveskite kodą: %{code}"  # Copilot device-flow sign-in progress; %{url} is the verification URL, %{code} is the device code
 auth.card_connect: "  Prijunkite %{name}, kad įgalintumėte agento funkcijas"
-auth.button_sign_in_github: "[ Prisijungti su GitHub ]"  # {Locked="GitHub"}
-auth.button_sign_in_with: "[ Prisijungti su %{name} ]"
-auth.hint_footer: "  Paspauskite Enter, kad prisijungtumėte, Esc, kad grįžtumėte atgal"  # {Locked="Enter","Esc"}
+auth.enterprise_prompt: "  Enter = prisijungti · E = GitHub Enterprise · Esc = grįžti"  # {Locked="Enter","E","Esc"}
+auth.enterprise_domain_label: "  Enterprise domenas: "
+auth.enterprise_hint_footer: "  Enter = prisijungti · Esc = github.com"  # {Locked="Enter","Esc","github.com"}
+auth.login_failed_help_enterprise: "  Paspauskite Enter, kad bandytumėte dar kartą, arba Esc, kad naudotumėte github.com. Dažnos priežastys: neteisingai įvestas arba nepasiekiamas domenas, nebegaliojantis kodas arba nėra Copilot prieigos tame pagrindiniame kompiuteryje."  # {Locked="Enter","Esc","github.com","Copilot"}
+auth.login_failed_help_default: "  Paspauskite Enter, kad bandytumėte dar kartą, arba Esc, kad grįžtumėte."  # {Locked="Enter","Esc"}
 
 # ── Chat view (src/ui/chat.rs) ──────────────────────────────────────────────
 chat.activity_thinking: "Mąsto..."
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
 chat.welcome_title: "Sveiki atvykę į Išmanusis Terminalas!"
-chat.welcome_disclaimer: "Išmanusis Terminalas naudoja AI. Tikrinkite klaidas."
+chat.welcome_disclaimer: "Išmanusis Terminalas naudoja AI."
 chat.plan_header: "Planas:"
 chat.plan_marker_completed: "[x]"  # {Locked}
 chat.plan_marker_in_progress: "[>]"  # {Locked}
@@ -53,11 +56,24 @@ chat.plan_marker_pending: "[ ]"  # {Locked}
 chat.autofix_prompt_label: "Automatiškai diagnozuotas neseniai įvykęs komandos sutrikimas"
 chat.turn_canceled: "(atšaukta)"
 chat.turn_executed: "→ įvykdyta: %{title}"
+# Persistent tool-category labels shown after a status marker and before a subject.
+chat.tool_kind.run: "Vykdyti"
+chat.tool_kind.insert: "Įterpti"
+chat.tool_kind.read: "Skaityti"
+chat.tool_kind.search: "Ieškoti"
+chat.tool_kind.edit: "Redaguoti"
+chat.tool_kind.delete: "Naikinti"
+chat.tool_kind.move: "Perkelti"
+chat.tool_kind.fetch: "Gauti"
+chat.tool_kind.think: "Mąstyti"
+chat.tool_kind.mode: "Režimas"
+chat.tool_kind.other: "Įrankis"
 
 # ── Input placeholders (src/ui/input.rs) ────────────────────────────────────
 input.placeholder.connected: "Klauskite bet ko, / komandoms.."  # {Locked="/"}
 input.placeholder.connecting: "jungiamasi..."
 input.placeholder.disconnected: "atjungta"
+input.image_attachments: "📎 Vaizdai: %{items}"  # {Locked="%{items}"} {Locked="📎"}
 
 # ── Command popup (src/ui/command_popup.rs) ─────────────────────────────────
 # {Locked="/"} - slash-command prefix, must remain ASCII
@@ -93,9 +109,7 @@ permission.compact.prefix: "[!] "  # {Locked}
 permission.compact.hint: "[Y/N atsakyti · pakeiskite dydį pilnai kortelei]"  # {Locked="Y/N"}
 
 # ── Agent status (src/agent_check.rs) ───────────────────────────────────────
-agent.status.not_installed_auto: "Neįdiegta — pasirinkite, kad būtų įdiegta automatiškai"
 agent.status.not_found: "Nerasta"
-agent.status.detected: "Aptikta"
 # {Locked="winget","GitHub.Copilot","GitHub","Copilot"} - tool names and command, must run verbatim
 agent.install.running_winget: "Running: winget install GitHub.Copilot"
 agent.install.launch_failed: "Failed to launch winget: %{error}"
@@ -106,8 +120,8 @@ agent.custom.auth_hint: "Įsitikinkite, kad %{name} yra įdiegtas ir yra jūsų 
 
 # ── Agents view (src/ui/agents_view.rs) ─────────────────────────────────────
 agents.loading: "Įkeliama..."
-# {Locked="Enter","Esc","↑","↓"} - key combinations, do not translate
-agents.footer_hint: "(↑ ↓ naršyti • Enter pradėti seansą • Esc išeiti)"
+# {Locked="Enter","Esc","F5","↑","↓","/"} - key combinations, do not translate
+agents.footer_hint: "(↑ ↓ naršyti • Enter pradėti seansą • Esc išeiti • F5 atnaujinti • / ieškoti)"
 agents.status.active: "Aktyvus"
 agents.status.waiting_for_input: "Laukia įvesties"
 agents.status.error: "Klaida"
@@ -117,26 +131,47 @@ agents.status.idle: "Laukimo būsena"
 layout.welcome_hint: "  (Ctrl+Shift+. rodyti / slėpti agento skydelį • Ctrl+Shift+/ rodyti / slėpti agento seansą)"  # {Locked="Ctrl+Shift+.","Ctrl+Shift+/"}
 
 # ── Connection state ────────────────────────────────────────────────────────
-connection.starting: "Paleidžiamas agentas..."
+# Preparing the AI agent connection, including preflight and reuse of a cached agent.
+connection.starting: "Ruošiamas ryšys su agentu..."
+# Retiring old AI agent sessions for /restart, before the next connection phases.
+connection.restarting: "Agentas paleidžiamas iš naujo..."
 connection.reconnecting: "Jungiamasi iš naujo..."
+# Connecting the pane to WTA's local coordinator process, not to an AI model.
+connection.coordinator: "Jungiamasi prie vietinio koordinatoriaus..."
+# Initializing the helper/coordinator connection, including local preparation and AI agent initialization.
+connection.initializing: "Inicijuojamas ryšys su agentu..."
+# Refreshing the user's authentication with the AI agent after login; not verifying the agent's identity.
+connection.authenticating: "Tikrinama naudotojo tapatybė prisijungiant prie agento..."
+# Reading the coordinator's registry snapshot, including existing history; not fetching history from the AI agent.
+connection.syncing_sessions: "Skaitomas seansų sąrašas..."
+# Creating the AI agent session, including local registration; internal agent progress is unknown.
+connection.creating_session: "Kuriamas agento seansas..."
+# Applying the requested AI model before the connection is ready. Preserve %{model}.
+connection.selecting_model: "Nustatomas seanso modelis: %{model}..."  # {Locked="%{model}"}
+# Activity row while connecting to restore a conversation. Keep the actual stage first so narrow panes show it; session_id is shortened to eight characters.
+connection.resuming_stage: "%{stage} (tęsiamas %{session_id})"  # {Locked="%{stage}","%{session_id}"}
 connection.connecting_activity: "Jungiamasi prie agento…"
 connection.lost: "Ryšys su agentu nutrūko. Įveskite /restart, kad prisijungtumėte iš naujo."  # {Locked="/restart"}
 
 # ── System messages (src/app.rs) ────────────────────────────────────────────
+system.close_pane_hint: "Paspauskite Ctrl+C dar kartą, kad uždarytumėte skydelį."  # {Locked="Ctrl+C"}
+system.selection_copied: "Nukopijuota"  # Brief hint shown after selected terminal text is copied
 system.cancelled: "Atšaukta."
 system.no_prompt_in_flight: "Nėra vykdomos užklausos."
 system.authentication_failed: "Autentifikavimas nepavyko"
-system.command_copied_retry: "Komanda nukopijuota — paleiskite ją kitame terminale, tada paspauskite Enter, kad bandytumėte iš naujo"  # {Locked="Enter"}
 system.stopped_max_tokens: "Atsakymas buvo nutrauktas pasiekus modelio išvesties ribą."
 system.stopped_max_turn_requests: "Agentas sustojo pasiekęs šio ėjimo užklausų ribą."
 system.stopped_refusal: "Agentas atsisakė tęsti šią užklausą."
 system.agent_busy: "Agentas šiame skirtuke užimtas — palaukite, kol dabartinė užklausa bus baigta."
+system.image_clipboard_empty: "Iškarpinėje nėra vaizdo, kurį būtų galima įklijuoti."
+system.image_not_supported: "Šis agentas nepalaiko vaizdo įvesties."
+system.image_pasted: "Vaizdas pridėtas (%{label}). Paspauskite Enter, kad išsiųstumėte."  # {Locked="%{label}","Enter"}
 system.resuming_session: "Tęsiamas seansas %{session_id}..."
 system.unknown_command: "Nežinoma komanda \"%{command}\" — išsiųsta kaip užklausa. Sąrašui įveskite /help."  # {Locked="/help"}
 system.busy_use_stop: "Palaukite, kol dabartinė užklausa bus baigta, arba pirmiausia naudokite /stop."  # {Locked="/stop"}
 system.cannot_focus_session: "Nepavyksta sufokusuoti seanso %{session_id}: jis atrodo aktyvus, bet dar nėra susietas joks srities GUID. Bandykite dar kartą po akimirkos."
-system.cannot_resume_no_load_session: "Nepavyksta tęsti agento srityje: %{agent} nepaskelbė ACP `loadSession` galimybės. Paspauskite Enter (be Shift), kad vietoj to tęstumėte naujoje terminalo srityje."  # {Locked="ACP","loadSession","Enter","Shift"}
-system.cannot_resume_no_resume_flag: "Nepavyksta tęsti %{agent} seanso: šis agentas neturi `--resume` tipo vėliavėlės. Paspauskite Shift+Enter, kad pabandytumėte tęsti agento srityje per ACP."  # {Locked="--resume","Shift","Enter","ACP"}
+system.cannot_resume_no_load_session: "Nepavyksta tęsti agento srityje: %{agent} nepaskelbė ACP `loadSession` galimybės."  # {Locked="ACP","loadSession"}
+system.cannot_resume_no_resume_flag: "Nepavyksta tęsti %{agent} seanso: šis agentas neturi `--resume` tipo vėliavėlės."  # {Locked="--resume"}
 system.cannot_resume_unknown_agent: "Nepavyksta tęsti seanso %{session_id}: jo šaltinio agentas šiai WTA komponuotei nežinomas."
 system.cannot_resume_phantom_via_flag: "Nepavyksta tęsti %{agent} seanso %{session_id}: jis buvo paleistas, bet nesukaupė jokio pokalbio, todėl pats %{agent} atmestų tęsimą. Eilutė šalinama."
 system.cannot_resume_phantom_via_load: "Nepavyksta tęsti %{agent} seanso %{session_id}: jis buvo paleistas, bet nesukaupė jokio pokalbio, todėl %{agent} atmestų įkėlimą. Eilutė šalinama."
@@ -178,7 +213,7 @@ hooks.marketplace_path_stale: "⚠ marketplace path stale"
 hooks.installed_but_disabled: "⚠ installed but disabled"
 hooks.not_installed: "✗ not installed"
 hooks.uninstall_skipped: "skipped (CLI not on PATH)"
-hooks.install_attempted: "wt-agent-hooks install attempted (idempotent). Run `wta hooks status` to inspect the result. Trace log: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
+hooks.install_succeeded: "✓ wt-agent-hooks installed for %{clis}"
 
 # ── Relative time and date formatting (src/ui/agents_view.rs) ───────────────
 time.just_now: "ką tik"
@@ -189,5 +224,46 @@ time.hours_other: "prieš %{count} valandų"
 time.day_singular: "prieš %{count} dieną"
 time.days_other: "prieš %{count} dienų"
 
+# ── Slash-command summaries (src/commands.rs) ─────────────────────────────
+# Command names (/help, /clear, etc.) stay English; descriptions translate.
+# {Locked="ACP","Ctrl+Shift+/"} - protocol name and shortcut, do not translate
+commands.help.summary: "Show this command list"
+commands.clear.summary: "Clear the chat scrollback (keeps session)"
+commands.new.summary: "Start a fresh ACP session (drops history)"  # {Locked="ACP"}
+commands.fix.summary: "Diagnose the active terminal and suggest a fix (/fix <hint>)"  # {Locked="/fix","<hint>"}
+commands.restart.summary: "Restart agent"
+commands.stop.summary: "Cancel the in-flight prompt"
+commands.sessions.summary: "Open the historical sessions picker (Ctrl+Shift+/)"  # {Locked="Ctrl+Shift+/"}
+commands.agent.summary: "Pasirinkite šios srities agentą (/agent <id> norėdami perjungti tiesiogiai)"  # {Locked="/agent","<id>"}
+
 # ── Rekomendacijos vykdymas (src/coordinator.rs) ────────────────────────────
 system.choice_execution_failed: "Pasirinkimas %{choice} nepavyko: %{error}"
+
+# ── Agent picker (src/ui/agent_popup.rs) ────────────────────────────────────
+# {Locked="↑","↓","Enter","Esc"} - key names, do not translate
+agent_picker.title: "Pasirinkite agentą (↑ ↓ • Enter • Esc)"  # Agent means an AI coding agent
+# Shown when no policy-allowed AI agent CLI is installed on the machine.
+system.no_agents: "Šiame kompiuteryje nerasta pasiekiama agento CLI."  # {Locked="CLI"}
+# {agent} is the unrecognized text the user typed after /agent.
+system.agent_unknown: "Nežinomas arba nepasiekiamas agentas %{agent} — įveskite /agent, kad pamatytumėte galimų sąrašą."  # {Locked="/agent"}
+# Shown only when /agent is used outside a Windows Terminal-owned agent pane.
+system.agent_switch_unavailable: "Agento perjungimas nepasiekiamas už „Windows Terminal“ skirtuko ribų."
+
+# ── Model picker (/model) ───────────────────────────────────────────────────
+commands.model.summary: "Pasirinkite šios srities modelį (/model <id> norėdami perjungti tiesiogiai)"  # {Locked="/model","<id>"}
+commands.config.summary: "Konfigūruoti šią agento sesiją"  # Agent means an AI coding agent; shown for the /config command. {Locked="/config"}
+commands.move.summary: "Perkelti šios kortelės agento skydelį (/move <position>)"  # {Locked="/move","<position>"}
+model_picker.title: "Pasirinkite modelį (↑ ↓ • Enter • Esc)"  # {Locked="↑","↓","Enter","Esc"}
+system.no_models: "Prijungtas agentas nepaskelbė jokių pasirenkamų modelių."
+system.model_set: "Šios srities modelis nustatytas į %{model}."  # {Locked="%{model}"}
+
+# ── Session configuration picker (src/ui/config_popup.rs) ───────────────────
+# {Locked="↑","↓","Enter","Esc","ACP"} - key names and protocol name
+config_picker.title: "Sesijos konfigūracija (↑ ↓ • Enter • Esc)"
+# Shown when /config is used but the AI agent exposed no ACP select options.
+system.no_config_options: "Prijungtas agentas nepaskelbė jokių konfigūruojamų sesijos parinkčių."
+# {option} is an Agent-provided option name; {error} is the ACP error.
+system.config_update_failed: "Nepavyko atnaujinti %{option}: %{error}"
+system.yolo_disable_pending: "AI agento teikėjas nepatvirtino, kad seansas yra reikiamos neprivilegijuotos būsenos"  # Shown after the localized failure prefix while prompts remain blocked until the AI agent provider confirms that its privileged session mode is off. Provider means an AI agent provider, not a network provider.
+system.provider_command_blocked_by_policy: "%{command}: Automatinis patvirtinimas išjungtas pagal jūsų organizacijos politiką."  # {Locked="%{command}"} Shown when AllowAutomaticApproval blocks a provider-advertised privileged command.
+system.model_unknown: "Nežinomas modelis %{model} — įveskite /model, kad pamatytumėte galimų sąrašą."  # {Locked="%{model}","/model"}

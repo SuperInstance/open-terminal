@@ -10,45 +10,116 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              mc:Ignorable="d">
 
+    <UserControl.Resources>
+        <ResourceDictionary Source="ms-resource:///Files/TerminalApp/AgentIconResources.xaml" />
+    </UserControl.Resources>
+
     <Grid x:Name="Root">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <!--  ========= Agent bar (Figma: 36px tall, black, 1px top/bottom hairline) =========  -->
+        <!--  ========= Agent bar (36px tall, 1px bottom border) =========
+              Only a bottom hairline: the top edge sits against the terminal
+              pane / focused-pane border above, which already provides the
+              separation, so a top border would double it up (#348).  -->
         <Border x:Name="AgentBarRoot"
                 Grid.Row="0"
                 Height="36"
                 Background="#FF000000"
-                BorderBrush="#26FFFFFF"
-                BorderThickness="0,1,0,1">
-            <Grid Padding="10,0,0,0">
+                BorderBrush="{ThemeResource TabViewBackground}"
+                BorderThickness="0,0,0,1">
+            <Grid Padding="10,0,10,0">
                 <!--  Left cluster: logo + label. History and other actions
                       live on the window-level bottom agent bar.  -->
-                <StackPanel Orientation="Horizontal"
-                            VerticalAlignment="Center"
-                            Spacing="4">
-                    <!--  Agent logo. Source is a packaged white-filled SVG;
-                          the URI is set from code-behind to ms-appx:///AgentIcons/<id>.svg.  -->
-                    <Image x:Name="AgentLogo"
-                           Width="14"
-                           Height="14"
-                           Stretch="Uniform" />
+                <Grid VerticalAlignment="Center"
+                      ColumnSpacing="4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <!--  Share the vector marks with History while retaining this bar's foreground.  -->
+                    <Grid x:Name="AgentLogo"
+                          Width="14"
+                          Height="14">
+                        <ContentControl x:Name="CopilotLogo"
+                                        Width="14"
+                                        Height="14"
+                                        HorizontalContentAlignment="Stretch"
+                                        VerticalContentAlignment="Stretch"
+                                        Content="{Binding Foreground, ElementName=AgentLabelText}"
+                                        ContentTemplate="{StaticResource AgentIcon.copilot}"
+                                        IsTabStop="False" />
+                        <ContentControl x:Name="ClaudeLogo"
+                                        Width="14"
+                                        Height="14"
+                                        HorizontalContentAlignment="Stretch"
+                                        VerticalContentAlignment="Stretch"
+                                        Content="{Binding Foreground, ElementName=AgentLabelText}"
+                                        ContentTemplate="{StaticResource AgentIcon.claude}"
+                                        IsTabStop="False"
+                                        Visibility="Collapsed" />
+                        <ContentControl x:Name="GeminiLogo"
+                                        Width="14"
+                                        Height="14"
+                                        HorizontalContentAlignment="Stretch"
+                                        VerticalContentAlignment="Stretch"
+                                        Content="{Binding Foreground, ElementName=AgentLabelText}"
+                                        ContentTemplate="{StaticResource AgentIcon.gemini}"
+                                        IsTabStop="False"
+                                        Visibility="Collapsed" />
+                        <ContentControl x:Name="CodexLogo"
+                                        Width="14"
+                                        Height="14"
+                                        HorizontalContentAlignment="Stretch"
+                                        VerticalContentAlignment="Stretch"
+                                        Content="{Binding Foreground, ElementName=AgentLabelText}"
+                                        ContentTemplate="{StaticResource AgentIcon.codex}"
+                                        IsTabStop="False"
+                                        Visibility="Collapsed" />
+                        <ContentControl x:Name="OpenCodeLogo"
+                                        Width="14"
+                                        Height="14"
+                                        HorizontalContentAlignment="Stretch"
+                                        VerticalContentAlignment="Stretch"
+                                        Content="{Binding Foreground, ElementName=AgentLabelText}"
+                                        ContentTemplate="{StaticResource AgentIcon.opencode}"
+                                        IsTabStop="False"
+                                        Visibility="Collapsed" />
+                    </Grid>
                     <TextBlock x:Name="AgentLabelText"
+                               Grid.Column="1"
                                VerticalAlignment="Center"
                                FontFamily="Segoe UI Variable, Segoe UI"
                                FontSize="12"
                                LineHeight="16"
                                Foreground="#FFFFFFFF"
+                             TextTrimming="CharacterEllipsis"
                                Text="GitHub Copilot" />
-                </StackPanel>
+                </Grid>
             </Grid>
+        </Border>
+
+        <Border x:Name="SessionsHintRoot"
+                Grid.Row="1"
+                Padding="10,8"
+                Background="{Binding Background, ElementName=AgentBarRoot}"
+                Visibility="Collapsed">
+            <!--  Fade the session footer's gray further into either theme's background.  -->
+            <TextBlock x:Name="SessionsDisabledHintText"
+                       x:Uid="AgentPane_SessionsDisabledHint"
+                       FontFamily="Segoe UI Variable, Segoe UI"
+                       FontSize="12"
+                       Foreground="#FF8B8B8B"
+                       Opacity="0.65"
+                       TextWrapping="Wrap" />
         </Border>
 
         <!--  ========= Inner content (the wta TermControl, set in code-behind) =========  -->
         <ContentPresenter x:Name="InnerContent"
-                          Grid.Row="1"
+                          Grid.Row="2"
                           HorizontalAlignment="Stretch"
                           VerticalAlignment="Stretch" />
     </Grid>

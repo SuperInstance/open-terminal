@@ -52,6 +52,10 @@ Shell integration is standard
 Agent integration need to extened standard
 Channel 2 (`wtcli send-event`) works for **any process** requires with `wtcli` binary and `WT_COM_CLSID` env var.
 
+For `agent.*` topics, Terminal must already be running: `send-event` resolves its
+active factory using the fixed `WT_COM_CLSID` without starting a COM server.
+Non-agent topics retain normal COM activation.
+
 Both converge on the same `wtcli listen` stream.
 
 ### Key components
@@ -144,8 +148,6 @@ interface IProtocolServer
 
 void TerminalProtocolComServer::SendEvent(winrt::hstring const& eventJson)
 {
-    THROW_HR_IF(E_ACCESSDENIED, !_authenticated);
-
     // Parse and validate — must have "event" field in params
     auto jsonStr = winrt::to_string(eventJson);
     Json::Value evt;
@@ -221,13 +223,15 @@ sendEventCmd->callback([&]() {
 Usage:
 
 ```bash
-# Simple lifecycle event
-wtcli send-event -e agent.started '{"agent":"copilot-cli","version":"1.2.0"}'
+# Simple lifecycle event, attributed to this pane
+wtcli send-event -p "$WT_SESSION" -e agent.started '{"agent":"copilot-cli","version":"1.2.0"}'
 
 # Task completion with exit code
 wtcli send-event -p 3 -e agent.task.completed '{"task_id":"abc","exit_code":0,"summary":"Built successfully"}'
 
-# Minimal — just the event type (pane auto-resolved from active pane)
+# Minimal — just the event type. Without -p the event is published with an
+# empty `pane_id`, i.e. "source pane unknown". It is NOT attributed to the
+# focused pane; see `doc/wtcli-commands.md`.
 wtcli send-event -e agent.idle
 ```
 
@@ -446,15 +450,21 @@ exit $EXIT_CODE
 
 ### Pattern C: Native ACP hooks (zero-effort for ACP agents)
 
-Agents that speak ACP already have structured tool-use lifecycle. The ACP host
-(`wta` TUI mode) can emit events on their behalf — no agent modification needed:
+ACP agents can call the Session MCP terminal-action tools, but this path is a
+proposal handoff rather than an immediate execution/completion lifecycle:
 
 ```
-ACP agent calls tool "run_command"
-  → wta emits agent.tool.invoked {tool: "run_command", args_summary: "cargo test"}
-  → wta executes in pane
-  → wta emits agent.tool.completed {tool: "run_command", exit_code: 0, duration_ms: 4200}
+ACP agent calls tool "run_command_in_current_shell"
+  → Session MCP validates and routes the request to the owning Helper
+  → Helper creates and commits a confirmation card
+  → MCP returns accepted
+  → user later confirms or cancels the card
+  → on confirmation, the existing terminal executor runs the action
 ```
+
+`agent.tool.invoked` can represent the MCP call and proposal handoff. WTA
+currently receives no executor completion callback carrying an exit code or
+duration, so this path cannot emit `agent.tool.completed`.
 
 ### Pattern D: MCP tool (for MCP-connected agents)
 

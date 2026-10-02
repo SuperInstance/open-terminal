@@ -1,9 +1,7 @@
 # ಸೆಟಪ್ ಪರದೆ ಶೀರ್ಷಿಕೆಗಳು
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.title.first_run: "ಇಂಟೆಲಿಜೆಂಟ್ ಟರ್ಮಿನಲ್-ಗೆ ಸ್ವಾಗತ!"
 setup.title.agent_missing: "ಏಜೆಂಟ್ ಕಂಡುಬಂದಿಲ್ಲ"
 setup.title.agent_error: "ಏಜೆಂಟ್ ಸಂಪರ್ಕ ವಿಫಲವಾಗಿದೆ"
-setup.title.switch_agent: "ಏಜೆಂಟ್ ಬದಲಿಸಿ"
 setup.title.not_available: "ಏಜೆಂಟ್ ಲಭ್ಯವಿಲ್ಲ"
 setup.title.sign_in: "ಸೈನ್ ಇನ್ ಅಗತ್ಯವಿದೆ"
 
@@ -12,10 +10,9 @@ setup.subtitle.copilot_missing: "ನಿಮ್ಮ ಏಜೆಂಟ್ \"%{agent}\"
 setup.subtitle.agent_missing: "ನಿಮ್ಮ ಏಜೆಂಟ್ \"%{agent}\" ಇನ್‌ಸ್ಟಾಲ್ ಆಗಿಲ್ಲ. ದಯವಿಟ್ಟು ಹಸ್ತಚಾಲಿತವಾಗಿ ಮರುಸ್ಥಾಪಿಸಿ, ನಂತರ ಮರುಪ್ರಯತ್ನಿಸಿ. ಏಜೆಂಟ್ ಬದಲಾಯಿಸಲು ಇಂಟೆಲಿಜೆಂಟ್ ಟರ್ಮಿನಲ್ Settings > Agent ಗೆ ಹೋಗಿ."
 setup.subtitle.copilot_auth: "ನಿಮ್ಮ ಏಜೆಂಟ್ \"%{agent}\" ಗೆ ದೃಢೀಕರಣ ಅಗತ್ಯವಿದೆ. ಸೈನ್ ಇನ್ ಮಾಡಲು ಕೆಳಗಿನ ಹಂತಗಳನ್ನು ಅನುಸರಿಸಿ. ಏಜೆಂಟ್ ಬದಲಾಯಿಸಲು ಇಂಟೆಲಿಜೆಂಟ್ ಟರ್ಮಿನಲ್ Settings > Agent ಗೆ ಹೋಗಿ."
 setup.subtitle.agent_auth: "ನಿಮ್ಮ ಏಜೆಂಟ್ \"%{agent}\" ಗೆ ದೃಢೀಕರಣ ಅಗತ್ಯವಿದೆ. ದಯವಿಟ್ಟು ಏಜೆಂಟ್ ಮೂಲಕ ಸೈನ್ ಇನ್ ಮಾಡಿ, ನಂತರ ಕೆಳಗೆ \"ನಾನು ಸೈನ್ ಇನ್ ಮಾಡಿದ್ದೇನೆ\" ಆಯ್ಕೆಮಾಡಿ. ಏಜೆಂಟ್‌ಗಳನ್ನು ಬದಲಿಸಲು ಇಂಟೆಲಿಜೆಂಟ್ ಟರ್ಮಿನಲ್ Settings > Agent ಗೆ ಹೋಗಿ."
+setup.subtitle.connection_failed: "ನಮಗೆ %{agent} ಅನ್ನು ಪ್ರಾರಂಭಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ."
 
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.description.fre_line1: "ಇಂಟೆಲಿಜೆಂಟ್ ಟರ್ಮಿನಲ್ ನಲ್ಲಿ ಬಳಸಲು ಬಯಸುವ ಡೀಫಾಲ್ಟ್ ಏಜೆಂಟ್ ಅನ್ನು ಆಯ್ಕೆಮಾಡಿ. ನೀವು"
-setup.description.fre_line2: "ನಿಮ್ಮ ಕಾರ್ಯಕ್ಷೇತ್ರವನ್ನು ಕಾನ್ಫಿಗರ್ ಮಾಡಲು ಮತ್ತು ಸೆಟಪ್ ಮಾಡಲು Settings ಗೆ ನ್ಯಾವಿಗೇಟ್ ಮಾಡಬಹುದು."
 
 setup.option.install: "%{agent} ಮರುಸ್ಥಾಪಿಸಿ"
 setup.option.install_hint: "(ಸ್ವಯಂಚಾಲಿತವಾಗಿ ಇನ್‌ಸ್ಟಾಲ್ ಆಗುತ್ತದೆ)"
@@ -23,10 +20,14 @@ setup.option.signin: "%{agent} ಗೆ ಸೈನ್ ಇನ್ ಮಾಡಿ"
 setup.option.retry_detection: "ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ"
 setup.option.retry_auth: "ನಾನು ಸೈನ್ ಇನ್ ಮಾಡಿದ್ದೇನೆ — ಮತ್ತೆ ಸಂಪರ್ಕಿಸಲು ಪ್ರಯತ್ನಿಸಿ"
 setup.option.retry_connection: "ಮತ್ತೆ ಸಂಪರ್ಕಿಸಲು ಪ್ರಯತ್ನಿಸಿ"
-setup.option.switch_to: "%{agent} ಗೆ ಬದಲಿಸಿ"
 setup.status.installing: "ಇನ್‌ಸ್ಟಾಲ್ ಆಗುತ್ತಿದೆ..."
+setup.status.installing_copilot_cli: "GitHub Copilot CLI ಇನ್‌ಸ್ಟಾಲ್ ಆಗುತ್ತಿದೆ"
+setup.status.connecting_agent: "%{agent}ಗೆ ಸಂಪರ್ಕಿಸಲಾಗುತ್ತಿದೆ"
 setup.status.install_failed: "ಇನ್‌ಸ್ಟಾಲ್ ವಿಫಲವಾಗಿದೆ: "
 setup.status.installing_winget: " winget ಮೂಲಕ ಇನ್‌ಸ್ಟಾಲ್ ಆಗುತ್ತಿದೆ..."
+setup.error.install_start_failed: "ಇನ್‌ಸ್ಟಾಲರ್ ಅನ್ನು ಪ್ರಾರಂಭಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ. ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಲು \"ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ\" ಆಯ್ಕೆಮಾಡಿ."
+setup.error.install_timed_out: "ಇನ್‌ಸ್ಟಾಲೇಶನ್ ಸಮಯ ಮೀರಿದೆ. ಮತ್ತೊಂದು ಇನ್‌ಸ್ಟಾಲೇಶನ್ ಪ್ರಾರಂಭಿಸುವ ಮೊದಲು \"ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ\" ಆಯ್ಕೆಮಾಡಿ."
+setup.error.install_detection_timed_out: "ಇನ್‌ಸ್ಟಾಲೇಶನ್ ಪೂರ್ಣಗೊಂಡಿದೆ, ಆದರೆ Copilot ಇನ್ನೂ ಕಾಣಿಸುತ್ತಿಲ್ಲ. ಮತ್ತೆ ಪರಿಶೀಲಿಸಲು \"ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ\" ಆಯ್ಕೆಮಾಡಿ."
 
 # ── ದೃಢೀಕರಣ ಹರಿವು (src/ui/auth.rs) ──────────────────────────────────────────────
 # {Locked="CLI"} - ಸಂಕ್ಷಿಪ್ತ ರೂಪ, Microsoft ಸ್ಥಳೀಯಕರಣಗಳಲ್ಲಿ ಸಾಮಾನ್ಯ ಬಳಕೆ
@@ -35,17 +36,19 @@ auth.agent_selected_with_status: "ಏಜೆಂಟ್ %{name} — "
 auth.checking_authentication: "  %{spinner} ದೃಢೀಕರಣ ಪರಿಶೀಲಿಸಲಾಗುತ್ತಿದೆ..."
 auth.waiting_for_authorization: "  %{spinner} ಅನುಮತಿಗಾಗಿ ಕಾಯಲಾಗುತ್ತಿದೆ..."
 auth.code_copied_hint: "  ಕೋಡ್ ಕ್ಲಿಪ್‌ಬೋರ್ಡ್‌ಗೆ ನಕಲಿಸಲಾಗಿದೆ — ನಿಮ್ಮ ಬ್ರೌಸರ್‌ನಲ್ಲಿ ಅಂಟಿಸಿ."
-auth.sign_in_prompt: "ನಿಮ್ಮ ಏಜೆಂಟ್ ಬಳಸಲು ಸೈನ್ ಇನ್ ಮಾಡಿ:"
+auth.device_code_prompt: "%{url} ಗೆ ಭೇಟಿ ನೀಡಿ ಕೋಡ್ ನಮೂದಿಸಿ: %{code}"  # Copilot device-flow sign-in progress; %{url} is the verification URL, %{code} is the device code
 auth.card_connect: "  ಏಜೆಂಟ್ ವೈಶಿಷ್ಟ್ಯಗಳನ್ನು ಸಕ್ರಿಯಗೊಳಿಸಲು %{name} ಅನ್ನು ಸಂಪರ್ಕಿಸಿ"
-auth.button_sign_in_github: "[ GitHub ನಿಂದ ಸೈನ್ ಇನ್ ಮಾಡಿ ]"  # {Locked="GitHub"}
-auth.button_sign_in_with: "[ %{name} ನಿಂದ ಸೈನ್ ಇನ್ ಮಾಡಿ ]"
-auth.hint_footer: "  ಸೈನ್ ಇನ್ ಮಾಡಲು Enter ಒತ್ತಿ, ಹಿಂದೆ ಹೋಗಲು Esc ಒತ್ತಿ"  # {Locked="Enter","Esc"}
+auth.enterprise_prompt: "  ಸೈನ್ ಇನ್ ಮಾಡಲು Enter · GitHub Enterprise ಗಾಗಿ E · ಹಿಂದಕ್ಕೆ ಹೋಗಲು Esc"  # {Locked="Enter","E","Esc"}
+auth.enterprise_domain_label: "  Enterprise ಡೊಮೇನ್: "
+auth.enterprise_hint_footer: "  ಸೈನ್ ಇನ್ ಮಾಡಲು Enter · github.com ಗಾಗಿ Esc"  # {Locked="Enter","Esc","github.com"}
+auth.login_failed_help_enterprise: "  ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಲು Enter ಒತ್ತಿ, ಅಥವಾ github.com ಗಾಗಿ Esc. ಸಾಮಾನ್ಯ ಕಾರಣಗಳು: ತಪ್ಪಾಗಿ ಟೈಪ್ ಮಾಡಿದ ಅಥವಾ ತಲುಪಲಾಗದ ಡೊಮೇನ್, ಅವಧಿ ಮೀರಿದ ಕೋಡ್, ಅಥವಾ ಆ ಹೋಸ್ಟ್‌ನಲ್ಲಿ Copilot ಪ್ರವೇಶ ಇಲ್ಲದಿರುವುದು."  # {Locked="Enter","Esc","github.com","Copilot"}
+auth.login_failed_help_default: "  ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಲು Enter ಒತ್ತಿ, ಅಥವಾ ಹಿಂದಕ್ಕೆ ಹೋಗಲು Esc."  # {Locked="Enter","Esc"}
 
 # ── ಚಾಟ್ ವೀಕ್ಷಣೆ (src/ui/chat.rs) ──────────────────────────────────────────────
 chat.activity_thinking: "ಯೋಚಿಸುತ್ತಿದೆ…"
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
 chat.welcome_title: "ಇಂಟೆಲಿಜೆಂಟ್ ಟರ್ಮಿನಲ್-ಗೆ ಸ್ವಾಗತ!"
-chat.welcome_disclaimer: "ಇಂಟೆಲಿಜೆಂಟ್ ಟರ್ಮಿನಲ್ AI ಬಳಸುತ್ತದೆ. ತಪ್ಪುಗಳನ್ನು ಪರಿಶೀಲಿಸಿ."
+chat.welcome_disclaimer: "ಇಂಟೆಲಿಜೆಂಟ್ ಟರ್ಮಿನಲ್ AI ಬಳಸುತ್ತದೆ."
 chat.plan_header: "ಯೋಜನೆ:"
 chat.plan_marker_completed: "[x]"  # {Locked}
 chat.plan_marker_in_progress: "[>]"  # {Locked}
@@ -53,11 +56,24 @@ chat.plan_marker_pending: "[ ]"  # {Locked}
 chat.autofix_prompt_label: "ಇತ್ತೀಚಿನ ಆದೇಶ ವೈಫಲ್ಯವನ್ನು ಸ್ವಯಂಚಾಲಿತವಾಗಿ ರೋಗನಿರ್ಣಯ ಮಾಡಲಾಗಿದೆ"
 chat.turn_canceled: "(ರದ್ದುಗೊಳಿಸಲಾಗಿದೆ)"
 chat.turn_executed: "→ ಕಾರ್ಯಗತಗೊಂಡಿದೆ: %{title}"
+# ಸ್ಥಿತಿ ಗುರುತಿನ ನಂತರ ಮತ್ತು ವಿಷಯದ ಮೊದಲು ತೋರಿಸುವ ಶಾಶ್ವತ ಉಪಕರಣ-ವರ್ಗದ ಲೇಬಲ್‌ಗಳು.
+chat.tool_kind.run: "ಚಲಾಯಿಸಿ"
+chat.tool_kind.insert: "ಸೇರಿಸಿ"
+chat.tool_kind.read: "ಓದಿ"
+chat.tool_kind.search: "ಹುಡುಕಿ"
+chat.tool_kind.edit: "ಸಂಪಾದಿಸಿ"
+chat.tool_kind.delete: "ಅಳಿಸಿ"
+chat.tool_kind.move: "ಸರಿಸಿ"
+chat.tool_kind.fetch: "ಪಡೆದುಕೊಳ್ಳಿ"
+chat.tool_kind.think: "ಯೋಚಿಸಿ"
+chat.tool_kind.mode: "ಮೋಡ್"
+chat.tool_kind.other: "ಉಪಕರಣ"
 
 # ── ಇನ್‌ಪುಟ್ ಪ್ಲೇಸ್‌ಹೋಲ್ಡರ್‌ಗಳು (src/ui/input.rs) ────────────────────────────────────
 input.placeholder.connected: "ಏನಾದರೂ ಕೇಳಿ, / ಕಮಾಂಡ್‌ಗಳಿಗಾಗಿ.."  # {Locked="/"}
 input.placeholder.connecting: "ಸಂಪರ್ಕಿಸಲಾಗುತ್ತಿದೆ..."
 input.placeholder.disconnected: "ಸಂಪರ್ಕ ಕಡಿತ"
+input.image_attachments: "📎 ಚಿತ್ರಗಳು: %{items}"  # {Locked="📎","%{items}"}
 
 # ── ಕಮಾಂಡ್ ಪಾಪ್‌ಅಪ್ (src/ui/command_popup.rs) ─────────────────────────────────
 # {Locked="/"} - ಸ್ಲಾಶ್-ಕಮಾಂಡ್ ಪೂರ್ವಪ್ರತ್ಯಯ, ASCII ಆಗಿರಬೇಕು
@@ -74,9 +90,11 @@ commands.help_close_hint: "  Esc        ಈ ಸಹಾಯವನ್ನು ಮು�
 commands.help.summary: "ಈ ಕಮಾಂಡ್ ಪಟ್ಟಿಯನ್ನು ತೋರಿಸಿ"
 commands.clear.summary: "ಚಾಟ್ ಸ್ಕ್ರೋಲ್‌ಬ್ಯಾಕ್ ಅನ್ನು ತೆರವುಗೊಳಿಸಿ (ಸೆಷನ್ ಉಳಿಸುತ್ತದೆ)"
 commands.new.summary: "ಹೊಸ ACP ಸೆಷನ್ ಆರಂಭಿಸಿ (ಇತಿಹಾಸವನ್ನು ಕೈಬಿಡುತ್ತದೆ)"  # {Locked="ACP"}
+commands.fix.summary: "Diagnose the active terminal and suggest a fix (/fix <hint>)"  # {Locked="/fix","<hint>"}
 commands.restart.summary: "ಏಜೆಂಟ್ ಮರುಪ್ರಾರಂಭಿಸಿ"
 commands.stop.summary: "ಚಾಲನೆಯಲ್ಲಿರುವ ಪ್ರಾಂಪ್ಟ್ ಅನ್ನು ರದ್ದುಮಾಡಿ"
 commands.sessions.summary: "ಹಿಂದಿನ ಸೆಷನ್‌ಗಳ ಪಿಕರ್ ತೆರೆಯಿರಿ (Ctrl+Shift+/)"  # {Locked="Ctrl+Shift+/"}
+commands.agent.summary: "ಈ ಟ್ಯಾಬ್‌ಗಾಗಿ ಏಜೆಂಟ್ಯನ್ನು ಆಯ್ಕೆಮಾಡಿ (ನೇರವಾಗಿ ಬದಲಾಯಿಸಲು /agent <id>)"  # {Locked="/agent","<id>"}
 
 # ── ಶಿಫಾರಸುಗಳ ಪ್ಯಾನೆಲ್ (src/ui/recommendations.rs) ───────────────────────────────
 # {Locked="Enter","Esc","↵","↑","↓","←","→"} - ಕೀ ಹೆಸರುಗಳು ಮತ್ತು Return-ಕೀ ಗ್ಲಿಫ್, ಅನುವಾದಿಸಬೇಡಿ
@@ -104,9 +122,7 @@ permission.compact.prefix: "[!] "  # {Locked}
 permission.compact.hint: "[Y/N ಉತ್ತರಿಸಿ · ಪೂರ್ಣ ಕಾರ್ಡ್‌ಗಾಗಿ ಗಾತ್ರ ಬದಲಿಸಿ]"  # {Locked="Y/N"}
 
 # ── ಏಜೆಂಟ್ ಸ್ಥಿತಿ (src/agent_check.rs) ───────────────────────────────────────
-agent.status.not_installed_auto: "ಇನ್‌ಸ್ಟಾಲ್ ಆಗಿಲ್ಲ — ಸ್ವಯಂಚಾಲಿತವಾಗಿ ಇನ್‌ಸ್ಟಾಲ್ ಮಾಡಲು ಆಯ್ಕೆಮಾಡಿ"
 agent.status.not_found: "ಕಂಡುಬಂದಿಲ್ಲ"
-agent.status.detected: "ಪತ್ತೆಯಾಗಿದೆ"
 # {Locked="winget","GitHub.Copilot","GitHub","Copilot"} - ಟೂಲ್ ಹೆಸರುಗಳು ಮತ್ತು ಕಮಾಂಡ್, ಯಥಾವತ್ತಾಗಿ ಚಲಾಯಿಸಬೇಕು
 agent.install.running_winget: "ಚಲಾಯಿಸಲಾಗುತ್ತಿದೆ: winget install GitHub.Copilot"
 agent.install.launch_failed: "winget ಪ್ರಾರಂಭಿಸಲು ವಿಫಲವಾಗಿದೆ: %{error}"
@@ -117,8 +133,8 @@ agent.custom.auth_hint: "%{name} ಇನ್‌ಸ್ಟಾಲ್ ಆಗಿದೆ 
 
 # ── ಏಜೆಂಟ್‌ಗಳ ವೀಕ್ಷಣೆ (src/ui/agents_view.rs) ─────────────────────────────────────
 agents.loading: "ಲೋಡ್ ಆಗುತ್ತಿದೆ..."
-# {Locked="Enter","Esc","↑","↓"} - ಕೀ ಸಂಯೋಜನೆಗಳು, ಅನುವಾದಿಸಬೇಡಿ
-agents.footer_hint: "(↑ ↓ ನ್ಯಾವಿಗೇಟ್ ಮಾಡಿ • Enter ಸೆಶನ್ ಪ್ರಾರಂಭಿಸಿ • Esc ನಿರ್ಗಮಿಸಿ)"
+# {Locked="Enter","Esc","F5","↑","↓","/"} - ಕೀ ಸಂಯೋಜನೆಗಳು, ಅನುವಾದಿಸಬೇಡಿ
+agents.footer_hint: "(↑ ↓ ನ್ಯಾವಿಗೇಟ್ ಮಾಡಿ • Enter ಸೆಶನ್ ಪ್ರಾರಂಭಿಸಿ • Esc ನಿರ್ಗಮಿಸಿ • F5 ರಿಫ್ರೆಶ್ ಮಾಡಿ • / ಹುಡುಕಿ)"
 agents.status.active: "ಸಕ್ರಿಯ"
 agents.status.waiting_for_input: "ಇನ್‌ಪುಟ್‌ಗಾಗಿ ಕಾಯಲಾಗುತ್ತಿದೆ"
 agents.status.error: "ದೋಷ"
@@ -128,26 +144,47 @@ agents.status.idle: "ನಿಷ್ಕ್ರಿಯ"
 layout.welcome_hint: "  (Ctrl+Shift+. ಏಜೆಂಟ್ ಪೇನ್ ತೋರಿಸು/ಮರೆಮಾಡು • Ctrl+Shift+/ ಏಜೆಂಟ್ ಸೆಶನ್ ತೋರಿಸು/ಮರೆಮಾಡು)"  # {Locked="Ctrl+Shift+.","Ctrl+Shift+/"}
 
 # ── ಸಂಪರ್ಕ ಸ್ಥಿತಿ ────────────────────────────────────────────────────────
-connection.starting: "ಏಜೆಂಟ್ ಪ್ರಾರಂಭವಾಗುತ್ತಿದೆ..."
+# Preparing the AI agent connection, including preflight and reuse of a cached agent.
+connection.starting: "ಏಜೆಂಟ್ ಸಂಪರ್ಕವನ್ನು ಸಿದ್ಧಪಡಿಸಲಾಗುತ್ತಿದೆ..."
 connection.reconnecting: "ಮರುಸಂಪರ್ಕಗೊಳ್ಳುತ್ತಿದೆ..."
+# Retiring old AI agent sessions for /restart, before the next connection phases.
+connection.restarting: "ಏಜೆಂಟ್ ಅನ್ನು ಮರುಪ್ರಾರಂಭಿಸಲಾಗುತ್ತಿದೆ..."
+# Connecting the pane to WTA's local coordinator process, not to an AI model.
+connection.coordinator: "ಸ್ಥಳೀಯ ಸಂಯೋಜಕಕ್ಕೆ ಸಂಪರ್ಕಗೊಳ್ಳುತ್ತಿದೆ..."
+# Initializing the helper/coordinator connection, including local preparation and AI agent initialization.
+connection.initializing: "ಏಜೆಂಟ್ ಸಂಪರ್ಕವನ್ನು ಆರಂಭಿಸಲಾಗುತ್ತಿದೆ..."
+# Refreshing the user's authentication with the AI agent after login; not verifying the agent's identity.
+connection.authenticating: "ಏಜೆಂಟ್‌ನೊಂದಿಗೆ ಬಳಕೆದಾರರ ಗುರುತನ್ನು ದೃಢೀಕರಿಸಲಾಗುತ್ತಿದೆ..."
+# Reading the coordinator's registry snapshot, including existing history; not fetching history from the AI agent.
+connection.syncing_sessions: "ಸೆಶನ್‌ಗಳ ಪಟ್ಟಿಯನ್ನು ಓದಲಾಗುತ್ತಿದೆ..."
+# Creating the AI agent session, including local registration; internal agent progress is unknown.
+connection.creating_session: "ಏಜೆಂಟ್ ಸೆಶನ್ ರಚಿಸಲಾಗುತ್ತಿದೆ..."
+# Applying the requested AI model before the connection is ready. Preserve %{model}.
+connection.selecting_model: "ಸೆಶನ್‌ನ ಮಾದರಿಯನ್ನು ಹೊಂದಿಸಲಾಗುತ್ತಿದೆ: %{model}..."  # {Locked="%{model}"}
+# Activity row while connecting to restore a conversation. Keep the actual stage first so narrow panes show it; session_id is shortened to eight characters.
+connection.resuming_stage: "%{stage} (%{session_id} ಮುಂದುವರಿಸಲಾಗುತ್ತಿದೆ)"  # {Locked="%{stage}","%{session_id}"}
 connection.connecting_activity: "ಏಜೆಂಟ್‌ಗೆ ಸಂಪರ್ಕಗೊಳ್ಳುತ್ತಿದೆ…"
 connection.lost: "ಏಜೆಂಟ್‌ಗೆ ಸಂಪರ್ಕ ಕಳೆದುಹೋಯಿತು. ಮರುಸಂಪರ್ಕಿಸಲು /restart ಟೈಪ್ ಮಾಡಿ."  # {Locked="/restart"}
 
 # ── ಸಿಸ್ಟಮ್ ಸಂದೇಶಗಳು (src/app.rs) ────────────────────────────────────────────────
+system.close_pane_hint: "ಪೇನ್ ಮುಚ್ಚಲು Ctrl+C ಅನ್ನು ಮತ್ತೊಮ್ಮೆ ಒತ್ತಿರಿ"  # {Locked="Ctrl+C"}
+system.selection_copied: "ನಕಲಿಸಲಾಗಿದೆ"  # Brief hint shown after selected terminal text is copied
 system.cancelled: "ರದ್ದುಮಾಡಲಾಗಿದೆ."
 system.no_prompt_in_flight: "ಪ್ರಗತಿಯಲ್ಲಿ ಯಾವುದೇ ಪ್ರಾಂಪ್ಟ್ ಇಲ್ಲ."
 system.authentication_failed: "ದೃಢೀಕರಣ ವಿಫಲವಾಗಿದೆ"
-system.command_copied_retry: "ಕಮಾಂಡ್ ನಕಲಿಸಲಾಗಿದೆ — ಅದನ್ನು ಇನ್ನೊಂದು ಟರ್ಮಿನಲ್‌ನಲ್ಲಿ ಚಲಾಯಿಸಿ, ನಂತರ ಮರುಪ್ರಯತ್ನಿಸಲು Enter ಒತ್ತಿ"  # {Locked="Enter"}
 system.stopped_max_tokens: "ಮಾದರಿಯ ಔಟ್‌ಪುಟ್ ಮಿತಿಯನ್ನು ತಲುಪಿದ ನಂತರ ಪ್ರತಿಕ್ರಿಯೆಯನ್ನು ಕತ್ತರಿಸಲಾಗಿದೆ."
 system.stopped_max_turn_requests: "ಈ ಸರದಿಗೆ ತನ್ನ ವಿನಂತಿ ಮಿತಿಯನ್ನು ತಲುಪಿದ ನಂತರ ಏಜೆಂಟ್ ನಿಂತಿತು."
 system.stopped_refusal: "ಏಜೆಂಟ್ ಈ ವಿನಂತಿಯನ್ನು ಮುಂದುವರಿಸಲು ನಿರಾಕರಿಸಿತು."
 system.agent_busy: "ಈ ಟ್ಯಾಬ್‌ನಲ್ಲಿ Agent ಕಾರ್ಯನಿರತವಾಗಿದೆ — ಪ್ರಸ್ತುತ ಪ್ರಾಂಪ್ಟ್ ಮುಗಿಯುವವರೆಗೆ ಕಾಯಿರಿ."
+system.image_clipboard_empty: "ಅಂಟಿಸಲು ಕ್ಲಿಪ್‌ಬೋರ್ಡ್‌ನಲ್ಲಿ ಯಾವುದೇ ಚಿತ್ರ ಇಲ್ಲ."
+system.image_not_supported: "ಈ ಏಜೆಂಟ್ ಚಿತ್ರ ಇನ್‌ಪುಟ್ ಅನ್ನು ಬೆಂಬಲಿಸುವುದಿಲ್ಲ."
+system.image_pasted: "ಚಿತ್ರವನ್ನು ಲಗತ್ತಿಸಲಾಗಿದೆ (%{label}). ಕಳುಹಿಸಲು Enter ಒತ್ತಿರಿ."  # {Locked="%{label}","Enter"}
 system.resuming_session: "ಸೆಷನ್ %{session_id} ಪುನರಾರಂಭಿಸಲಾಗುತ್ತಿದೆ..."
 system.unknown_command: "ಅಪರಿಚಿತ ಆದೇಶ \"%{command}\" — ಪ್ರಾಂಪ್ಟ್ ಆಗಿ ಕಳುಹಿಸಲಾಗಿದೆ. ಪಟ್ಟಿಗಾಗಿ /help ಟೈಪ್ ಮಾಡಿ."  # {Locked="/help"} — slash-command name.
 system.busy_use_stop: "ಪ್ರಸ್ತುತ ಪ್ರಾಂಪ್ಟ್ ಮುಗಿಯುವವರೆಗೆ ಕಾಯಿರಿ, ಅಥವಾ ಮೊದಲು /stop ಮಾಡಿ."  # {Locked="/stop"} — slash-command name.
 system.cannot_focus_session: "ಸೆಷನ್ %{session_id} ಮೇಲೆ ಫೋಕಸ್ ಮಾಡಲಾಗುವುದಿಲ್ಲ: ಅದು live ಆಗಿರುವಂತೆ ಕಾಣುತ್ತದೆ ಆದರೆ ಇನ್ನೂ ಯಾವುದೇ pane GUID ಬದ್ಧವಾಗಿಲ್ಲ. ಸ್ವಲ್ಪ ಹೊತ್ತಿನಲ್ಲಿ ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ."
-system.cannot_resume_no_load_session: "agent pane ನಲ್ಲಿ ಪುನರಾರಂಭಿಸಲಾಗುವುದಿಲ್ಲ: %{agent} ACP `loadSession` ಸಾಮರ್ಥ್ಯವನ್ನು ಪ್ರಕಟಿಸಿಲ್ಲ. ಬದಲಾಗಿ ಹೊಸ terminal pane ನಲ್ಲಿ ಪುನರಾರಂಭಿಸಲು Enter (Shift ಇಲ್ಲದೆ) ಒತ್ತಿರಿ."  # {Locked="ACP","loadSession","Enter","Shift"} — protocol/UI terms.
-system.cannot_resume_no_resume_flag: "%{agent} ಸೆಷನ್ ಅನ್ನು ಪುನರಾರಂಭಿಸಲಾಗುವುದಿಲ್ಲ: ಈ agent ಗೆ `--resume` ಶೈಲಿಯ flag ಇಲ್ಲ. ಬದಲಾಗಿ ACP ಮೂಲಕ agent pane ಒಳಗೆ ಪುನರಾರಂಭಿಸಲು Shift+Enter ಒತ್ತಿ ಪ್ರಯತ್ನಿಸಿ."  # {Locked="--resume","Shift","Enter","ACP"} — flag and UI terms.
+system.cannot_resume_no_load_session: "agent pane ನಲ್ಲಿ ಪುನರಾರಂಭಿಸಲಾಗುವುದಿಲ್ಲ: %{agent} ACP `loadSession` ಸಾಮರ್ಥ್ಯವನ್ನು ಪ್ರಕಟಿಸಿಲ್ಲ."  # {Locked="ACP","loadSession"} — protocol/UI terms.
+system.cannot_resume_no_resume_flag: "%{agent} ಸೆಷನ್ ಅನ್ನು ಪುನರಾರಂಭಿಸಲಾಗುವುದಿಲ್ಲ: ಈ agent ಗೆ `--resume` ಶೈಲಿಯ flag ಇಲ್ಲ."  # {Locked="--resume"} — flag and UI terms.
 system.cannot_resume_unknown_agent: "ಸೆಷನ್ %{session_id} ಪುನರಾರಂಭಿಸಲಾಗುವುದಿಲ್ಲ: ಇದರ ಮೂಲ agent ಈ WTA build ಗೆ ತಿಳಿದಿಲ್ಲ."
 system.cannot_resume_phantom_via_flag: "%{agent} ಸೆಷನ್ %{session_id} ಪುನರಾರಂಭಿಸಲಾಗುವುದಿಲ್ಲ: ಅದು ಪ್ರಾರಂಭವಾಗಿತ್ತು ಆದರೆ ಯಾವುದೇ ಸಂಭಾಷಣೆ ಸಂಗ್ರಹವಾಗಿಲ್ಲ, ಆದ್ದರಿಂದ %{agent} ಸ್ವತಃ resume ಅನ್ನು ತಿರಸ್ಕರಿಸುತ್ತದೆ. ಸಾಲನ್ನು ತೆಗೆದುಹಾಕಲಾಗುತ್ತಿದೆ."
 system.cannot_resume_phantom_via_load: "%{agent} ಸೆಷನ್ %{session_id} ಪುನರಾರಂಭಿಸಲಾಗುವುದಿಲ್ಲ: ಅದು ಪ್ರಾರಂಭವಾಗಿತ್ತು ಆದರೆ ಯಾವುದೇ ಸಂಭಾಷಣೆ ಸಂಗ್ರಹವಾಗಿಲ್ಲ, ಆದ್ದರಿಂದ %{agent} load ಅನ್ನು ತಿರಸ್ಕರಿಸುತ್ತದೆ. ಸಾಲನ್ನು ತೆಗೆದುಹಾಕಲಾಗುತ್ತಿದೆ."
@@ -189,7 +226,7 @@ hooks.marketplace_path_stale: "⚠ ಮಾರುಕಟ್ಟೆ ಪಥ ಹಳೆ�
 hooks.installed_but_disabled: "⚠ ಇನ್‌ಸ್ಟಾಲ್ ಆಗಿದೆ ಆದರೆ ನಿಷ್ಕ್ರಿಯಗೊಳಿಸಲಾಗಿದೆ"
 hooks.not_installed: "✗ ಇನ್‌ಸ್ಟಾಲ್ ಆಗಿಲ್ಲ"
 hooks.uninstall_skipped: "ಬಿಟ್ಟುಬಿಡಲಾಗಿದೆ (CLI PATH ನಲ್ಲಿ ಇಲ್ಲ)"
-hooks.install_attempted: "wt-agent-hooks ಇನ್‌ಸ್ಟಾಲ್ ಪ್ರಯತ್ನಿಸಲಾಗಿದೆ (ಐಡೆಂಪೊಟೆಂಟ್). ಫಲಿತಾಂಶವನ್ನು ಪರಿಶೀಲಿಸಲು `wta hooks status` ಚಲಾಯಿಸಿ. ಟ್ರೇಸ್ ಲಾಗ್: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
+hooks.install_succeeded: "✓ wt-agent-hooks %{clis} ಗಾಗಿ ಇನ್‌ಸ್ಟಾಲ್ ಆಗಿದೆ"
 
 # ── Relative time and date formatting ─────────────────────────────────────
 time.just_now: "ಈಗಷ್ಟೇ"
@@ -202,3 +239,32 @@ time.days_other: "%{count} ದಿನಗಳ ಹಿಂದೆ"
 
 # ── ಶಿಫಾರಸು ಕಾರ್ಯಗತಗೊಳಿಸುವಿಕೆ (src/coordinator.rs) ───────────────────────────
 system.choice_execution_failed: "ಆಯ್ಕೆ %{choice} ವಿಫಲವಾಗಿದೆ: %{error}"
+
+# ── Agent picker (src/ui/agent_popup.rs) ────────────────────────────────────
+# {Locked="↑","↓","Enter","Esc"} - key names, do not translate
+agent_picker.title: "ಏಜೆಂಟ್ ಆಯ್ಕೆಮಾಡಿ (↑ ↓ • Enter • Esc)"  # Agent means an AI coding agent
+# Shown when no policy-allowed AI agent CLI is installed on the machine.
+system.no_agents: "ಈ ಯಂತ್ರದಲ್ಲಿ ಯಾವುದೇ ಲಭ್ಯವಿರುವ ಏಜೆಂಟ್ CLI ಕಂಡುಬಂದಿಲ್ಲ."  # {Locked="CLI"}
+# {agent} is the unrecognized text the user typed after /agent.
+system.agent_unknown: "ಅಪರಿಚಿತ ಅಥವಾ ಲಭ್ಯವಿಲ್ಲದ ಏಜೆಂಟ್ %{agent} — ಲಭ್ಯವಿರುವ ಪಟ್ಟಿಯನ್ನು ನೋಡಲು /agent ಟೈಪ್ ಮಾಡಿ."  # {Locked="/agent"}
+# Shown only when /agent is used outside a Windows Terminal-owned agent pane.
+system.agent_switch_unavailable: "ವಿಂಡೋಸ್ ಟರ್ಮಿನಲ್ ಟ್ಯಾಬ್‌ನ ಹೊರಗೆ ಏಜೆಂಟ್ ಬದಲಾಯಿಸುವುದು ಲಭ್ಯವಿಲ್ಲ."
+
+# ── Model picker (/model) ───────────────────────────────────────────────────
+commands.model.summary: "ಈ ಪೇನ್‌ಗಾಗಿ ಮಾದರಿಯನ್ನು ಆಯ್ಕೆಮಾಡಿ (ನೇರವಾಗಿ ಬದಲಾಯಿಸಲು /model <id>)"  # {Locked="/model","<id>"}
+commands.config.summary: "ಈ ಏಜೆಂಟ್ ಸೆಷನ್ ಸಂರಚಿಸಿ"  # Agent means an AI coding agent; shown for the /config command. {Locked="/config"}
+commands.move.summary: "ಈ ಟ್ಯಾಬ್‌ನ ಏಜೆಂ트 ಪೇನ್ ಅನ್ನು ಸರಿಸಿ (/move <position>)"  # {Locked="/move","<position>"}
+model_picker.title: "ಮಾದರಿ ಆಯ್ಕೆಮಾಡಿ (↑ ↓ • Enter • Esc)"  # {Locked="↑","↓","Enter","Esc"}
+system.no_models: "ಸಂಪರ್ಕಿತ ಏಜೆಂಟ್ ಯಾವುದೇ ಆಯ್ಕೆ ಮಾಡಬಹುದಾದ ಮಾದರಿಗಳನ್ನು ಪ್ರಕಟಿಸಲಿಲ್ಲ."
+system.model_set: "ಈ ಪೇನ್‌ಗಾಗಿ ಮಾದರಿಯನ್ನು %{model} ಗೆ ಹೊಂದಿಸಲಾಗಿದೆ."  # {Locked="%{model}"}
+
+# ── Session configuration picker (src/ui/config_popup.rs) ───────────────────
+# {Locked="↑","↓","Enter","Esc","ACP"} - key names and protocol name
+config_picker.title: "ಸೆಷನ್ ಸಂರಚನೆ (↑ ↓ • Enter • Esc)"
+# Shown when /config is used but the AI agent exposed no ACP select options.
+system.no_config_options: "ಸಂಪರ್ಕಿತ ಏಜೆಂಟ್ ಯಾವುದೇ ಸಂರಚಿಸಬಹುದಾದ ಸೆಷನ್ ಆಯ್ಕೆಗಳನ್ನು ಜಾಹೀರಾತು ಮಾಡಿಲ್ಲ."
+# {option} is an Agent-provided option name; {error} is the ACP error.
+system.config_update_failed: "%{option} ಅಪ್‌ಡೇಟ್ ಮಾಡಲು ವಿಫಲವಾಗಿದೆ: %{error}"
+system.yolo_disable_pending: "ಏಜೆಂಟ್ ಪೂರೈಕೆದಾರರು ವಿಶೇಷಾಧಿಕಾರ ಮೋಡ್ ನಿಷ್ಕ್ರಿಯವಾಗಿರುವ ಅಗತ್ಯ ಸೆಷನ್ ಸ್ಥಿತಿಯನ್ನು ಇನ್ನೂ ದೃಢೀಕರಿಸಿಲ್ಲ"  # Shown after the localized failure prefix while prompts remain blocked until the AI agent provider confirms that its privileged session mode is off. Provider means an AI agent provider, not a network provider.
+system.provider_command_blocked_by_policy: "%{command}: ನಿಮ್ಮ ಸಂಸ್ಥೆಯ ನೀತಿಯ ಪ್ರಕಾರ ಸ್ವಯಂಚಾಲಿತ ಅನುಮೋದನೆಯನ್ನು ನಿಷ್ಕ್ರಿಯಗೊಳಿಸಲಾಗಿದೆ."  # {Locked="%{command}"} Shown when AllowAutomaticApproval blocks a provider-advertised privileged command.
+system.model_unknown: "ಅಪರಿಚಿತ ಮಾದರಿ %{model} — ಲಭ್ಯವಿರುವ ಪಟ್ಟಿಯನ್ನು ನೋಡಲು /model ಟೈಪ್ ಮಾಡಿ."  # {Locked="%{model}","/model"}

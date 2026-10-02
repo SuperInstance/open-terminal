@@ -4,37 +4,37 @@ Frequently asked questions about the current release of Intelligent Terminal. So
 
 ## 1. Why is the first-run experience (FRE) taking so long, or failing?
 
-Depending on which agent you pick, the first-run setup may need to download dependencies — [`winget`](https://learn.microsoft.com/windows/package-manager/winget/) is used to install GitHub Copilot CLI and (when needed) Node.js LTS, `npm install -g` fetches the bring-your-own agent CLIs, and `npx` fetches the ACP wrapper for Claude and Codex on first launch. On slow, throttled, or unreliable networks any of these downloads can take **more than 10 minutes**, and on intermittent connections they can fail outright.
+Depending on which agent you pick, the first-run setup may need to download Node.js LTS, install session hooks, or configure shell integration. GitHub Copilot CLI installation is deferred to the agent pane so it cannot block FRE completion. On slow, throttled, or unreliable systems the remaining setup operations can still take time or fail.
 
 **Workaround:**
 
 - Make sure you're on a stable, unrestricted internet connection before running the FRE.
-- If the FRE fails or times out, you can install the missing dependencies manually by following [`installing-dependencies.md`](./installing-dependencies.md), then re-open Intelligent Terminal — the FRE will detect what's already installed and skip those steps.
+- If the FRE fails or times out, you can install the missing Node or integration dependencies manually by following [`installing-dependencies.md`](./installing-dependencies.md), then retry. If Copilot is missing, finish its setup from the agent pane after entering the terminal.
 
-## 2. Why won't Intelligent Terminal install on my Windows 10 machine?
+## 2. What Windows version does Intelligent Terminal require?
 
-**Symptom:** The package manifest sets `MinVersion="10.0.22621.6060"` (Windows 11 22H2), so the MSIX install is blocked on earlier OS builds. This release is Windows 11 only.
+The package manifest sets `MinVersion="10.0.19041.0"` (Windows 10, version 2004), matching upstream Windows Terminal. Intelligent Terminal installs on **Windows 10 2004 (build 19041) or later**, including all of Windows 11.
 
-**Workaround:** Use Windows 11 (22H2 or later). Windows 10 support is planned for a later release.
+**If the MSIX install is blocked:** your machine is on a Windows build older than 19041. Check your build with `winver`, then update via **Settings -> Windows Update**.
 
 ## 3. I installed a new agent CLI after the FRE — why isn't it tracked in agent session management?
 
-You completed the FRE with one agent (say, Copilot), then later installed Claude or Codex (or another bring-your-own ACP-compatible CLI) and switched the **agent pane** to it in Settings. The agent pane may not work, or **agent session management** doesn't track its sessions.
+You completed the FRE with one agent (say, Copilot), then later installed Claude or Codex and switched the **agent pane** to it in Settings.
 
-The FRE only sets up the session-tracking hooks for the agents you went through it with. Agents installed *after* the FRE need a one-time manual setup. (The ACP wrapper itself is auto-fetched on demand via `npx`, so there is no wrapper "install" to run — see [Step 3.2.3](./installing-dependencies.md#step-323--acp-wrapper-no-install-action-required) / [Step 3.3.3](./installing-dependencies.md#step-333--acp-wrapper-no-install-action-required) — but you do need to make sure the prerequisites the wrapper depends on are in place.)
+The FRE installs session-tracking hooks only for the agent selected there. With **Session management** enabled, Intelligent Terminal automatically installs or updates hooks for newly detected built-in agents when `wta-master` starts and when you select a different built-in agent.
 
-**Workaround:**
+If the new agent is not tracked:
 
 1. **Make sure the prerequisites are in place.** Follow the steps in [`installing-dependencies.md`](./installing-dependencies.md) that match your agent — install Node.js LTS and the agent's own CLI (via `npm install -g <package>`):
    - Claude: [Steps 3.2.1 – 3.2.3](./installing-dependencies.md#32-claude-code-bring-your-own) — Intelligent Terminal launches Claude through an ACP wrapper that is fetched automatically via `npx` on first launch.
    - Codex: [Steps 3.3.1 – 3.3.3](./installing-dependencies.md#33-openai-codex-bring-your-own) — same wrapper-via-`npx` pattern as Claude.
    - Gemini: [Section 3.4](./installing-dependencies.md#34-gemini-cli-bring-your-own) — Gemini speaks ACP natively, so no wrapper is needed; just install the CLI itself.
 
-2. **Re-install the session-tracking hooks.** Open Intelligent Terminal **Settings → Agent**, scroll to the **Agent session tracking (hooks)** row ("Track sessions across agents. Required for agent session management."), expand it, and click the **Install hooks** button next to *Install agent hook script*. This wires the newly installed CLI into agent session management so its sessions show up in the panel.
+2. Open a fresh Intelligent Terminal window so the new CLI is on `PATH`, confirm **Settings → Agent → Sessions** is on, and select the new built-in agent. Automatic reconciliation runs in the background. For manual repair, run `wta hooks install --cli <agent>`.
 
 ## 4. Can I use a custom ACP-compatible agent (Qwen, Cline, Goose, Cursor, …)?
 
-Yes. Intelligent Terminal can drive any agent CLI that implements the [Agent Client Protocol (ACP)](https://agentclientprotocol.com/get-started/agents) — the [linked list](https://agentclientprotocol.com/get-started/agents) on that page covers Qwen Code, Cline, Goose, Cursor, Kimi CLI, Kiro CLI, OpenHands, and many more, in addition to the ones Intelligent Terminal sets up for you (Copilot, Claude, Codex, Gemini).
+Yes. Intelligent Terminal can drive any agent CLI that implements the [Agent Client Protocol (ACP)](https://agentclientprotocol.com/get-started/agents) — the [linked list](https://agentclientprotocol.com/get-started/agents) on that page covers Qwen Code, Cline, Goose, Cursor, Kimi CLI, Kiro CLI, OpenHands, and many more, in addition to the ones Intelligent Terminal sets up for you (Copilot, Claude, Codex, Gemini, OpenCode).
 
 **How to wire one up:** open **Settings → Agent**, then in either the **Agent** (agent pane) or **Delegate agent** dropdown, pick **+ Add new…** and enter the command that launches your CLI:
 
@@ -43,7 +43,7 @@ Yes. Intelligent Terminal can drive any agent CLI that implements the [Agent Cli
 
 You must install and authenticate the agent CLI yourself first (Intelligent Terminal does not install bring-your-own agents — see [`installing-dependencies.md`](./installing-dependencies.md) for the pattern).
 
-**Limitation:** **Agent session management does not yet work for custom agents.** The session-tracking hooks ship only for the four built-in agents (Copilot, Claude, Codex, Gemini), so custom-agent sessions will not appear in the agent session management panel even after you install hooks. The agent pane and delegate flows themselves work normally.
+**Limitation:** **Agent session management does not yet work for custom agents.** Session-tracking hooks ship for Copilot, Claude, Codex, Gemini, and OpenCode. Other custom agent sessions will not appear in the agent session management panel even after you install hooks; the agent pane and delegate flows themselves still work normally.
 
 ## 5. Why does the Model dropdown stay greyed out / show "default" after I change agents?
 
@@ -71,6 +71,22 @@ In this release, **agent session management only tracks sessions for the agent C
 
 **Workaround:** Until a better design ships, select the **same agent** for both your agent pane and your delegate agent in Settings → Agent. With both pointed at the same CLI, the delegate's sessions will appear in agent session management alongside the agent pane's.
 
+## 9. Why does Intelligent Terminal crash a few seconds after launch, or fail agent actions with "0x80010105 — The server threw an exception"?
+
+**Symptom:** One of two related failures:
+
+- The app launches, the agent pane starts, and then **`WindowsTerminal.exe` crashes a few seconds later**. Windows Event Viewer records an *Application Error* faulting in **`combase.dll`** with exception code **`0xc0000005`**.
+- Or the app stays open, but agent-driven actions (for example, inserting a command into a pane) fail with **`Connection failed: 0x80010105 — The server threw an exception`** (`RPC_E_SERVERFAULT`) reported by `wtcli`.
+
+**Cause:** This appears to be an **operating-system-level issue in the Windows COM/WinRT cross-process activation path** (the `combase.dll` activation/marshaling path) that is **triggered by Intelligent Terminal's use of Metadata-Based Marshaling** when activating its out-of-proc COM/WinRT service. The same underlying fault can surface either as the `combase.dll` crash or as the `0x80010105` "server threw an exception" error.
+
+
+**Workaround:**
+
+- **Update Windows to the latest available cumulative update for your version** — Windows 11 22H2, 23H2, 24H2, or 25H2 — via **Settings → Windows Update**, and install all pending updates. Moving to the latest patch level resolves the crash and the `0x80010105` failures. The latest cumulative update for each Windows version is listed on the [Windows 11 release information](https://learn.microsoft.com/windows/release-health/windows11-release-information) page.
+- The Intelligent Terminal team is also **actively reworking how the app communicates with the terminal**, so the issue will be mitigated independently of the OS update in a future release.
+- If it still reproduces on a fully updated machine, please [file an issue](https://github.com/microsoft/intelligent-terminal/issues/new) with your Windows build number (run `winver`) and, if available, the crash dump from `%LOCALAPPDATA%\CrashDumps\`.
+
 ---
 
-*Last updated: 2026-06-02. See the [release notes](https://github.com/microsoft/intelligent-terminal/releases) for items resolved in newer versions.*
+*Last updated: 2026-06-09. See the [release notes](https://github.com/microsoft/intelligent-terminal/releases) for items resolved in newer versions.*

@@ -1,9 +1,7 @@
 # Setup screen titles
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.title.first_run: "Vítejte v Inteligentní Terminál!"
 setup.title.agent_missing: "Agenta se nepodařilo najít"
 setup.title.agent_error: "Připojení k agentovi se nezdařilo"
-setup.title.switch_agent: "Přepnout agenta"
 setup.title.not_available: "Agent není k dispozici"
 setup.title.sign_in: "Vyžadováno přihlášení"
 
@@ -12,10 +10,9 @@ setup.subtitle.copilot_missing: "Váš agent \"%{agent}\" není nainstalován. P
 setup.subtitle.agent_missing: "Váš agent \"%{agent}\" není nainstalován. Přeinstalujte ho ručně a zkuste to znovu. Chcete-li přepnout agenta, přejděte do Inteligentní Terminál Settings > Agent."
 setup.subtitle.copilot_auth: "Váš agent \"%{agent}\" vyžaduje ověření. Postupujte podle níže uvedených kroků a přihlaste se. Chcete-li přepnout agenta, přejděte do Inteligentní Terminál Settings > Agent."
 setup.subtitle.agent_auth: "Váš agent \"%{agent}\" vyžaduje ověření. Přihlaste se přes agenta a pak vyberte \"Přihlásil/a jsem se\" níže. Chcete-li přepnout agenta, přejděte do Inteligentní Terminál Settings > Agent."
+setup.subtitle.connection_failed: "Nepodařilo se spustit agenta %{agent}."
 
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.description.fre_line1: "Vyberte výchozího agenta, kterého chcete používat v Inteligentní Terminál. Můžete"
-setup.description.fre_line2: "přejít do Settings a nakonfigurovat svůj pracovní prostor."
 
 setup.option.install: "Instalovat %{agent}"
 setup.option.install_hint: "(Bude nainstalován automaticky)"
@@ -23,10 +20,14 @@ setup.option.signin: "Přihlásit se k %{agent}"
 setup.option.retry_detection: "Zkusit znovu"
 setup.option.retry_auth: "Přihlásil/a jsem se — zkusit se znovu připojit"
 setup.option.retry_connection: "Zkusit se znovu připojit"
-setup.option.switch_to: "Přepnout na %{agent}"
 setup.status.installing: "Instalace..."
+setup.status.installing_copilot_cli: "Instalace GitHub Copilot CLI"
+setup.status.connecting_agent: "Připojování k %{agent}"
 setup.status.install_failed: "Instalace se nezdařila: "
 setup.status.installing_winget: " Instalace přes winget..."
+setup.error.install_start_failed: "Instalační program se nepodařilo spustit. Výběrem možnosti \"Zkusit znovu\" akci zopakujte."
+setup.error.install_timed_out: "Časový limit instalace vypršel. Před spuštěním další instalace vyberte \"Zkusit znovu\"."
+setup.error.install_detection_timed_out: "Instalace byla dokončena, ale Copilot ještě není viditelný. Výběrem možnosti \"Zkusit znovu\" proveďte novou kontrolu."
 
 # ── Auth flow (src/ui/auth.rs) ──────────────────────────────────────────────
 # {Locked="CLI"} - acronym, common usage across Microsoft localizations
@@ -35,17 +36,19 @@ auth.agent_selected_with_status: "Agent %{name} — "
 auth.checking_authentication: "  %{spinner} Kontrola ověření..."
 auth.waiting_for_authorization: "  %{spinner} Čekání na autorizaci..."
 auth.code_copied_hint: "  Kód zkopírován do schránky — vložte ho v prohlížeči."
-auth.sign_in_prompt: "Přihlaste se, abyste mohli používat agenta:"
+auth.device_code_prompt: "Navštivte %{url} a zadejte kód: %{code}"  # Copilot device-flow sign-in progress; %{url} is the verification URL, %{code} is the device code
 auth.card_connect: "  Připojit %{name} pro povolení funkcí agenta"
-auth.button_sign_in_github: "[ Přihlásit se přes GitHub ]"  # {Locked="GitHub"}
-auth.button_sign_in_with: "[ Přihlásit se přes %{name} ]"
-auth.hint_footer: "  Stiskněte Enter pro přihlášení, Esc pro návrat"  # {Locked="Enter","Esc"}
+auth.enterprise_prompt: "  Enter pro přihlášení · E pro GitHub Enterprise · Esc pro návrat"  # {Locked="Enter","E","Esc"}
+auth.enterprise_domain_label: "  Doména GitHub Enterprise: "
+auth.enterprise_hint_footer: "  Enter pro přihlášení · Esc pro github.com"  # {Locked="Enter","Esc","github.com"}
+auth.login_failed_help_enterprise: "  Stisknutím Enter to zkuste znovu, nebo Esc pro github.com. Běžné příčiny: chybně zadaná nebo nedostupná doména, kód s vypršenou platností nebo chybějící přístup Copilot na tomto hostiteli."  # {Locked="Enter","Esc","github.com","Copilot"}
+auth.login_failed_help_default: "  Stisknutím Enter to zkuste znovu, nebo Esc pro návrat."  # {Locked="Enter","Esc"}
 
 # ── Chat view (src/ui/chat.rs) ──────────────────────────────────────────────
 chat.activity_thinking: "Přemýšlím..."
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
 chat.welcome_title: "Vítejte v Inteligentní Terminál!"
-chat.welcome_disclaimer: "Inteligentní Terminál používá AI. Kontrolujte chyby."
+chat.welcome_disclaimer: "Inteligentní Terminál používá AI."
 chat.plan_header: "Plán:"
 chat.plan_marker_completed: "[x]"  # {Locked}
 chat.plan_marker_in_progress: "[>]"  # {Locked}
@@ -53,11 +56,25 @@ chat.plan_marker_pending: "[ ]"  # {Locked}
 chat.autofix_prompt_label: "Automaticky diagnostikováno nedávné selhání příkazu"
 chat.turn_canceled: "(zrušeno)"
 chat.turn_executed: "→ provedeno: %{title}"
+# Persistent tool-category labels shown after a status marker and before a subject.
+chat.tool_kind.run: "Spustit"
+chat.tool_kind.insert: "Vložit"
+chat.tool_kind.read: "Číst"
+chat.tool_kind.search: "Hledat"
+chat.tool_kind.edit: "Upravit"
+chat.tool_kind.delete: "Odstranit"
+chat.tool_kind.move: "Přesunout"
+chat.tool_kind.fetch: "Načíst"
+chat.tool_kind.think: "Přemýšlet"
+chat.tool_kind.mode: "Režim"
+chat.tool_kind.other: "Nástroj"
 
 # ── Input placeholders (src/ui/input.rs) ────────────────────────────────────
 input.placeholder.connected: "Zeptejte se na cokoli, / pro příkazy.."  # {Locked="/"}
 input.placeholder.connecting: "připojování..."
 input.placeholder.disconnected: "odpojeno"
+# Summary of attached images; keep 📎 and %{items} verbatim.
+input.image_attachments: "📎 Obrázky: %{items}"  # {Locked="📎","%{items}"}
 
 # ── Command popup (src/ui/command_popup.rs) ─────────────────────────────────
 # {Locked="/"} - slash-command prefix, must remain ASCII
@@ -71,9 +88,11 @@ commands.help_close_hint: "  Esc        Zavřít tuto nápovědu"  # {Locked="Es
 commands.help.summary: "Zobrazit tento seznam příkazů"
 commands.clear.summary: "Vymazat historii chatu (zachová relaci)"
 commands.new.summary: "Spustit novou relaci ACP (zahodí historii)"  # {Locked="ACP"}
+commands.fix.summary: "Diagnostikovat aktivní terminál a navrhnout opravu (/fix <hint>)"  # {Locked="/fix","<hint>"}
 commands.restart.summary: "Restartovat agenta"
 commands.stop.summary: "Zrušit probíhající výzvu"
 commands.sessions.summary: "Otevřít výběr historických relací (Ctrl+Shift+/)"  # {Locked="Ctrl+Shift+/"}
+commands.agent.summary: "Vyberte agent pro tuto kartu (/agent <id> pro přímé přepnutí)"  # {Locked="/agent","<id>"}
 # ── Recommendations panel (src/ui/recommendations.rs) ───────────────────────
 # {Locked="Enter","Esc","↵","↑","↓","←","→"} - key names and Return-key glyph, do not translate
 recommendations.nav_hint: "(↑ ↓ pro navigaci • ← → pro přepínání tlačítek • Enter pro výběr • Esc pro zrušení)"
@@ -100,9 +119,7 @@ permission.compact.prefix: "[!] "  # {Locked}
 permission.compact.hint: "[Y/N pro odpověď · změňte velikost pro úplnou kartu]"  # {Locked="Y/N"}
 
 # ── Agent status (src/agent_check.rs) ───────────────────────────────────────
-agent.status.not_installed_auto: "Nenainstalováno — vyberte pro automatickou instalaci"
 agent.status.not_found: "Nenalezeno"
-agent.status.detected: "Zjištěno"
 # {Locked="winget","GitHub.Copilot","GitHub","Copilot"} - tool names and command, must run verbatim
 agent.install.running_winget: "Running: winget install GitHub.Copilot"
 agent.install.launch_failed: "Failed to launch winget: %{error}"
@@ -113,8 +130,8 @@ agent.custom.auth_hint: "Ujistěte se, že %{name} je nainstalován a je v PATH.
 
 # ── Agents view (src/ui/agents_view.rs) ─────────────────────────────────────
 agents.loading: "Načítání..."
-# {Locked="Enter","Esc","↑","↓"} - key combinations, do not translate
-agents.footer_hint: "(↑ ↓ pro navigaci • Enter pro spuštění relace • Esc pro ukončení)"
+# {Locked="Enter","Esc","F5","↑","↓","/"} - key combinations, do not translate
+agents.footer_hint: "(↑ ↓ pro navigaci • Enter pro spuštění relace • Esc pro ukončení • F5 pro obnovení • / pro hledání)"
 agents.status.active: "Aktivní"
 agents.status.waiting_for_input: "Čeká na vstup"
 agents.status.error: "Chyba"
@@ -124,26 +141,48 @@ agents.status.idle: "Nečinný"
 layout.welcome_hint: "  (Ctrl+Shift+. zobrazit/skrýt panel agenta • Ctrl+Shift+/ zobrazit/skrýt relaci agenta)"  # {Locked="Ctrl+Shift+.","Ctrl+Shift+/"}
 
 # ── Connection state ────────────────────────────────────────────────────────
-connection.starting: "Spouštění agenta..."
+# Preparing the AI agent connection, including preflight and reuse of a cached agent.
+connection.starting: "Příprava připojení k agentovi..."
 connection.reconnecting: "Opětovné připojování..."
+# Retiring old AI agent sessions for /restart, before the next connection phases.
+connection.restarting: "Restartování agenta..."
+# Connecting the pane to WTA's local coordinator process, not to an AI model.
+connection.coordinator: "Připojování k místnímu koordinátoru..."
+# Initializing the helper/coordinator connection, including local preparation and AI agent initialization.
+connection.initializing: "Inicializace připojení k agentovi..."
+# Refreshing the user's authentication with the AI agent after login; not verifying the agent's identity.
+connection.authenticating: "Ověřování uživatele u agenta..."
+# Reading the coordinator's registry snapshot, including existing history; not fetching history from the AI agent.
+connection.syncing_sessions: "Čtení seznamu relací..."
+# Creating the AI agent session, including local registration; internal agent progress is unknown.
+connection.creating_session: "Vytváření relace agenta..."
+# Applying the requested AI model before the connection is ready. Preserve %{model}.
+connection.selecting_model: "Nastavování modelu relace: %{model}..."  # {Locked="%{model}"}
+# Activity row while connecting to restore a conversation. Keep the actual stage first so narrow panes show it; session_id is shortened to eight characters.
+connection.resuming_stage: "%{stage} (obnovování %{session_id})"  # {Locked="%{stage}","%{session_id}"}
 connection.connecting_activity: "Připojování k agentovi…"
 connection.lost: "Připojení k agentovi bylo ztraceno. Zadáním /restart se znovu připojíte."  # {Locked="/restart"}
 
 # ── System messages (src/app.rs) ────────────────────────────────────────────
+system.close_pane_hint: "Stiskněte Ctrl+C znovu pro zavření panelu"  # {Locked="Ctrl+C"}
+system.selection_copied: "Zkopírováno"  # Brief hint shown after selected terminal text is copied
 system.cancelled: "Zrušeno."
 system.no_prompt_in_flight: "Žádný dotaz neprobíhá."
 system.authentication_failed: "Ověření se nezdařilo"
-system.command_copied_retry: "Příkaz zkopírován — spusťte ho v jiném terminálu a stiskněte Enter pro opakování"  # {Locked="Enter"}
 system.stopped_max_tokens: "Odpověď byla oříznuta po dosažení výstupního limitu modelu."
 system.stopped_max_turn_requests: "Agent se zastavil po dosažení limitu požadavků pro toto kolo."
 system.stopped_refusal: "Agent odmítl pokračovat v tomto požadavku."
 system.agent_busy: "Agent je na této kartě zaneprázdněn — počkejte, až aktuální výzva skončí."
+# Image paste messages; "agent" refers to an AI agent. Keep Enter and %{label} verbatim.
+system.image_clipboard_empty: "Ve schránce není žádný obrázek k vložení."
+system.image_not_supported: "Tento agent nepodporuje vstup obrázků."
+system.image_pasted: "Obrázek připojen (%{label}). Stiskněte Enter pro odeslání."  # {Locked="%{label}","Enter"}
 system.resuming_session: "Obnovuje se relace %{session_id}..."
 system.unknown_command: "Neznámý příkaz \"%{command}\" — odeslán jako výzva. Seznam zobrazíte zadáním /help."  # {Locked="/help"}
 system.busy_use_stop: "Počkejte, až aktuální výzva skončí, nebo nejdřív použijte /stop."  # {Locked="/stop"}
 system.cannot_focus_session: "Nelze zaměřit relaci %{session_id}: vypadá jako živá, ale zatím není navázán žádný GUID podokna. Zkuste to znovu za chvíli."
-system.cannot_resume_no_load_session: "Nelze obnovit v podokně agenta: %{agent} neohlásil schopnost ACP `loadSession`. Stisknutím Enter (bez Shift) místo toho obnovíte relaci v novém terminálovém podokně."  # {Locked="ACP","loadSession","Enter","Shift"}
-system.cannot_resume_no_resume_flag: "Nelze obnovit relaci %{agent}: tento agent nemá příznak ve stylu `--resume`. Stiskněte Shift+Enter a zkuste obnovit uvnitř podokna agenta přes ACP."  # {Locked="--resume","Shift","Enter","ACP"}
+system.cannot_resume_no_load_session: "Nelze obnovit v podokně agenta: %{agent} neohlásil schopnost ACP `loadSession`."  # {Locked="ACP","loadSession"}
+system.cannot_resume_no_resume_flag: "Nelze obnovit relaci %{agent}: tento agent nemá příznak ve stylu `--resume`."  # {Locked="--resume"}
 system.cannot_resume_unknown_agent: "Nelze obnovit relaci %{session_id}: její zdrojový agent není této verzi WTA známý."
 system.cannot_resume_phantom_via_flag: "Nelze obnovit relaci %{agent} %{session_id}: byla spuštěna, ale nikdy neshromáždila žádnou konverzaci, takže samotný %{agent} by obnovení odmítl. Řádek se odebírá."
 system.cannot_resume_phantom_via_load: "Nelze obnovit relaci %{agent} %{session_id}: byla spuštěna, ale nikdy neshromáždila žádnou konverzaci, takže %{agent} by načtení odmítl. Řádek se odebírá."
@@ -185,7 +224,7 @@ hooks.marketplace_path_stale: "⚠ marketplace path stale"
 hooks.installed_but_disabled: "⚠ installed but disabled"
 hooks.not_installed: "✗ not installed"
 hooks.uninstall_skipped: "skipped (CLI not on PATH)"
-hooks.install_attempted: "wt-agent-hooks install attempted (idempotent). Run `wta hooks status` to inspect the result. Trace log: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
+hooks.install_succeeded: "✓ wt-agent-hooks installed for %{clis}"
 
 # ── Relative time + date formatting (src/ui/agents_view.rs) ─────────────────
 # rust-i18n has no CLDR plural support; Rust selects singular vs. other.
@@ -201,3 +240,32 @@ time.days_other: "před %{count} dny"
 
 # ── Provedení doporučení (src/coordinator.rs) ───────────────────────────────
 system.choice_execution_failed: "Volba %{choice} selhala: %{error}"
+
+# ── Agent picker (src/ui/agent_popup.rs) ────────────────────────────────────
+# {Locked="↑","↓","Enter","Esc"} - key names, do not translate
+agent_picker.title: "Vyberte agent (↑ ↓ • Enter • Esc)"  # Agent means an AI coding agent
+# Shown when no policy-allowed AI agent CLI is installed on the machine.
+system.no_agents: "Na tomto počítači nebyl nalezen žádný dostupný CLI agenta."  # {Locked="CLI"}
+# {agent} is the unrecognized text the user typed after /agent.
+system.agent_unknown: "Neznámý nebo nedostupný agent %{agent} — zadáním /agent zobrazíte dostupný seznam."  # {Locked="/agent"}
+# Shown only when /agent is used outside a Windows Terminal-owned agent pane.
+system.agent_switch_unavailable: "Přepínání agentů není mimo kartu Windows Terminal k dispozici."
+
+# ── Model picker (/model) ───────────────────────────────────────────────────
+commands.model.summary: "Vyberte model pro tento panel (/model <id> pro přímé přepnutí)"  # {Locked="/model","<id>"}
+commands.config.summary: "Nakonfigurujte tuto relaci agenta"  # Agent means an AI coding agent; shown for the /config command. {Locked="/config"}
+commands.move.summary: "Přesunout panel agenta pro tuto kartu (/move <position>)"  # {Locked="/move","<position>"}
+model_picker.title: "Vyberte model (↑ ↓ • Enter • Esc)"  # {Locked="↑","↓","Enter","Esc"}
+system.no_models: "Připojený agent neohlásil žádné dostupné modely."
+system.model_set: "Model pro tento panel nastaven na %{model}."  # {Locked="%{model}"}
+
+# ── Session configuration picker (src/ui/config_popup.rs) ───────────────────
+# {Locked="↑","↓","Enter","Esc","ACP"} - key names and protocol name
+config_picker.title: "Konfigurace relace (↑ ↓ • Enter • Esc)"
+# Shown when /config is used but the AI agent exposed no ACP select options.
+system.no_config_options: "Připojený agent nenabídl žádné možnosti relace k nastavení."
+# {option} is an Agent-provided option name; {error} is the ACP error.
+system.config_update_failed: "Aktualizace %{option} se nezdařila: %{error}"
+system.yolo_disable_pending: "poskytovatel nepotvrdil požadovaný neprivilegovaný stav relace"  # Shown after the localized failure prefix while prompts remain blocked until the AI agent provider confirms that its privileged session mode is off. Provider means an AI agent provider, not a network provider.
+system.provider_command_blocked_by_policy: "%{command}: Automatické schvalování je zakázáno zásadami vaší organizace."  # {Locked="%{command}"} Shown when AllowAutomaticApproval blocks a provider-advertised privileged command.
+system.model_unknown: "Neznámý model %{model} — zadáním /model zobrazíte dostupný seznam."  # {Locked="%{model}","/model"}

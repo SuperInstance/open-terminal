@@ -16,27 +16,241 @@
 // ConptyConnection path) and connect to the master via the pipe
 // whose name `MasterPipeName()` exposes.
 //
-// Lifecycle model: reference-counted. Each agent pane calls
-// `AcquirePane` on creation and `ReleasePane` when it closes. The
-// first acquire spawns the master; the last release terminates it
-// via the Job Object. master crashes are detected via
-// RegisterWaitForSingleObject; state clears so the next acquire
-// respawns cleanly, reusing the same pipe name so previously-spawned
-// helpers can reconnect.
+// Lifecycle model: move-only leases. Each agent pane owns the lease
+// returned by `AcquirePane` and retires it when it closes. Retirement
+// retains cleanup-only ownership during the session-close grace period.
+// The first acquire spawns the master; the last lease release terminates
+// it via the Job Object. Unexpected exits get bounded recovery only
+// while active leases remain, reusing the pipe name so helpers reconnect.
 
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <mutex>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <wil/resource.h>
+#include <winrt/Windows.Foundation.h>
+
+namespace TerminalAppUnitTests
+{
+    class SharedWtaTests;
+}
+
+namespace TerminalAppLocalTests
+{
+    class TabTests;
+}
 
 namespace winrt::TerminalApp::implementation
 {
+    namespace details
+    {
+        class LiveObjectGenerationTracker
+        {
+        public:
+            uint64_t Get(const winrt::Windows::Foundation::IInspectable& object);
+
+        private:
+            struct Entry
+            {
+                winrt::weak_ref<winrt::Windows::Foundation::IInspectable> object;
+                uint64_t generation;
+            };
+
+            std::mutex _mutex;
+            uint64_t _nextGeneration{ 0 };
+            std::vector<Entry> _entries;
+        };
+
+        struct RetirementRegistration
+        {
+            std::string operationId;
+            bool shouldPublish{ false };
+            bool alreadyCompleted{ false };
+        };
+
+        class RetirementCoordinator
+        {
+        public:
+            static constexpr size_t CompletedHistoryLimit{ 64 };
+
+            std::string CreateRequestId();
+            RetirementRegistration Register(bool scopeAll, std::string_view reason, std::string_view requestId = {});
+            bool Complete(std::string_view operationId, bool expireAfterContinuations = false);
+            void ReleaseContinuation(std::string_view operationId);
+            void Expire(std::string_view operationId);
+            bool ClaimAction(std::string_view operationId, std::string_view action);
+
+        private:
+            struct Operation
+            {
+                bool completed{ false };
+                bool expireAfterContinuations{ false };
+                bool recordedInHistory{ false };
+                size_t continuationCount{ 0 };
+                std::optional<std::string> requestId;
+                std::unordered_set<std::string> claimedActions;
+            };
+
+            std::string _CreateIdLocked(std::string_view kind);
+            void _EraseLocked(const std::string& operationId);
+            void _FinalizeCompletedLocked(std::unordered_map<std::string, Operation>::iterator operation);
+            void _PruneCompletedLocked();
+
+            std::mutex _mutex;
+            uint64_t _nextOperationId{ 0 };
+            std::unordered_map<std::string, Operation> _operations;
+            std::unordered_map<std::string, std::string> _allOperationsByRequest;
+            std::deque<std::string> _completedOperations;
+        };
+
+        class TabRetirementTracker
+        {
+        public:
+            bool BeginRecreation(std::string_view tabId);
+            bool RequestClose(std::string_view tabId);
+            bool Complete(std::string_view tabId);
+
+        private:
+            std::unordered_map<std::string, bool> _closeRequested;
+        };
+
+        class RestartSuppressionTracker
+        {
+        public:
+            void Mark(std::string_view tabId);
+            void Clear(std::string_view tabId);
+            bool Consume(std::string_view tabId);
+
+        private:
+            std::unordered_map<std::string, std::chrono::steady_clock::time_point> _marks;
+        };
+
+        class CoalescedRequest
+        {
+        public:
+            void Queue(std::string requestId);
+            std::optional<std::string> Take();
+            void Clear();
+            bool Pending() const noexcept;
+
+        private:
+            std::optional<std::string> _requestId;
+        };
+
+        constexpr bool IsValidEnvironmentOverride(const std::wstring_view name, const std::wstring_view value) noexcept
+        {
+            return !name.empty() &&
+                   name.find(L'=') == std::wstring_view::npos &&
+                   name.find(L'\0') == std::wstring_view::npos &&
+                   value.find(L'\0') == std::wstring_view::npos;
+        }
+
+        // A present empty string means CreateProcess should inherit the parent
+        // environment; nullopt means the requested block could not be built.
+        std::optional<std::wstring> BuildEnvironmentBlock(
+            std::span<const std::pair<std::wstring, std::wstring>> overrides) noexcept;
+
+        struct SuspendedProcessOperations
+        {
+            DWORD(WINAPI* resumeThread)(HANDLE){ ::ResumeThread };
+            BOOL(WINAPI* unregisterWait)(HANDLE, HANDLE){ ::UnregisterWaitEx };
+            BOOL(WINAPI* terminateProcess)(HANDLE, UINT){ ::TerminateProcess };
+        };
+
+        bool ResumeSuspendedProcess(
+            HANDLE thread,
+            HANDLE process,
+            HANDLE& waitHandle,
+            const SuspendedProcessOperations& operations = {}) noexcept;
+
+        struct ProcessRetirementOperations
+        {
+            DWORD(WINAPI* waitForSingleObject)(HANDLE, DWORD){ ::WaitForSingleObject };
+            BOOL(WINAPI* terminateProcess)(HANDLE, UINT){ ::TerminateProcess };
+        };
+
+        bool EnsureProcessExitedBeforeRestart(
+            HANDLE process,
+            DWORD pid,
+            DWORD exitTimeoutMs,
+            DWORD forcedExitTimeoutMs,
+            const ProcessRetirementOperations& operations = {});
+
+        class ProcessWaitGenerationTracker
+        {
+        public:
+            using Generation = uintptr_t;
+
+            Generation Register(DWORD pid) noexcept;
+            void Retire() noexcept;
+            std::optional<DWORD> Claim(Generation generation) noexcept;
+            Generation Current() const noexcept;
+
+        private:
+            Generation _nextGeneration{ 0 };
+            Generation _currentGeneration{ 0 };
+            DWORD _pid{ 0 };
+        };
+
+        class UnexpectedExitRecoveryPolicy
+        {
+        public:
+            using Generation = ProcessWaitGenerationTracker::Generation;
+
+            void Arm(Generation generation) noexcept;
+            void Retire() noexcept;
+            bool ShouldRespawn(
+                Generation generation,
+                size_t activeRefCount,
+                bool spawnSuppressed,
+                bool hasCachedArgs) noexcept;
+
+        private:
+            Generation _armedGeneration{ 0 };
+        };
+    }
+
+    class SharedWta;
+
+    class SharedWtaLease
+    {
+    public:
+        SharedWtaLease() noexcept = default;
+        SharedWtaLease(const SharedWtaLease&) = delete;
+        SharedWtaLease& operator=(const SharedWtaLease&) = delete;
+        SharedWtaLease(SharedWtaLease&& other) noexcept;
+        SharedWtaLease& operator=(SharedWtaLease&& other) noexcept;
+        ~SharedWtaLease() noexcept;
+
+        explicit operator bool() const noexcept;
+
+        /// Immediately release this lease, for creation rollback.
+        void Reset() noexcept;
+
+        /// Consume this lease, synchronously removing active demand while
+        /// retaining its reference for the bounded ACP session-close window.
+        void Retire() noexcept;
+
+    private:
+        friend class SharedWta;
+        friend class ::TerminalAppUnitTests::SharedWtaTests;
+
+        explicit SharedWtaLease(SharedWta& owner) noexcept;
+        SharedWtaLease _TakeForRetirement() noexcept;
+        static winrt::fire_and_forget _ReleaseAfterSessionClose(SharedWtaLease lease);
+
+        SharedWta* _owner{ nullptr };
+        bool _active{ false };
+    };
+
     class SharedWta
     {
     public:
@@ -50,7 +264,7 @@ namespace winrt::TerminalApp::implementation
 
         /// Acquire a reference to the shared wta process. Spawns wta
         /// on the first acquire; subsequent acquires just bump an
-        /// internal counter. Returns true on success.
+        /// internal counter. Returns an owning lease, or empty on failure.
         ///
         /// `wtaPath` is the full path to wta.exe — see
         /// `TerminalPage::_DetectWtaPath()`.
@@ -70,28 +284,21 @@ namespace winrt::TerminalApp::implementation
         /// over the existing event channels
         /// (e.g. `autofix_enabled_changed`).
         ///
-        /// Every successful `AcquirePane` MUST be paired with exactly
-        /// one `ReleasePane` when the caller's agent pane closes.
-        /// When the count reaches zero the Job Object is closed,
+        /// Move the lease along with its pane during transfers. Retire it
+        /// when the pane closes; reset it only for creation rollback.
+        /// When the last lease releases, the Job Object is closed,
         /// terminating wta and every descendant it spawned.
-        bool AcquirePane(const std::wstring_view wtaPath,
-                         std::span<const std::wstring> extraArgs = {});
-
-        /// Release a previously acquired reference. Calling without a
-        /// matching `AcquirePane` is a no-op (safe to call from
-        /// teardown paths that aren't sure whether they acquired).
-        void ReleasePane();
+        SharedWtaLease AcquirePane(const std::wstring_view wtaPath,
+                                   std::span<const std::wstring> extraArgs = {},
+                                   std::span<const std::pair<std::wstring, std::wstring>> environment = {});
+        SharedWtaLease AcquireKeepRunningLease();
 
         /// Force-restart the wta-master process, bypassing the
-        /// `AcquirePane`/`ReleasePane` reference count. Used by the
-        /// `/restart` slash command path: the caller (TerminalPage)
-        /// tears down every agent pane around this call, so the
-        /// refcount-based teardown isn't enough — there may be other
-        /// panes' Closed handlers that have yet to fire. After this
-        /// returns, the next `AcquirePane` finds a fresh master
-        /// listening on the same `_masterPipeName` (intentionally
-        /// stable across respawns so any helpers spawned with the old
-        /// cmdline can still find it).
+        /// lease reference count. Used by the
+        /// `/restart` slash command and launch-configuration changes after
+        /// their sessions retire. Existing panes and helpers stay alive; the
+        /// replacement master listens on the same `_masterPipeName` so they
+        /// can reconnect without rebuilding their physical terminal stack.
         ///
         /// Replays the `wtaPath` + `extraArgs` cached from the first
         /// successful spawn so the new master inherits the same
@@ -112,7 +319,19 @@ namespace winrt::TerminalApp::implementation
         /// successful respawn or no-op.
         bool Restart();
         bool Restart(const std::wstring_view wtaPath,
-                     std::span<const std::wstring> extraArgs);
+                     std::span<const std::wstring> extraArgs,
+                     std::span<const std::pair<std::wstring, std::wstring>> environment = {});
+
+        std::string CreateRetirementRequestId();
+        details::RetirementRegistration RegisterRetirement(
+            bool scopeAll,
+            std::string_view reason,
+            std::string_view requestId = {});
+        bool CompleteRetirement(std::string_view operationId, bool expireAfterContinuations = false);
+        void ReleaseRetirementContinuation(std::string_view operationId);
+        void ExpireRetirement(std::string_view operationId);
+        bool ClaimRetirementAction(std::string_view operationId, std::string_view action);
+        uint64_t GetSettingsGeneration(const winrt::Windows::Foundation::IInspectable& settings);
 
         /// Whether wta is currently spawned. Becomes false after a
         /// crash is observed by the wait callback, or after the last
@@ -142,32 +361,46 @@ namespace winrt::TerminalApp::implementation
         std::wstring_view MasterPipeName() const noexcept;
 
     private:
+        friend class SharedWtaLease;
+        friend class ::TerminalAppUnitTests::SharedWtaTests;
+        friend class ::TerminalAppLocalTests::TabTests;
+
         SharedWta() = default;
         ~SharedWta();
 
+        void _ReleaseLease(bool active) noexcept;
+        void _RetireLease() noexcept;
+
         // All `*Locked` helpers assume the caller already holds `_mtx`.
+        SharedWtaLease _AcquireLeaseLocked() noexcept;
         bool _SpawnLocked(const std::wstring_view wtaPath,
-                          std::span<const std::wstring> extraArgs);
-        void _CleanupLocked();
+                          std::span<const std::wstring> extraArgs,
+                          std::span<const std::pair<std::wstring, std::wstring>> environment,
+                          bool armUnexpectedExitRecovery = true);
+        bool _RestartLocked(const std::wstring_view wtaPath,
+                            std::span<const std::wstring> extraArgs,
+                            std::span<const std::pair<std::wstring, std::wstring>> environment);
+        wil::unique_handle _CleanupLocked();
 
         // Wait-callback bridge — `RegisterWaitForSingleObject` requires
-        // a free function. The `context` PVOID carries the PID this
-        // wait was registered for (not a `this` pointer — the singleton
-        // is reached via `Instance()`), so the callback can detect a
-        // stale registration after `_CleanupLocked` + `_SpawnLocked`
-        // replaced the master out from under it. Without that check,
-        // a delayed callback for the OLD master would null out the
-        // *new* master's `_process` / `_waitHandle` and silently break
-        // crash detection.
+        // a free function. The `context` PVOID carries a monotonically
+        // increasing registration generation (not a `this` pointer), so
+        // delayed callbacks cannot match a replacement process even if
+        // Windows reused the old PID.
         static void CALLBACK _OnProcessExitedThunk(PVOID context, BOOLEAN timedOut);
-        void _OnProcessExited(DWORD observedPid);
+        void _OnProcessExited(details::ProcessWaitGenerationTracker::Generation generation);
 
         mutable std::mutex _mtx;
         wil::unique_handle _process;
         wil::unique_handle _job;
         HANDLE _waitHandle{ nullptr };
+        details::ProcessWaitGenerationTracker _waitGeneration;
+        details::UnexpectedExitRecoveryPolicy _unexpectedExitRecovery;
         DWORD _pid{ 0 };
+        // Total includes cleanup-only leases retained during session close;
+        // only active leases justify unexpected-exit recovery.
         size_t _refCount{ 0 };
+        size_t _activeRefCount{ 0 };
         // Generated lazily on first AcquirePane; reused across
         // master respawns within the same Terminal process so any
         // helpers spawned with stale cmdline can still find the
@@ -180,14 +413,12 @@ namespace winrt::TerminalApp::implementation
         // agent pane. Empty when no successful spawn has happened.
         std::wstring _cachedWtaPath;
         std::vector<std::wstring> _cachedExtraArgs;
-        // Wall-clock-ish stamp of the most recent successful spawn.
-        // Used by the no-arg `Restart()` to dedup the fan-out from
-        // `_dispatchRestartAgentStackToPage`: every open window's
-        // `OnRestartAgentStackRequested` calls `Restart()` on its own
-        // UI thread, and without dedup they sequentially kill each
-        // other's freshly-spawned masters. A short time window is
-        // enough because the fan-out runs in tight succession on
-        // adjacent UI-thread ticks.
-        std::optional<std::chrono::steady_clock::time_point> _lastRespawn;
+        std::vector<std::pair<std::wstring, std::wstring>> _cachedEnvironment;
+        // A restart could not confirm that the retired master exited. Never
+        // risk another process claiming the stable pipe in this Terminal
+        // process; recovery requires restarting Terminal.
+        bool _spawnSuppressed{ false };
+        details::RetirementCoordinator _retirementCoordinator;
+        details::LiveObjectGenerationTracker _settingsGenerations;
     };
 }

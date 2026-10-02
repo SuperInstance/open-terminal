@@ -573,6 +573,14 @@
     <value>OSC 52 (Manipulate Selection Data) を使用したクリップボードへの書き込みを許可する</value>
     <comment>{Locked="OSC 52"}{Locked="Manipulate Selection Data"}Header for a control to toggle support for applications to change the contents of the Windows system clipboard.</comment>
   </data>
+  <data name="Profile_AllowOscNotifications.Header" xml:space="preserve">
+    <value>OSC 777 (Desktop Notification) でトースト通知の表示を許可する</value>
+    <comment>{Locked="OSC 777"}{Locked="Desktop Notification"}Header for a control to toggle support for applications to display desktop toast notifications via the OSC 777 escape sequence.</comment>
+  </data>
+  <data name="Profile_AllowOscNotifications.HelpText" xml:space="preserve">
+    <value>有効にすると、アプリケーションは OSC 777 エスケープ シーケンスを送信して、カスタム タイトルと本文を含むデスクトップ通知をトリガーできます。</value>
+    <comment>{Locked="OSC 777"}Help text for the OSC 777 desktop notification toggle.</comment>
+  </data>
   <data name="Globals_AllowHeadless.Header" xml:space="preserve">
     <value>インテリジェント ターミナルのバックグラウンドでの実行を許可する</value>
     <comment>Header for a control to toggle support for Intelligent Terminal to run in the background.</comment>
@@ -668,6 +676,14 @@
   <data name="Nav_Launch.Content" xml:space="preserve">
     <value>スタートアップ</value>
     <comment>Header for the "startup" menu item. This navigates to a page that lets you see and modify settings related to the app's launch experience (i.e. screen position, mode, etc.)</comment>
+  </data>
+  <data name="Nav_PaneOpenedAnnouncement" xml:space="preserve">
+    <value>ナビゲーション ウィンドウを開きました</value>
+    <comment>Screen reader announcement made when the user activates the toggle button that opens the settings navigation pane.</comment>
+  </data>
+  <data name="Nav_PaneClosedAnnouncement" xml:space="preserve">
+    <value>ナビゲーション ウィンドウを閉じました</value>
+    <comment>Screen reader announcement made when the user activates the toggle button that closes the settings navigation pane.</comment>
   </data>
   <data name="Nav_OpenJSON.Content" xml:space="preserve">
     <value>JSON ファイルを開く</value>
@@ -1221,6 +1237,30 @@
     <value>有効にすると、このプロファイルはターミナルが起動されたディレクトリに生成されます。</value>
     <comment>A description for what the supplementary "use parent process directory" setting does. Presented near "Profile_StartingDirectoryUseParentCheckbox".</comment>
   </data>
+  <data name="Profile_AgentPaneBackend.Header" xml:space="preserve">
+    <value>エージェント ペインのエージェント</value>
+    <comment>Header for choosing which AI agent backend is used by this profile.</comment>
+  </data>
+  <data name="Profile_AgentPaneBackend.HelpText" xml:space="preserve">
+    <value>エージェント ペインで使用する ACP 対応エージェントを選択します。このプロファイルでは、この選択がグローバルなエージェント ペインの選択より優先されます。</value>
+    <comment>{Locked="ACP"} Description for the per-profile AI agent setting.</comment>
+  </data>
+  <data name="Profile_CommandPaletteAgent.Header" xml:space="preserve">
+    <value>コマンド パレットのエージェント</value>
+    <comment>Header for choosing which AI agent handles command palette delegation for this profile.</comment>
+  </data>
+  <data name="Profile_CommandPaletteAgent.HelpText" xml:space="preserve">
+    <value>このプロファイルでコマンド パレットからの委任に使用するエージェントを選択します。この選択は、グローバルな委任エージェント設定より優先されます。</value>
+    <comment>Description for the per-profile command palette agent setting. Here “agent” means an AI agent, not a proxy or human agent.</comment>
+  </data>
+  <data name="Profile_AgentPaneBackend_AgentFormat" xml:space="preserve">
+    <value>{0} · {1}</value>
+    <comment>{Locked="{0}","{1}"} Agent display name replaces {0}; Windows or a WSL distro name replaces {1}.</comment>
+  </data>
+  <data name="Profile_AgentPaneBackend_UnavailableSuffix" xml:space="preserve">
+    <value> (利用不可)</value>
+    <comment>Suffix for a saved per-profile agent backend that is no longer installed.</comment>
+  </data>
   <data name="Profile_SuppressApplicationTitle.Header" xml:space="preserve">
     <value>タイトルの変更を表示しない</value>
     <comment>Header for a control to toggle changes in the app title.</comment>
@@ -1552,6 +1592,10 @@
   <data name="Profile_BellStyleWindow.Content" xml:space="preserve">
     <value>フラッシュ ウィンドウ</value>
     <comment>An option to choose from for the "bell style" setting. When selected, a visual notification is used to notify the user. In this case, the window is flashed.</comment>
+  </data>
+  <data name="Profile_BellStyleNotification.Content" xml:space="preserve">
+    <value>デスクトップ通知</value>
+    <comment>An option to choose from for the "bell style" setting. When selected, a Windows desktop notification (toast) is sent to notify the user.</comment>
   </data>
   <data name="ColorScheme_AddNewButton.Text" xml:space="preserve">
     <value>新規追加</value>
@@ -2197,6 +2241,26 @@
     <value>複数のタブを閉じるときに警告する</value>
     <comment>Header for a control to toggle whether to show a confirm dialog box when closing the application with multiple tabs open.</comment>
   </data>
+  <data name="Globals_ConfirmOnClose.Header" xml:space="preserve">
+    <value>閉じるときに警告する</value>
+    <comment>Header for a dropdown controlling when to show a confirmation dialog before closing.</comment>
+  </data>
+  <data name="Globals_ConfirmOnClose.HelpText" xml:space="preserve">
+    <value>タブまたはウィンドウを閉じる前に確認ダイアログを表示するタイミングを制御します。[常に] を選択すると、ウィンドウを閉じるときにダイアログが表示されます。</value>
+    <comment>Help text associated with Globals_ConfirmOnClose. "Always" refers to Globals_ConfirmOnCloseAlways.Content.</comment>
+  </data>
+  <data name="Globals_ConfirmOnCloseNever.Content" xml:space="preserve">
+    <value>しない</value>
+    <comment>Option associated with Globals_ConfirmOnClose. "Never" means that the system will never display a warning when closing.</comment>
+  </data>
+  <data name="Globals_ConfirmOnCloseAlways.Content" xml:space="preserve">
+    <value>常に</value>
+    <comment>Option associated with Globals_ConfirmOnClose. "Always" means that the system will always display a warning when closing.</comment>
+  </data>
+  <data name="Globals_ConfirmOnCloseAutomatic.Content" xml:space="preserve">
+    <value>複数のタブまたはウィンドウ</value>
+    <comment>Option associated with Globals_ConfirmOnClose. The system will display a warning when multiple tabs or panes are present.</comment>
+  </data>
   <data name="Globals_InputServiceWarning.Header" xml:space="preserve">
     <value>[タッチ キーボードと手書きパネル サービス] が無効になっている場合に警告する</value>
   </data>
@@ -2370,8 +2434,8 @@
     <comment>Accessible name for a control allowing the user to select the icon from a list of built in icons.</comment>
   </data>
   <data name="Nav_NewTabMenu.Content" xml:space="preserve">
-    <value>新しいタブ メニュー</value>
-    <comment>Header for the "new tab menu" menu item. This navigates to a page that lets you see and modify settings related to the app's new tab menu (i.e. profile ordering, nested folders, dividers, etc.)</comment>
+    <value>ドロップダウン メニュー</value>
+    <comment>Header for the "dropdown menu" menu item (formerly "new tab menu"). This navigates to a page that lets you see and modify settings related to the app's dropdown menu (i.e. profile ordering, nested folders, dividers, etc.)</comment>
   </data>
   <data name="NewTabMenuEntry_Separator.Text" xml:space="preserve">
     <value>&lt;区切り&gt;</value>
@@ -2768,12 +2832,23 @@
   <data name="AIAgents_AcpAgent.HelpText" xml:space="preserve"><value>エージェント ペインで使用するエージェントを選択します。互換性のある ACP エージェントは自動的に検出されます。</value><comment>Supplementary description for the agent pane setting. {Locked="ACP"}</comment></data>
   <data name="AIAgents_AcpModel.Header" xml:space="preserve"><value>モデル</value><comment>Header for the setting that specifies the model used by the agent pane agent.</comment></data>
   <data name="AIAgents_AcpModel.HelpText" xml:space="preserve"><value>このエージェントで使用するモデルを選択します。</value><comment>Supplementary description for the model setting.</comment></data>
-  <data name="AIAgents_DelegateAgent.Header" xml:space="preserve"><value>エージェント</value><comment>Header for the setting that specifies which agent CLI handles command palette / on-demand requests.</comment></data>
-  <data name="AIAgents_DelegateAgent.HelpText" xml:space="preserve"><value>コマンド パレットでのクイック アクションに使用するエージェントを選択します。</value><comment>Supplementary description for the command palette agent setting.</comment></data>
+  <data name="AIAgents_DelegateAgent.Header" xml:space="preserve"><value>エージェント CLI</value><comment>{Locked="CLI"} Header for the agent CLI selector in Settings > Agents > Command palette. Here "agent" means an AI intelligent agent (e.g. Copilot, Claude, Gemini), not a proxy or human agent. CLI means command-line interface.</comment></data>
+  <data name="AIAgents_DelegateAgent.HelpText" xml:space="preserve"><value>お好みのエージェント CLI で新しいタブを作成します。必要に応じて、プロンプトとアクティブなペインのコンテキストを含めることができます。
+Alt+Shift+/ プロンプトを入力; Alt+Shift+B 初期プロンプトなしで起動。</value><comment>{Locked="CLI","Alt+Shift+/","Alt+Shift+B"} Agent CLI help in Settings &gt; Agents. Keep exactly one line break between the description and the shortcut reference. The UI renders the hotkeys with the same keycap style as Settings &gt; Actions. Start the description after each shortcut with lowercase where the language uses case. Context comes from the active pane; launching without an initial prompt is still interactive. Separate each hotkey and its description with a space, not a colon.</comment></data>
   <data name="AIAgents_AutoFix.Header" xml:space="preserve"><value>失敗したコマンドの修正候補を自動的に提案する</value><comment>Header for the toggle that enables automatic fix suggestions when commands fail.</comment></data>
   <data name="AIAgents_AutoFix.HelpText" xml:space="preserve"><value>有効にすると、AI エージェントが失敗したコマンドを自動的に分析し、修正案を提案します。無効にすると、失敗したコマンドはステータス バーにクリック可能なヒントを表示します — Ctrl+Alt+. を押すか、ヒントをクリックすると修正をリクエストできます。</value><comment>Supplementary description for the auto-error-detection setting.</comment></data>
+  <data name="AIAgents_SessionManagement.Header" xml:space="preserve">
+    <value>セッション</value>
+    <comment>Title for the setting that controls agent session tracking.</comment>
+  </data>
+  <data name="AIAgents_SessionManagement.HelpText" xml:space="preserve">
+    <value>実行中の AI エージェントと、対応が必要なエージェントを追跡します。</value>
+    <comment>{Locked=qps-ploc,qps-ploca,qps-plocm} Description for the Sessions setting. In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
+  </data>
+  <data name="AIAgents_ShowTokenUsageAndCost.Header" xml:space="preserve"><value>トークン使用量</value><comment>Header for a setting that shows available context-window usage and session cost in the terminal bottom bar. Session cost is reported for the active AI session. Keep 'session cost' generic and do not add a specific unit. Either value may be unavailable.</comment></data>
+  <data name="AIAgents_ShowTokenUsageAndCost.HelpText" xml:space="preserve"><value>利用可能な場合は、残りのコンテキストとセッション コストを表示します</value><comment>Supplementary description for the usage visibility setting. Session cost is reported for the active AI session. Keep 'session cost' generic and do not add a specific unit. Either value may be unavailable.</comment></data>
   <data name="AIAgents_PanePosition.Header" xml:space="preserve"><value>ペインの位置</value><comment>Header for the setting that controls where the agent pane appears relative to the active pane.</comment></data>
-  <data name="AIAgents_PanePosition.HelpText" xml:space="preserve"><value>エージェント ペインをターミナルのどこに開くかを指定します。</value><comment>Supplementary description for the pane position setting.</comment></data>
+  <data name="AIAgents_PanePosition.HelpText" xml:space="preserve"><value>エージェントが表示される場所</value><comment>Supplementary description for the pane position setting.</comment></data>
   <data name="AIAgents_PanePosition_Bottom" xml:space="preserve">
     <value>下</value>
     <comment>Value shown in the agent pane position dropdown (selects which side of the terminal the agent pane opens on). Translation should match the existing FreOverlay_PanePositionBottom string used in the first-run experience.</comment>
@@ -2790,76 +2865,152 @@
     <value>左</value>
     <comment>Value shown in the agent pane position dropdown (selects which side of the terminal the agent pane opens on). Translation should match the existing FreOverlay_PanePositionLeft string used in the first-run experience.</comment>
   </data>
-  <data name="AIAgents_HooksGroupHeader.Text" xml:space="preserve"><value>エージェント Hooks</value><comment>Section header for the Agent Hooks installer (lets users install hook scripts that report agent CLI activity to the agent pane).</comment></data>
-  <data name="AIAgents_HooksInstall.Header" xml:space="preserve"><value>エージェント Hook スクリプトのインストール</value><comment>Header for the Agent Hooks install section.</comment></data>
-  <data name="AIAgents_HooksInstall.HelpText" xml:space="preserve"><value>エージェント間でセッションを追跡します。エージェントのセッション管理に必要です。</value><comment>Help text shown under the expandable section header.</comment></data>
-  <data name="AIAgents_HooksInstallButton.Content" xml:space="preserve"><value>Hooks をインストール</value><comment>Button label that triggers installation of the wt-agent-hooks plugin/extension into all detected agent CLIs (Copilot, Claude, Codex, Gemini).</comment></data>
-  <data name="AIAgents_HooksRefreshButton.Content" xml:space="preserve"><value>再読み込み</value><comment>Button label that re-detects which agent CLIs are present and which already have hooks installed.</comment></data>
-  <data name="Globals_ConfirmOnClose.Header" xml:space="preserve"><value>閉じる前に警告する</value><comment>Header for a dropdown controlling when to show a confirmation dialog before closing.</comment></data>
-  <data name="Globals_ConfirmOnClose.HelpText" xml:space="preserve"><value>タブやウィンドウを閉じる前に確認ダイアログを表示する条件を制御します。"常に" を選ぶと、任意のペインを閉じるときにダイアログが表示されます。</value><comment>Help text associated with Globals_ConfirmOnClose. "Always" refers to Globals_ConfirmOnCloseAlways.Content.</comment></data>
-  <data name="Globals_ConfirmOnCloseNever.Content" xml:space="preserve"><value>表示しない</value><comment>Option associated with Globals_ConfirmOnClose. "Never" means that the system will never display a warning when closing.</comment></data>
-  <data name="Globals_ConfirmOnCloseAlways.Content" xml:space="preserve"><value>常に</value><comment>Option associated with Globals_ConfirmOnClose. "Always" means that the system will always display a warning when closing.</comment></data>
-  <data name="Globals_ConfirmOnCloseAutomatic.Content" xml:space="preserve"><value>複数のタブまたはペイン</value><comment>Option associated with Globals_ConfirmOnClose. The system will display a warning when multiple tabs or panes are present.</comment></data>
-  <data name="Profile_BellStyleNotification.Content" xml:space="preserve"><value>デスクトップ通知</value><comment>An option to choose from for the "bell style" setting. When selected, a Windows desktop notification (toast) is sent to notify the user.</comment></data>
+  <data name="AIAgents_YoloMode.Header" xml:space="preserve"><value>自動承認</value><comment>Header for the Settings toggle that enables automatic approval for the AI agent running in the agent pane.</comment></data>
+  <data name="AIAgents_YoloMode.HelpText" xml:space="preserve"><value>エージェント ペインのエージェントは、エージェント CLI によって提供される完全なアクセス許可で実行されます</value><comment>{Locked="CLI"} Description shown under the automatic approval toggle. Agent means an AI intelligent agent in the agent pane, not a proxy or human representative. Full permissions are provided by the agent CLI.</comment></data>
   <data name="Settings_PortableModeInfoLink.NavigateUri" xml:space="preserve"><value>https://go.microsoft.com/fwlink/?linkid=2229086</value><comment>{Locked}</comment></data>
   <data name="AIAgents_PolicyLocked.Text" xml:space="preserve">
     <value>この設定は組織によって管理されています。</value>
     <comment>Text shown when Group Policy controls this feature. Standard Windows policy notice wording.</comment>
   </data>
-  <data name="AIAgents_HooksInstallingSummary" xml:space="preserve">
-    <value>hooks をインストールしています...</value>
-    <comment>Status summary shown while installing agent session tracking hooks. {Locked="hooks"}</comment>
+  <data name="AIAgents_AutoErrorHandlingTitle.Text" xml:space="preserve">
+    <value>自動エラー処理</value>
+    <comment>Title for the Error detection dropdown in the AI agents settings page.</comment>
   </data>
-  <data name="AIAgents_HooksRemovingCopilotSummary" xml:space="preserve">
-    <value>Copilot hooks を削除しています...</value>
-    <comment>Status summary shown while removing agent session tracking hooks for Copilot. {Locked="Copilot","hooks"}</comment>
+  <data name="AIAgents_AutoErrorHandlingDescription.Text" xml:space="preserve">
+    <value>シェルで失敗したコマンドを自動的に検出し、必要に応じて自動修正のために AI エージェントに送信します。</value>
+    <comment>Umbrella description for the three-state Error detection setting in the AI agents settings page. The Detect errors option is local-only; only Detect and fix errors sends failures to the AI agent. Use the approved product copy verbatim. Here "agent" refers to an AI intelligent agent, not a proxy or human agent.</comment>
   </data>
-  <data name="AIAgents_HooksRemovingClaudeSummary" xml:space="preserve">
-    <value>Claude hooks を削除しています...</value>
-    <comment>Status summary shown while removing agent session tracking hooks for Claude. {Locked="Claude","hooks"}</comment>
+  <data name="AIAgents_AutoErrorHandling_Off" xml:space="preserve">
+    <value>オフ</value>
+    <comment>The third option in the Error detection dropdown. It disables automatic terminal error detection and suggestions.</comment>
   </data>
-  <data name="AIAgents_HooksRemovingGeminiSummary" xml:space="preserve">
-    <value>Gemini hooks を削除しています...</value>
-    <comment>Status summary shown while removing agent session tracking hooks for Gemini. {Locked="Gemini","hooks"}</comment>
+  <data name="AIAgents_AutoErrorHandling_DetectErrorsAutomatically" xml:space="preserve">
+    <value>エラーを検出</value>
+    <comment>The first option in the Error detection dropdown. It enables automatic terminal error detection without sending failures to an AI agent. Here "agent" means an AI intelligent agent, not a proxy or human agent.</comment>
   </data>
-  <data name="AIAgents_HooksRemovingCodexSummary" xml:space="preserve">
-    <value>Codex hooks を削除しています...</value>
-    <comment>Status summary shown while removing agent session tracking hooks for Codex. {Locked="Codex","hooks"}</comment>
+  <data name="AIAgents_AutoErrorHandling_DetectErrorsAndSendToAgentForFixesAutomatically" xml:space="preserve">
+    <value>エラーを検出して修正</value>
+    <comment>The second option in the Error detection dropdown. It enables automatic terminal error detection and sends failures to an AI agent for suggested fixes. Here "agent" means an AI intelligent agent, not a proxy or human agent.</comment>
   </data>
-  <data name="AIAgents_CodexTrustHint.Text" xml:space="preserve">
-    <value>インストール後、Codex で /hooks を実行し、承認して新しいイベント ハンドラーを信頼してください。</value>
-    <comment>One-line reminder shown under the Codex CLI row in the Agent Hooks section. Codex requires per-command trust before hook handlers run; users must execute /hooks inside Codex and approve. {Locked="/hooks","Codex"}</comment>
+  <data name="AIAgents_AutoErrorHandlingComboBox.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>自動エラー処理</value>
+    <comment>Automation name for the Error detection dropdown in the AI agents settings page.</comment>
   </data>
-  <data name="AIAgents_HooksLocateWtaFailedSummary" xml:space="preserve">
-    <value>失敗: wta.exe が見つかりませんでした</value>
-    <comment>Failure summary shown when the Settings UI cannot find the WTA helper executable. {Locked="wta.exe"}</comment>
+  <data name="AIAgents_CustomModels.Header" xml:space="preserve">
+    <value>カスタム エンドポイントまたはローカル モデル</value>
+    <comment>Section header for user-configured remote endpoints or locally hosted models.</comment>
   </data>
-  <data name="AIAgents_HooksRemovedSummary" xml:space="preserve">
-    <value>Hooks を削除しました。以前の hooks を破棄するには、開いているエージェントを再起動してください。</value>
-    <comment>Success summary shown after removing agent session tracking hooks. {Locked="Hooks","hooks"}</comment>
+  <data name="AIAgents_CustomModels.HelpText" xml:space="preserve">
+    <value>エージェントを独自の OpenAI 互換エンドポイントに接続します。</value>
+    <comment>{Locked="OpenAI"} Caption under the custom endpoint section title. Include any locale-appropriate spacing before the inline AIAgents_CustomModelsLearnMore hyperlink at the end of this value.</comment>
   </data>
-  <data name="AIAgents_HooksInstalledSummary" xml:space="preserve">
-    <value>Hooks をインストールしました。新しい hooks を反映するには、開いているエージェントを再起動してください。</value>
-    <comment>Success summary shown after installing agent session tracking hooks. {Locked="Hooks","hooks"}</comment>
+  <data name="AIAgents_CustomModelsLearnMore" xml:space="preserve">
+    <value>詳細情報</value>
+    <comment>Inline hyperlink text that follows AIAgents_CustomModels.HelpText and opens documentation about custom providers.</comment>
   </data>
-  <data name="AIAgents_HooksRemovalFailedSummary" xml:space="preserve">
-    <value>Hook の削除に失敗しました。詳細については %LOCALAPPDATA%\IntelligentTerminal\logs\ を確認してください。</value>
-    <comment>Failure summary shown when removing agent session tracking hooks fails. {Locked="Hook","%LOCALAPPDATA%","IntelligentTerminal","logs"}</comment>
+  <data name="AIAgents_CustomProviderUnsupportedForAgent" xml:space="preserve">
+    <value>{0} は、OpenAI 互換のカスタム Chat Completions プロバイダーをサポートしていません。保存済みのプロバイダーは、GitHub Copilot または OpenCode に切り替えると使用できます。</value>
+    <comment>{Locked="OpenAI","Chat Completions","GitHub Copilot","OpenCode"} {0} is replaced with the current AI agent display name. Explains that saved providers remain available for supported agents.</comment>
   </data>
-  <data name="AIAgents_HooksInstallationFailedSummary" xml:space="preserve">
-    <value>Hooks のインストールに失敗しました。詳細については %LOCALAPPDATA%\IntelligentTerminal\logs\wta-install-hooks.log を確認してください。</value>
-    <comment>Failure summary shown when installing agent session tracking hooks fails. {Locked="Hooks","%LOCALAPPDATA%","IntelligentTerminal","logs","wta-install-hooks.log"}</comment>
+  <data name="AIAgents_CustomProviderApiKeyMissing.Text" xml:space="preserve">
+    <value>API キーがありません。このプロバイダーを削除して、もう一度追加してください。</value>
+    <comment>Inline error below a cloud BYOK provider when its saved Windows Credential Manager API key is missing. {Locked="API","BYOK"}</comment>
   </data>
-  <data name="AIAgents_AutoErrorDetectionTitle.Text" xml:space="preserve">
-    <value>エラーの自動検出</value>
+  <data name="AIAgents_CustomProviderCredentialRemovalFailed" xml:space="preserve">
+    <value>保存された API キーを Windows 資格情報マネージャーから削除できませんでした。"{0}" という名前の汎用資格情報を手動で削除してから、もう一度お試しください。</value>
+    <comment>Error shown when Windows Credential Manager fails to delete a saved BYOK provider key. {0} is replaced with the exact Generic Credential target so the user can remove it manually. {Locked="API","BYOK","{0}"}</comment>
   </data>
-  <data name="AIAgents_AutoErrorDetectionCaption.Text" xml:space="preserve">
-    <value>Intelligent Terminal にシェルへのアクセスを許可し、エラーを自動的に検出します。PowerShell および Windows PowerShell で利用できます。</value>
+  <data name="AIAgents_CustomProviderRemove.Content" xml:space="preserve">
+    <value>削除</value>
+    <comment>Button that removes a custom model provider.</comment>
   </data>
-  <data name="AIAgents_AutoErrorSuggestionTitle.Text" xml:space="preserve">
-    <value>エラーの自動提案</value>
+  <data name="AIAgents_CustomProviderAddHeader.Text" xml:space="preserve">
+    <value>カスタム エンドポイントの追加</value>
+    <comment>Heading above the form for adding a custom provider endpoint.</comment>
   </data>
-  <data name="AIAgents_AutoErrorSuggestionCaption.Text" xml:space="preserve">
-    <value>Intelligent Terminal がエラーをエージェントに送信して、修正を自動的に提案することを許可します。</value>
+  <data name="AIAgents_CustomProviderBaseUrl.Header" xml:space="preserve">
+    <value>ベース URL</value>
+    <comment>Header for the custom provider endpoint input. {Locked="URL"}</comment>
+  </data>
+  <data name="AIAgents_CustomProviderBaseUrl.PlaceholderText" xml:space="preserve">
+    <value>https://api.example.com/v1</value>
+    <comment>{Locked="https://api.example.com/v1"} Example of a valid OpenAI-compatible API root shown inside the custom provider endpoint input.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderBaseUrlHint.Text" xml:space="preserve">
+    <value>OpenAI 互換のルートを含めます (例: https://api.openai.com/v1 または https://api.together.xyz/v1)。</value>
+    <comment>{Locked="OpenAI","https://api.openai.com/v1","https://api.together.xyz/v1"} Hint below the custom provider endpoint input.</comment>
+  </data>
+  <data name="AIAgents_CustomModelId.Header" xml:space="preserve">
+    <value>モデル ID</value>
+    <comment>Header for the custom provider model identifier input. {Locked="ID"}</comment>
+  </data>
+  <data name="AIAgents_CustomModelId.PlaceholderText" xml:space="preserve">
+    <value>gpt-4o</value>
+    <comment>{Locked="gpt-4o"} Example of a valid provider model identifier shown inside the custom model ID input.</comment>
+  </data>
+  <data name="AIAgents_CustomModelIdHint.Text" xml:space="preserve">
+    <value>エンドポイントが想定するモデル名を、プロバイダーの表記どおりに入力します。</value>
+    <comment>Hint below the custom model ID input.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderApiKey.Header" xml:space="preserve">
+    <value>API キー (省略可能)</value>
+    <comment>Header for the optional custom provider credential input. {Locked="API"}</comment>
+  </data>
+  <data name="AIAgents_CustomProviderApiKey.PlaceholderText" xml:space="preserve">
+    <value>sk-...</value>
+    <comment>{Locked="sk-..."} Example API key format shown inside the optional custom provider credential input.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderApiKeyHint.Text" xml:space="preserve">
+    <value>エンドポイントで認証が不要な場合は空白のままにします。Windows 資格情報マネージャーに保存されます。</value>
+    <comment>{Locked="API"} Hint below the optional custom provider credential input. Use the established localized product name for Windows Credential Manager.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderAdd.Content" xml:space="preserve">
+    <value>エンドポイントの追加</value>
+    <comment>Button in the final custom provider row that reveals the fields for adding another endpoint.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderSave.Content" xml:space="preserve">
+    <value>追加して選択</value>
+    <comment>Button that adds a custom provider model and selects it as the current model.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderSaveHint.Text" xml:space="preserve">
+    <value>これによりモデルが追加され、現在のモデルとして選択されます</value>
+    <comment>Supporting text beside the button that adds and selects a custom provider model.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderCancel.Content" xml:space="preserve">
+    <value>キャンセル</value>
+    <comment>Button that cancels adding a provider and restores the Add endpoint row.</comment>
+  </data>
+  <data name="AIAgents_BYOKModelDisplayName" xml:space="preserve">
+    <value>{} (BYOK)</value>
+    <comment>{Locked="{}","BYOK"} {} is replaced with the provider-specific model identifier.</comment>
+  </data>
+  <data name="AIAgents_OpenAICompatibleModelDescription" xml:space="preserve">
+    <value>{} | {} | OpenAI 互換</value>
+    <comment>{Locked="{}","OpenAI"} The first {} is replaced with the provider name; the second is replaced with its location.</comment>
+  </data>
+  <data name="AIAgents_YoloGeminiInfo.Message" xml:space="preserve"><value>Gemini による自動承認は、信頼されたワークスペースに制限されています</value><comment>{Locked="Gemini"} Single-line InfoBar message shown on the AI Agents settings page when automatic approval is on and the selected default provider is Gemini. Gemini restricts automatic approval to trusted workspaces.</comment></data>
+  <data name="AIAgents_CustomAgentRemove.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>削除</value>
+    <comment>Accessible name for the X button that removes a custom agent from the agent list.</comment>
+  </data>
+  <data name="AIAgents_CustomAgentRemove.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>削除</value>
+    <comment>Tooltip for the X button that removes a custom agent from the agent list.</comment>
+  </data>
+  <data name="Globals_TabLayout.HelpText" xml:space="preserve">
+    <value>新しいサイドバー表示と従来の水平タブ表示を切り替えます</value>
+    <comment>A description for what the &quot;tab layout&quot; setting does. Presented near &quot;Globals_TabLayout.Header&quot;.</comment>
+  </data>
+  <data name="Globals_TabLayoutHorizontal.Content" xml:space="preserve">
+    <value>水平</value>
+    <comment>An option to choose from for the &quot;tab layout&quot; setting. When selected, tabs run across the top of the window.</comment>
+  </data>
+  <data name="Globals_TabLayoutVertical.Content" xml:space="preserve">
+    <value>サイドバー</value>
+    <comment>An option to choose from for the &quot;tab layout&quot; setting. When selected, tabs run down the left side of the window in a resizable sidebar. Use the same translation as FreOverlay_TabModeSidebar in TerminalApp.</comment>
+  </data>
+  <data name="Globals_TabLayout.Header" xml:space="preserve">
+    <value>タブモード</value>
+    <comment>Header for a control to choose whether tabs are laid out horizontally across the top of the window or vertically down the left side.</comment>
   </data>
 </root>

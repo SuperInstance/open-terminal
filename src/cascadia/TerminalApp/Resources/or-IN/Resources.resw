@@ -125,6 +125,7 @@
   </data>
   <data name="FreOverlay_WelcomeSubtitlePrefix" xml:space="preserve">
     <value>ତ୍ରୁଟି ବ୍ୟାଖ୍ୟା କରିବା, କମାଣ୍ଡ ପ୍ରସ୍ତୁତ କରିବା ଏବଂ କାର୍ଯ୍ୟ ଅନବ୍ଲକ କରିବାରେ ସାହାଯ୍ୟ କରିବା ପାଇଁ ଆପଣଙ୍କ ଅନ୍ତର୍ନିର୍ମିତ ସହାୟକ ସେଟଅପ୍ କରନ୍ତୁ, ଆପଣ ଯେଉଁଠାରେ କାମ କରନ୍ତି ସେଠାରେ ହିଁ। </value>
+    <comment>Text shown immediately before the FreOverlay_WelcomeSubtitleLink hyperlink. Include any spacing needed to separate the prefix from the link in the target language.</comment>
   </data>
   <data name="FreOverlay_WelcomeSubtitleLink" xml:space="preserve">
     <value>ଇଣ୍ଟେଲିଜେଣ୍ଟ ଟର୍ମିନାଲ ବିଷୟରେ ଅଧିକ ଜାଣନ୍ତୁ</value>
@@ -149,15 +150,35 @@
     <value>ପରବର୍ତ୍ତୀ</value>
   </data>
   <!-- ═══ FRE Settings Page ═══ -->
+  <data name="FreOverlay_PolicyLocked" xml:space="preserve">
+    <value>ଏହି ସେଟିଂ ଆପଣଙ୍କ ସଂସ୍ଥା ଦ୍ୱାରା ପରିଚାଳିତ।</value>
+    <comment>Text shown below a first-run setting when Group Policy manages or restricts the feature. The associated control may be disabled or filtered to allowed choices. Standard Windows policy notice wording.</comment>
+  </data>
   <data name="FreOverlay_SettingsTitle.Text" xml:space="preserve">
-    <value>ଇଣ୍ଟେଲିଜେଣ୍ଟ ଟର୍ମିନାଲ କୁ ସ୍ୱାଗତ</value>
-    <comment>{Locked=qps-ploc,qps-ploca,qps-plocm} "Intelligent Terminal" is the product name.</comment>
+    <value>ଆପଣଙ୍କ ଟର୍ମିନାଲ୍ ସେଟ୍ ଅପ୍ କରନ୍ତୁ</value>
   </data>
   <data name="FreOverlay_SettingsSubtitlePrefix" xml:space="preserve">
     <value>ବର୍ତ୍ତମାନ କ'ଣ ସେଟଅପ୍ କରିବେ ତାହା ବାଛନ୍ତୁ। ଆପଣ ଏଗୁଡ଼ିକୁ ଯେକୌଣସି ସମୟରେ ପରିବର୍ତ୍ତନ କରିପାରିବେ। </value>
+    <comment>Text shown immediately before the FreOverlay_SettingsSubtitleLink hyperlink. Include any spacing needed to separate the prefix from the link in the target language.</comment>
   </data>
   <data name="FreOverlay_SettingsSubtitleLink" xml:space="preserve">
     <value>ଡାଟା କିପରି ବ୍ୟବହୃତ ହୁଏ ତାହା ଜାଣନ୍ତୁ</value>
+  </data>
+  <data name="FreOverlay_TabModeLabel.Text" xml:space="preserve">
+    <value>ଟ୍ୟାବ୍ ମୋଡ୍</value>
+    <comment>Label for the first-run dropdown that chooses the layout of terminal tabs, not indentation or the keyboard Tab key.</comment>
+  </data>
+  <data name="FreOverlay_TabModeDescription.Text" xml:space="preserve">
+    <value>ନୂଆ ସାଇଡବାର୍ ଏବଂ ପାରମ୍ପରିକ ଭୂସମାନ୍ତର ଟ୍ୟାବ୍ ଦୃଶ୍ୟ ମଧ୍ୟରେ ସୁଇଚ୍ କରନ୍ତୁ</value>
+    <comment>Help text for the first-run tab layout dropdown. The sidebar shows tabs vertically in a side panel; the classic layout shows tabs horizontally across the top. This is a choice between layouts, not an on/off switch.</comment>
+  </data>
+  <data name="FreOverlay_TabModeSidebar" xml:space="preserve">
+    <value>ସାଇଡବାର୍</value>
+    <comment>Dropdown option for displaying terminal tabs vertically in a side panel. This is the same layout called Vertical in Settings.</comment>
+  </data>
+  <data name="FreOverlay_TabModeHorizontal" xml:space="preserve">
+    <value>ଭୂସମାନ୍ତର</value>
+    <comment>Dropdown option for displaying terminal tabs across the top of the window. Use the same terminology as the Horizontal tab layout option in Settings.</comment>
   </data>
   <data name="FreOverlay_AgentLabel.Text" xml:space="preserve">
     <value>ଏଜେଣ୍ଟ</value>
@@ -165,46 +186,63 @@
   </data>
   <data name="FreOverlay_AgentDescription.Text" xml:space="preserve">
     <value>ଏଜେଣ୍ଟ ପେନ୍‌ରେ ବ୍ୟବହୃତ ଏବଂ ACP ସମର୍ଥନ କରୁଥିବା ଏଜେଣ୍ଟ ବାଛନ୍ତୁ।</value>
-    <comment>{Locked="ACP"} In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
+    <comment>{Locked="ACP"} Description for choosing an AI agent for the agent pane. The selected agent must support ACP. "ACP" is rendered as a hyperlink at runtime and must appear exactly once. In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
   </data>
-  <data name="FreOverlay_AgentInstallHint.Text" xml:space="preserve">
-    <value>ଏହି ଏଜେଣ୍ଟ ପାଇଁ Node.js ଏବଂ NPX ଆବଶ୍ୟକ, ଯଦି ପୂର୍ବରୁ ନଥାଏ ତେବେ ସ୍ୱୟଂଚାଳିତ ଭାବରେ ଇନ୍‌ଷ୍ଟଲ୍ ହେବ।</value>
-    <comment>{Locked="Node.js","NPX"} In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
+  <data name="FreOverlay_ErrorDetectionLabel.Text" xml:space="preserve">
+    <value>ତ୍ରୁଟି ଚିହ୍ନଟ</value>
+    <comment>Header for the dropdown that configures how the terminal handles failed commands.</comment>
   </data>
-  <data name="FreOverlay_AutoErrorLabel.Text" xml:space="preserve">
-    <value>ସ୍ୱୟଂଚାଳିତ ତ୍ରୁଟି ପରାମର୍ଶ</value>
+  <data name="FreOverlay_ErrorDetectionDescription.Text" xml:space="preserve">
+    <value>ଶେଲ୍‌ରେ ବିଫଳ କମାଣ୍ଡଗୁଡ଼ିକୁ ସ୍ୱୟଂଚାଳିତ ଭାବରେ ଚିହ୍ନଟ କରନ୍ତୁ ଏବଂ ସ୍ୱୟଂଚାଳିତ ସମାଧାନ ପାଇଁ ଇଚ୍ଛାନୁସାରେ ସେଗୁଡ଼ିକୁ ଆପଣଙ୍କ ଏଜେଣ୍ଟକୁ ପଠାନ୍ତୁ।</value>
+    <comment>Description for the error-detection dropdown in the first-run wizard. The dropdown includes detect-only, detect-and-fix, and off modes; the selected mode controls whether shell errors are detected and whether failed commands are automatically sent to the selected AI agent. In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
   </data>
-  <data name="FreOverlay_AutoErrorDescription.Text" xml:space="preserve">
-    <value>Intelligent Terminal କୁ ସ୍ୱୟଂଚାଳିତ ଭାବରେ ସମାଧାନ ପରାମର୍ଶ ଦେବାକୁ ଆପଣଙ୍କ ଏଜେଣ୍ଟକୁ ତ୍ରୁଟି ପଠାଇବାକୁ ଅନୁମତି ଦିଅନ୍ତୁ।</value>
-    <comment>{Locked=qps-ploc,qps-ploca,qps-plocm} "Intelligent Terminal" is the product name.</comment>
+  <data name="FreOverlay_ErrorDetectionDetectOption.Content" xml:space="preserve">
+    <value>ତ୍ରୁଟି ଚିହ୍ନଟ କରନ୍ତୁ</value>
+    <comment>Dropdown option that detects shell errors without automatically sending failed commands to the selected AI agent.</comment>
+  </data>
+  <data name="FreOverlay_ErrorDetectionAutoFixOption.Content" xml:space="preserve">
+    <value>ତ୍ରୁଟି ଚିହ୍ନଟ କରି ଠିକ୍ କରନ୍ତୁ</value>
+    <comment>Dropdown option that detects shell errors and automatically sends failed commands to the selected AI agent. In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
+  </data>
+  <data name="FreOverlay_ErrorDetectionOffOption.Content" xml:space="preserve">
+    <value>ବନ୍ଦ</value>
+    <comment>Dropdown option that disables automatic shell error detection.</comment>
+  </data>
+  <data name="FreOverlay_ErrorDetectionAutoFixPolicyLocked" xml:space="preserve">
+    <value>ସ୍ୱୟଂଚାଳିତ ସମାଧାନ ବିକଳ୍ପ ଆପଣଙ୍କ ସଂସ୍ଥା ଦ୍ୱାରା ପରିଚାଳିତ।</value>
+    <comment>Text shown below the error-detection dropdown when Group Policy disables its automatic-fix option.</comment>
   </data>
   <data name="FreOverlay_SessionLabel.Text" xml:space="preserve">
-    <value>ସେସନ୍ ପରିଚାଳନା</value>
+    <value>ସେସନ୍‌ଗୁଡ଼ିକ</value>
   </data>
   <data name="FreOverlay_SessionDescription.Text" xml:space="preserve">
-    <value>ଇଣ୍ଟେଲିଜେଣ୍ଟ ଟର୍ମିନାଲ କୁ ଆପଣଙ୍କ ଚାଲୁଥିବା କିମ୍ବା ସକ୍ରିୟ ଏଜେଣ୍ଟମାନଙ୍କ ସ୍ଥିତି ଟ୍ରାକ୍ କରିବା ପାଇଁ ଅନୁମତି ଦିଅନ୍ତୁ।</value>
-    <comment>{Locked=qps-ploc,qps-ploca,qps-plocm} "Intelligent Terminal" is the product name. In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
-  </data>
-  <data name="FreOverlay_SessionHint.Text" xml:space="preserve">
-    <value>ଏହା ସକ୍ଷମ କଲେ ଆପଣଙ୍କ ଏଜେଣ୍ଟମାନଙ୍କ ମଧ୍ୟରେ ସେସନ୍ ଟ୍ରାକ୍ କରିବା ପାଇଁ ଇଣ୍ଟିଗ୍ରେସନ୍ hooks ଇନ୍‌ଷ୍ଟଲ୍ ହେବ।</value>
-    <comment>{Locked="hooks"} In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
-  </data>
-  <data name="FreOverlay_PanePositionLabel.Text" xml:space="preserve">
-    <value>ପେନ୍ ସ୍ଥାନ</value>
-  </data>
-  <data name="FreOverlay_PanePositionDescription.Text" xml:space="preserve">
-    <value>ଆପଣଙ୍କ ଟର୍ମିନାଲ ସାପେକ୍ଷରେ ଏଜେଣ୍ଟ ପେନ୍ କେଉଁଠାରେ ଖୋଲେ।</value>
+    <value>କେଉଁ ଏଜେଣ୍ଟଗୁଡ଼ିକ ଚାଲୁଛି ଏବଂ କେଉଁଗୁଡ଼ିକ ଆପଣଙ୍କ ଧ୍ୟାନ ଆବଶ୍ୟକ କରୁଛି ତାହା ଟ୍ରାକ୍ କରନ୍ତୁ।</value>
     <comment>In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
   </data>
+  <data name="FreOverlay_ShowTokenUsageAndCostLabel.Text" xml:space="preserve"><value>ଟୋକନ୍ ବ୍ୟବହାର</value><comment>Header for a first-run toggle that shows remaining context and session cost in the terminal bottom bar.</comment></data>
+  <data name="FreOverlay_ShowTokenUsageAndCostDescription.Text" xml:space="preserve"><value>ଉପଲବ୍ଧ ଥିବାବେଳେ ଅବଶିଷ୍ଟ ପ୍ରସଙ୍ଗ ଏବଂ ସେସନ୍ ମୂଲ୍ୟ ଦେଖାନ୍ତୁ।</value><comment>Description for the token-usage visibility toggle in the first-run wizard. Either value may be unavailable.</comment></data>
+  <data name="FreOverlay_PanePositionLabel.Text" xml:space="preserve">
+    <value>ଏଜେଣ୍ଟର ସ୍ଥାନ</value>
+  </data>
+  <data name="FreOverlay_PanePositionDescription.Text" xml:space="preserve">
+    <value>ଆପଣଙ୍କ ଏଜେଣ୍ଟ ରହୁଥିବା ସ୍ଥାନ।</value>
+    <comment>Description for choosing where the AI agent pane appears within the terminal window. In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
+  </data>
   <data name="FreOverlay_SaveButton.Content" xml:space="preserve">
-    <value>ସଞ୍ଚୟ କରନ୍ତୁ</value>
+    <value>ଆରମ୍ଭ କରନ୍ତୁ</value>
   </data>
   <!-- ═══ FRE Dynamic strings (used from C++ code-behind) ═══ -->
-  <data name="FreOverlay_AgentStatusWillInstall" xml:space="preserve">
-    <value> (ଇନ୍‌ଷ୍ଟଲ୍ ହେବ)</value>
+  <data name="FreOverlay_AgentStatusSetupRequired" xml:space="preserve">
+    <value> (ସେଟଅପ୍ ଆବଶ୍ୟକ)</value>
+    <comment>Status suffix appended directly to the GitHub Copilot display name when Copilot is confirmed missing and will be set up later in the Agent pane. Include any spacing and punctuation needed to separate the suffix from the agent name.</comment>
   </data>
   <data name="FreOverlay_AgentStatusInstalled" xml:space="preserve">
     <value> (ଇନ୍‌ଷ୍ଟଲ୍ ଅଛି)</value>
+    <comment>Status suffix appended directly to an AI agent display name when that agent is already installed. Include any spacing and punctuation needed to separate the suffix from the agent name.</comment>
+  </data>
+  <data name="FreOverlay_AgentProbeUnavailable" xml:space="preserve">
+    <value>କେଉଁ AI ଏଜେଣ୍ଟଗୁଡ଼ିକ ଇନ୍‌ଷ୍ଟଲ୍ ହୋଇଛି ତାହା ଆମେ ଯାଞ୍ଚ କରିପାରିଲୁ ନାହିଁ। ଏଜେଣ୍ଟ ଫଳକ ଖୋଲିଲେ ଉପଲବ୍ଧତା ପୁଣି ଯାଞ୍ଚ କରାଯିବ।</value>
+    <comment>Non-blocking warning shown in the first-run settings page when installed AI agents could not be detected. In this context, "Agent pane" is the product UI that hosts an AI agent.</comment>
   </data>
   <data name="FreOverlay_PanePositionBottom" xml:space="preserve">
     <value>ତଳ</value>
@@ -221,18 +259,93 @@
   <data name="FreOverlay_SettingUp" xml:space="preserve">
     <value>ସେଟଅପ୍ ହେଉଛି...</value>
   </data>
-  <data name="FreOverlay_InstallErrorCopilot" xml:space="preserve">
-    <value>⚠ GitHub Copilot ଇନ୍‌ଷ୍ଟଲ୍ କରିବାରେ ବିଫଳ। ଆପଣଙ୍କ ନେଟୱର୍କ ଯାଞ୍ଚ କରନ୍ତୁ ଏବଂ ପୁଣି ଚେଷ୍ଟା କରନ୍ତୁ।</value>
-    <comment>{Locked="GitHub Copilot"}</comment>
+  <data name="FreOverlay_HookingUpAgent" xml:space="preserve">
+    <value>{0}କୁ ଆପଣଙ୍କ ଏଜେଣ୍ଟ ପେନ୍ ସହିତ ସଂଯୋଗ କରାଯାଉଛି...</value>
+    <comment>Progress text shown while preparing the selected AI agent. {0} is the localized agent display name, for example "GitHub Copilot". In this context, "agent" refers to an AI agent, not a human representative.</comment>
+  </data>
+  <data name="FreOverlay_HookingUpAgentFallback" xml:space="preserve">
+    <value>ଆପଣଙ୍କ ଏଜେଣ୍ଟ ପେନ୍‌କୁ ସଂଯୋଗ କରାଯାଉଛି...</value>
+    <comment>Progress text shown while preparing an AI agent when its display name is unavailable. In this context, "agent" refers to an AI agent, not a human representative.</comment>
+  </data>
+  <data name="FreOverlay_TurningOnErrorDetection" xml:space="preserve">
+    <value>ତ୍ରୁଟି ଚିହ୍ନଟ ଚାଲୁ କରାଯାଉଛି...</value>
+  </data>
+  <data name="FreOverlay_TurningOnSessions" xml:space="preserve">
+    <value>ସେସନ୍‌ଗୁଡ଼ିକ ଚାଲୁ କରାଯାଉଛି...</value>
+  </data>
+  <data name="FreOverlay_ProgressCompleted" xml:space="preserve">
+    <value>ସମ୍ପୂର୍ଣ୍ଣ ହେଲା</value>
+    <comment>Accessible status for a completed step in the FRE setup progress checklist.</comment>
+  </data>
+  <data name="FreOverlay_ProgressWarning" xml:space="preserve">
+    <value>ଏକ ଚେତାବନୀ ସହିତ ସମ୍ପୂର୍ଣ୍ଣ ହେଲା</value>
+    <comment>Accessible status for a non-blocking warning in the FRE setup progress checklist.</comment>
+  </data>
+  <data name="FreOverlay_ProgressFailed" xml:space="preserve">
+    <value>ବିଫଳ ହେଲା</value>
+    <comment>Accessible status for a failed step in the FRE setup progress checklist.</comment>
+  </data>
+  <data name="FreOverlay_ProgressAccessibleStatus" xml:space="preserve">
+    <value>{0}, {1}</value>
+    <comment>Accessible name for a completed FRE setup step. {0} is the step label and {1} is its result, such as "Completed" or "Failed".</comment>
+  </data>
+  <data name="FreOverlay_InstallError_BlockedByPolicy" xml:space="preserve">
+    <value>Windows Package Manager ନୀତି ଦ୍ୱାରା {0} ର ଇନ୍‌ଷ୍ଟଲେସନ୍ ଅବରୋଧ କରାଯାଇଛି। ଆପଣ ଯଦି ପରିଚାଳିତ ଡିଭାଇସ୍‌ରେ ଅଛନ୍ତି, ତେବେ ଆପଣଙ୍କ IT ଆଡମିନ୍‌ଙ୍କୁ ସମ୍ପର୍କ କରନ୍ତୁ।</value>
+    <comment>FRE setup error. {0} is the package display name. Shown when winget reports BlockedByPolicy or an equivalent policy-related HRESULT.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_Generic" xml:space="preserve">
+    <value>{0} ଇନ୍‌ଷ୍ଟଲ୍ କରିପାରିଲା ନାହିଁ (ତ୍ରୁଟି କୋଡ୍ {1})। ବିବରଣୀ ପାଇଁ ଲଗ୍ ଦେଖନ୍ତୁ, କିମ୍ବା {0} କୁ ମାନୁଆଲ୍ ଭାବେ ଇନ୍‌ଷ୍ଟଲ୍ କରନ୍ତୁ।</value>
+    <comment>FRE setup error fallback. {0} is the package display name (appears twice). {1} is a pre-formatted HRESULT string like "0x80190194". Shown for failure causes we don't have a more specific message for.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_GenericNoCode" xml:space="preserve">
+    <value>{0} ଇନ୍‌ଷ୍ଟଲ୍ କରିପାରିଲା ନାହିଁ। ବିବରଣୀ ପାଇଁ ଲଗ୍ ଦେଖନ୍ତୁ, କିମ୍ବା {0} କୁ ମାନୁଆଲ୍ ଭାବେ ଇନ୍‌ଷ୍ଟଲ୍ କରନ୍ତୁ।</value>
+    <comment>FRE setup error fallback used when no actionable error code is available (e.g. the catalog connect/search failed before an installer ever ran). {0} is the package display name (appears twice).</comment>
+  </data>
+  <data name="FreOverlay_InstallError_InstallerFailed" xml:space="preserve">
+    <value>{0} ଇନ୍‌ଷ୍ଟଲର୍ ଏକ ତ୍ରୁଟି ରିପୋର୍ଟ୍ କରିଛି (କୋଡ୍ {1})। ବିବରଣୀ ପାଇଁ ଲଗ୍ ଯାଞ୍ଚ କରନ୍ତୁ, କିମ୍ବା {0} କୁ ମାନୁଆଲ୍ ଭାବେ ଇନ୍‌ଷ୍ଟଲ୍ କରନ୍ତୁ।</value>
+    <comment>FRE setup error. {0} is the package display name (appears twice). {1} is the installer-reported error code as a decimal number (e.g. MSI 1603). Shown when winget reached the install phase but the installer itself failed.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_Network" xml:space="preserve">
+    <value>{0} ଇନ୍‌ଷ୍ଟଲ୍ କରୁଥିବାବେଳେ Windows Package Manager ସହିତ ସଂଯୋଗ ହୋଇପାରିଲା ନାହିଁ। ଆପଣଙ୍କ ଇଣ୍ଟରନେଟ୍ ସଂଯୋଗ ଯାଞ୍ଚ କରନ୍ତୁ (VPN, proxy, କିମ୍ବା firewall ଏହାକୁ ଅବରୋଧ କରୁଥାଇପାରେ) ଏବଂ ପୁଣି ଚେଷ୍ଟା କରନ୍ତୁ।</value>
+    <comment>{Locked="VPN"} FRE setup error. {0} is the package display name (FreOverlay_PackageDisplayName_Copilot or _Node). Shown when winget couldn't reach its catalog or the package download failed with a network-class HRESULT.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_NoCompatibleInstaller" xml:space="preserve">
+    <value>ଏହି ସିଷ୍ଟମ୍‌ରେ {0} ପାଇଁ କୌଣସି ସୁସଙ୍ଗତ ଇନ୍‌ଷ୍ଟଲର୍ ଉପଲବ୍ଧ ନାହିଁ (OS ସଂସ୍କରଣ କିମ୍ବା ଆର୍କିଟେକ୍ଚର ସମର୍ଥିତ ନ ହୋଇପାରେ)। {0} କୁ ମାନୁଆଲ୍ ଭାବେ ଇନ୍‌ଷ୍ଟଲ୍ କରନ୍ତୁ।</value>
+    <comment>FRE setup error. {0} is the package display name (appears twice). Shown when winget returned NoApplicableInstallers — the manifest exists but no installer entry matches this OS/arch/scope.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_PackageNotFound" xml:space="preserve">
+    <value>Windows Package Manager କ୍ୟାଟାଲଗ୍‌ରେ {0} ମିଳିଲା ନାହିଁ। winget ସ୍ରୋତଗୁଡ଼ିକୁ ରିଫ୍ରେଶ୍ କରିବାକୁ ଚେଷ୍ଟା କରନ୍ତୁ, କିମ୍ବା {0} କୁ ମାନୁଆଲ୍ ଭାବେ ଇନ୍‌ଷ୍ଟଲ୍ କରନ୍ତୁ।</value>
+    <comment>{Locked="winget"} FRE setup error. {0} is the package display name (appears twice). Shown when no manifest with the requested package ID was returned from the catalog search.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_Timeout" xml:space="preserve">
+    <value>{0} ଇନ୍‌ଷ୍ଟଲ୍ କରିବାକୁ 20 ମିନିଟ୍‌ରୁ ଅଧିକ ସମୟ ଲାଗିଲା। Intelligent Terminal ଅପେକ୍ଷା କରିବା ବନ୍ଦ କଲା, କିନ୍ତୁ ଇନ୍‌ଷ୍ଟଲର୍ ଏପର୍ଯ୍ୟନ୍ତ ପୃଷ୍ଠଭୂମିରେ ଚାଲୁଥାଇପାରେ। Task Manager ଯାଞ୍ଚ କରନ୍ତୁ, କିମ୍ବା ପରେ ପୁଣି ଚେଷ୍ଟା କରନ୍ତୁ।</value>
+    <comment>{Locked="Intelligent Terminal","Task Manager"} FRE setup error. {0} is the package display name. Shown when our 20-minute hard timeout expired before the install completed.</comment>
+  </data>
+  <data name="FreOverlay_InstallErrorHooks" xml:space="preserve">
+    <value>session hooks ଇନ୍‌ଷ୍ଟଲ୍ କରିବାରେ ବିଫଳ। ସେସନ୍ ପରିଚାଳନା ବନ୍ଦ କରାଯାଇଛି। ଆପଣ ଏହାକୁ ପୁଣି ସକ୍ରିୟ କରି ପୁଣି ଚେଷ୍ଟା କରିପାରିବେ, କିମ୍ବା ଏହା ବିନା ଜାରି ରଖିବାକୁ ସେଭ୍ କରନ୍ତୁ।</value>
+    <comment>{Locked="hooks"} FRE setup error shown when session hooks cannot be installed. Session management is turned off so setup can continue, and the user may re-enable it to retry.</comment>
+  </data>
+  <data name="FreOverlay_InstallErrorShellIntegration" xml:space="preserve">
+    <value>ସେଲ୍ ଏକୀକରଣ ଇନ୍‌ଷ୍ଟଲ୍ କରିବାରେ ବିଫଳ। ତ୍ରୁଟି ଚିହ୍ନଟ ବନ୍ଦ କରାଯାଇଛି। ଆପଣ ଏହାକୁ ପୁଣି ସକ୍ରିୟ କରି ପୁଣି ଚେଷ୍ଟା କରିପାରିବେ, କିମ୍ବା ଏହା ବିନା ଜାରି ରଖିବାକୁ ସେଭ୍ କରନ୍ତୁ।</value>
+    <comment>FRE setup error shown when shell integration cannot be installed. Error detection is turned off so setup can continue, and the user may re-enable it to retry.</comment>
+  </data>
+  <data name="FreOverlay_InstallErrorShellIntegrationExecutionPolicy" xml:space="preserve">
+    <value>PowerShell କାର୍ଯ୍ୟକାରୀ ନୀତି ସ୍କ୍ରିପ୍ଟ୍‌କୁ ଅବରୋଧ କରୁଛି। ତ୍ରୁଟି ଚିହ୍ନଟ ବନ୍ଦ କରାଗଲା।</value>
+    <comment>{Locked="PowerShell"} FRE setup error shown when PowerShell execution policy prevents shell-integration scripts from running. Error detection is turned off so setup can continue.</comment>
   </data>
   <data name="FreOverlay_InstallErrorWingetMissing" xml:space="preserve">
-    <value>⚠ Windows Package Manager (winget) ଇନ୍‌ଷ୍ଟଲ୍ ହୋଇନାହିଁ କିମ୍ବା ଉପଲବ୍ଧ ନୁହେଁ। ପ୍ରଥମେ ଏହାକୁ ଇନ୍‌ଷ୍ଟଲ୍ କରନ୍ତୁ, ତାପରେ ପୁଣି ଚେଷ୍ଟା କରନ୍ତୁ।</value>
-    <comment>{Locked="winget","PATH"} Error shown in the FRE setup overlay when a prerequisite install was attempted but the winget command is not on PATH.</comment>
+    <value>Windows Package Manager (winget) ଇନ୍‌ଷ୍ଟଲ୍ ହୋଇନାହିଁ କିମ୍ବା ଉପଲବ୍ଧ ନୁହେଁ। ପ୍ରଥମେ ଏହାକୁ ଇନ୍‌ଷ୍ଟଲ୍ କରନ୍ତୁ, ତାପରେ ପୁଣି ଚେଷ୍ଟା କରନ୍ତୁ।</value>
+    <comment>{Locked="winget"} Error shown in the FRE setup overlay when a prerequisite install was attempted but winget itself is not available on this system.</comment>
   </data>
-  <data name="FreOverlay_InstallErrorNode" xml:space="preserve">
-    <value>⚠ Node.js ଇନ୍‌ଷ୍ଟଲ୍ କରିବାରେ ବିଫଳ। ଆପଣଙ୍କ ନେଟୱର୍କ ଯାଞ୍ଚ କରନ୍ତୁ ଏବଂ ପୁଣି ଚେଷ୍ଟା କରନ୍ତୁ।</value>
-    <comment>{Locked="Node.js"}</comment>
+  <data name="FreOverlay_PackageDisplayName_Copilot" xml:space="preserve">
+    <value>GitHub Copilot</value>
+    <comment>{Locked="GitHub Copilot"} Product display name substituted into the FreOverlay_InstallError_* templates when reporting a winget install failure for the Copilot CLI prerequisite.</comment>
   </data>
+  <data name="FreOverlay_PackageDisplayName_Node" xml:space="preserve">
+    <value>Node.js (LTS)</value>
+    <comment>{Locked="Node.js","LTS"} Product display name substituted into the FreOverlay_InstallError_* templates when reporting a winget install failure for the Node.js prerequisite.</comment>
+  </data>
+
   <data name="FreOverlay_ToggleOn" xml:space="preserve">
     <value>ଚାଲୁ</value>
   </data>
@@ -295,40 +408,317 @@
     <value>ଏଜେଣ୍ଟ ସେସନ୍</value>
     <comment>Title shown in the agent pane title bar when the session-management view is active. In this context, agent refers to an AI agent, not a human representative.</comment>
   </data>
+  <data name="AgentPane_SwitchAgentAutomationName" xml:space="preserve">
+    <value>ଏଜେଣ୍ଟ ବଦଳାନ୍ତୁ</value>
+    <comment>Accessibility (screen reader) name for the agent-bar button that opens a menu to pick which AI agent runs in this tab. In this context, agent refers to an AI agent, not a human representative.</comment>
+  </data>
   <data name="AgentPane_SessionsTitleFormat" xml:space="preserve">
     <value>ଏଜେଣ୍ଟ ସେସନ୍: {0}</value>
     <comment>Title shown in the agent pane title bar when the session-management view is active. {0} is replaced with the AI agent display name.</comment>
+  </data>
+  <data name="AgentPane_SessionsDisabledHint.Text" xml:space="preserve">
+    <value>ସେସନ୍ ପରିଚାଳନାର ସର୍ବୋତ୍ତମ ଅନୁଭୂତି ପାଇଁ, Settings &gt; Agentsରେ Sessions ଚାଲୁ କରନ୍ତୁ।</value>
+    <comment>Subtle hint below the agent sessions title, shown only in session management when Sessions is off and policy permits changes. Navigation is Settings &gt; Agents, then turn on Sessions. Match the displayed labels: Settings uses SettingsMenuItem/SettingsTab, Agents uses Nav_AIAgents.Content, and Sessions uses AIAgents_SessionManagement.Header, including fallback labels where a locale has no translation. Turning Sessions off only prevents hook updates; existing hooks and session functionality can keep working. Do not imply that tracking, data refresh, or functionality stops.</comment>
   </data>
   <data name="TerminalProtocolTeachingTipTitle" xml:space="preserve">
     <value>Terminal Protocol</value>
     <comment>Title for the teaching tip that displays Terminal Protocol connection information. {Locked="Terminal Protocol"}</comment>
   </data>
-  <data name="FreOverlay_AutoDetectLabel.Text" xml:space="preserve">
-    <value>ସ୍ୱୟଂଚାଳିତ ତ୍ରୁଟି ଚିହ୍ନଟ</value>
-  </data>
-  <data name="FreOverlay_AutoDetectDescription.Text" xml:space="preserve">
-    <value>Intelligent Terminal କୁ ଆପଣଙ୍କ ଶେଲ୍ ଆକ୍ସେସ୍ କରିବାକୁ ଏବଂ ତ୍ରୁଟିଗୁଡ଼ିକୁ ସ୍ୱୟଂଚାଳିତ ଭାବରେ ଚିହ୍ନଟ କରିବାକୁ ଅନୁମତି ଦିଅନ୍ତୁ।</value>
-  </data>
-<data name="FreOverlay_InstallErrorShellIntegration" xml:space="preserve">
-    <value>⚠ ସେଲ୍ ଏକୀକରଣ ଇନ୍‌ଷ୍ଟଲ୍ କରିବାରେ ବିଫଳ। ତ୍ରୁଟି ଚିହ୍ନଟ ବନ୍ଦ କରାଯାଇଛି। ଆପଣ ଏହାକୁ ପୁଣି ସକ୍ରିୟ କରି ପୁଣି ଚେଷ୍ଟା କରିପାରିବେ, କିମ୍ବା ଏହା ବିନା ଜାରି ରଖିବାକୁ ସେଭ୍ କରନ୍ତୁ।</value>
-  </data><data name="FreOverlay_InstallErrorHooks" xml:space="preserve">
-    <value>⚠ session hooks ଇନ୍‌ଷ୍ଟଲ୍ କରିବାରେ ବିଫଳ। ସେସନ୍ ପରିଚାଳନା ବନ୍ଦ କରାଯାଇଛି। ଆପଣ ଏହାକୁ ପୁଣି ସକ୍ରିୟ କରି ପୁଣି ଚେଷ୍ଟା କରିପାରିବେ, କିମ୍ବା ଏହା ବିନା ଜାରି ରଖିବାକୁ ସେଭ୍ କରନ୍ତୁ।</value>
-    <comment>{Locked="hooks"}</comment>
-  </data><data name="FreOverlay_ErrorHelpLink" xml:space="preserve">
+  <data name="FreOverlay_ErrorHelpLink" xml:space="preserve">
     <value>ଏହାକୁ ମାନୁଆଲ୍ ଭାବରେ କିପରି ଠିକ୍ କରିବେ ତାହା ଶିଖନ୍ତୁ</value>
     <comment>Hyperlink shown below an FRE setup error message. Opens step-by-step manual setup instructions in the browser.</comment>
-  </data>  <data name="FreOverlay_AutoDetectShellIntegrationHintPrefix" xml:space="preserve">
-    <value>ଏହା ସକ୍ଷମ କଲେ କମାଣ୍ଡ ବିଫଳତା ଚିହ୍ନଟ କରିବା ପାଇଁ shell ଇଣ୍ଟିଗ୍ରେସନ୍ ଇନ୍‌ଷ୍ଟଲ୍ ହେବ। </value>
-  </data>
-  <data name="FreOverlay_AutoDetectShellIntegrationHintLink" xml:space="preserve">
-    <value>ଅଧିକ ଜାଣନ୍ତୁ</value>
   </data>
   <data name="InitShellIntegrationExecutionPolicyErrorMessage" xml:space="preserve">
     <value>PowerShell କାର୍ଯ୍ୟକାରୀ ନୀତି ସ୍କ୍ରିପ୍ଟ୍‌କୁ ଅବରୋଧ କରୁଛି।</value>
     <comment>Body of an error dialog shown after the user tries to install PowerShell shell integration but their PowerShell execution policy (Restricted or AllSigned) is blocking scripts. A separate "Learn how to fix this manually" hyperlink (FreOverlay_ErrorHelpLink) is rendered on its own line below this sentence. {Locked="PowerShell"}</comment>
   </data>
-  <data name="FreOverlay_InstallErrorShellIntegrationExecutionPolicy" xml:space="preserve">
-    <value>⚠ PowerShell କାର୍ଯ୍ୟକାରୀ ନୀତି ସ୍କ୍ରିପ୍ଟ୍‌କୁ ଅବରୋଧ କରୁଛି। ତ୍ରୁଟି ଚିହ୍ନଟ ବନ୍ଦ କରାଗଲା।</value>
-    <comment>{Locked="PowerShell"}</comment>
+  <data name="UsageGroup/[using:Windows.UI.Xaml.Automation]AutomationProperties/Name" xml:space="preserve"><value>ବ୍ୟବହାର</value><comment>Accessibility name for the session usage summary in the terminal bottom bar.</comment></data>
+  <data name="Usage_TokensUnit" xml:space="preserve"><value>ଟୋକେନ</value><comment>Unit label for AI context-window token counts. Translate this term using the established AI/LLM terminology for the locale.</comment></data>
+  <data name="Usage_ContextWindowLabel" xml:space="preserve"><value>ପ୍ରସଙ୍ଗ ୱିଣ୍ଡୋ</value><comment>Label for the AI agent context-window usage percentage shown in the terminal bottom bar.</comment></data>
+  <data name="AgentPane_DefaultTitle" xml:space="preserve">
+    <value>AI ସହାୟକ</value>
+    <comment>Default title shown in the agent pane title bar before an agent reports its name. "AI assistant" refers to the built-in AI coding assistant, not a human assistant.</comment>
+  </data>
+  <data name="AgentPane_ConnectingTitle" xml:space="preserve">
+    <value>ଏଜେଣ୍ଟ · ସଂଯୋଗ ହେଉଛି</value>
+    <comment>Status shown in the agent pane title bar while the AI agent is connecting. Preserve the centered dot separator. Here "agent" means an AI intelligent agent, not a proxy or human agent.</comment>
+  </data>
+  <data name="TabCloseBelow" xml:space="preserve">
+    <value>ତଳେ ଥିବା ଟ୍ୟାବ୍‌ଗୁଡ଼ିକ ବନ୍ଦ କରନ୍ତୁ</value>
+  </data>
+  <data name="VerticalTabsCollapsePane" xml:space="preserve">
+    <value>ସାଇଡବାର୍ ସଙ୍କୁଚିତ କରନ୍ତୁ</value>
+    <comment>Tooltip and accessible name for the vertical tabs sidebar toggle button. Refers to the left sidebar, not the Agent Pane.</comment>
+  </data>
+  <data name="VerticalTabsExpandPane" xml:space="preserve">
+    <value>ସାଇଡବାର୍ ବିସ୍ତାର କରନ୍ତୁ</value>
+    <comment>Tooltip and accessible name for the vertical tabs sidebar toggle button. Refers to the left sidebar, not the Agent Pane.</comment>
+  </data>
+  <data name="VerticalTabsExpandGroup" xml:space="preserve">
+    <value>ଟ୍ୟାବ୍ ଗୋଷ୍ଠୀ ବିସ୍ତାର କରନ୍ତୁ</value>
+    <comment>Accessibility name and tooltip for the button that expands a group of tabs in the sidebar.</comment>
+  </data>
+  <data name="VerticalTabsCollapseGroup" xml:space="preserve">
+    <value>ଟ୍ୟାବ୍ ଗୋଷ୍ଠୀ ସଙ୍କୁଚିତ କରନ୍ତୁ</value>
+    <comment>Accessibility name and tooltip for the button that collapses a group of tabs in the sidebar.</comment>
+  </data>
+  <data name="VerticalTabsFallbackTabTitle" xml:space="preserve">
+    <value>ଟ୍ୟାବ୍</value>
+    <comment>Fallback title for a terminal tab in the sidebar when no title is available.</comment>
+  </data>
+  <data name="VerticalTabsHeader.Text" xml:space="preserve">
+    <value>ଟ୍ୟାବ୍</value>
+  </data>
+  <data name="VerticalTabsSearchButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ଟ୍ୟାବ୍ ଖୋଜନ୍ତୁ</value>
+  </data>
+  <data name="VerticalTabsSearchButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>ଟ୍ୟାବ୍ ଖୋଜନ୍ତୁ</value>
+  </data>
+  <data name="VerticalTabsSearchBox.PlaceholderText" xml:space="preserve">
+    <value>ଟ୍ୟାବ୍ ଖୋଜନ୍ତୁ</value>
+  </data>
+  <data name="VerticalTabsSearchBox.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ଟ୍ୟାବ୍ ଖୋଜନ୍ତୁ</value>
+  </data>
+  <data name="VerticalTabsFilterButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ଟ୍ୟାବ୍‌ଗୁଡ଼ିକୁ ଫିଲ୍ଟର୍ କରନ୍ତୁ</value>
+  </data>
+  <data name="VerticalTabsFilterButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>ଟ୍ୟାବ୍‌ଗୁଡ଼ିକୁ ଫିଲ୍ଟର୍ କରନ୍ତୁ</value>
+  </data>
+  <data name="VerticalTabsFilterSection.Text" xml:space="preserve">
+    <value>ଫିଲ୍ଟର୍</value>
+    <comment>Section heading above the controls that filter which tabs are shown in the sidebar.</comment>
+  </data>
+  <data name="VerticalTabsFilterAllTabs.Text" xml:space="preserve">
+    <value>ସମସ୍ତ ଟ୍ୟାବ୍</value>
+  </data>
+  <data name="VerticalTabsFilterAgentsOnly.Text" xml:space="preserve">
+    <value>କେବଳ ଏଜେଣ୍ଟ</value>
+  </data>
+  <data name="VerticalTabsMetadataSection.Text" xml:space="preserve">
+    <value>ଟ୍ୟାବ୍ ମେଟାଡାଟା</value>
+    <comment>Section heading above the options that choose which metadata appears in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsMetadataAgentStatus.Text" xml:space="preserve">
+    <value>ଏଜେଣ୍ଟ ସ୍ଥିତି</value>
+    <comment>Option that shows an agent's current status in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsMetadataWorkingDirectory.Text" xml:space="preserve">
+    <value>ସାମ୍ପ୍ରତିକ କାର୍ଯ୍ୟ ଡିରେକ୍ଟୋରୀ</value>
+    <comment>Option that shows the current working directory in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsMetadataRepository.Text" xml:space="preserve">
+    <value>Git  ସଂଗ୍ରହାଳୟ</value>
+    <comment>Option that shows the Git repository name in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsMetadataBranch.Text" xml:space="preserve">
+    <value>Git  ଶାଖା</value>
+    <comment>Option that shows the Git branch name in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsMetadataChanges.Text" xml:space="preserve">
+    <value>Git  ପରିବର୍ତ୍ତନ ହୁଏ</value>
+    <comment>Option that shows the Git working tree change summary in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsFilterStatusSingle" xml:space="preserve">
+    <value>1ଟି ଏଜେଣ୍ଟ ସେସନ୍ ଦେଖାଯାଉଛି</value>
+  </data>
+  <data name="VerticalTabsFilterStatusPlural" xml:space="preserve">
+    <value>{0}ଟି ଏଜେଣ୍ଟ ସେସନ୍ ଦେଖାଯାଉଛି</value>
+  </data>
+  <data name="VerticalTabsFilterCurrentHidden.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ବର୍ତ୍ତମାନର ଟ୍ୟାବ୍ ଏହି ଫିଲ୍ଟର୍ ଦ୍ୱାରା ଲୁକ୍କାୟିତ</value>
+  </data>
+  <data name="VerticalTabsFilterCurrentHidden.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>ବର୍ତ୍ତମାନର ଟ୍ୟାବ୍ ଏହି ଫିଲ୍ଟର୍ ଦ୍ୱାରା ଲୁକ୍କାୟିତ</value>
+  </data>
+  <data name="VerticalTabsFilterShowAll.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ସମସ୍ତ ଟ୍ୟାବ୍ ଦେଖାନ୍ତୁ</value>
+  </data>
+  <data name="VerticalTabsFilterShowAll.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>ସମସ୍ତ ଟ୍ୟାବ୍ ଦେଖାନ୍ତୁ</value>
+  </data>
+  <data name="VerticalTabsHistoryButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ଏଜେଣ୍ଟମାନେ</value>
+    <comment>Accessible name of the toolbar button that opens the Agents sidebar view. Agents are AI agents, not human representatives; the view lists their live and historical sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistoryButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>ଏଜେଣ୍ଟମାନେ</value>
+    <comment>Tooltip for the toolbar button that opens the Agents sidebar view. Agents are AI agents, not human representatives; the view lists their live and historical sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistoryHeader.Text" xml:space="preserve">
+    <value>ଏଜେଣ୍ଟମାନେ</value>
+    <comment>Header of the Agents sidebar view. Agents are AI agents, not human representatives; the view lists their live and historical sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistoryCloseButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ଏଜେଣ୍ଟମାନଙ୍କ ଦୃଶ୍ୟ ବନ୍ଦ କରନ୍ତୁ</value>
+    <comment>Accessible name of the button that closes the Agents sidebar view. Closing this view hides the sidebar; it does not terminate any agents or sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistoryCloseButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>ଏଜେଣ୍ଟମାନଙ୍କ ଦୃଶ୍ୟ ବନ୍ଦ କରନ୍ତୁ</value>
+    <comment>Tooltip for the button that closes the Agents sidebar view. Closing this view hides the sidebar; it does not terminate any agents or sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistorySearchBox.PlaceholderText" xml:space="preserve">
+    <value>ଏଜେଣ୍ଟ ସେସନ୍ ଖୋଜନ୍ତୁ</value>
+  </data>
+  <data name="VerticalTabsHistorySearchBox.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ଏଜେଣ୍ଟ ସେସନ୍ ଖୋଜନ୍ତୁ</value>
+  </data>
+  <data name="VerticalTabsHistoryCurrentSession" xml:space="preserve">
+    <value>ବର୍ତ୍ତମାନର ସେସନ୍</value>
+    <comment>UI Automation status for the live AI-agent session associated with the active terminal pane. This identifies the currently displayed session, not keyboard selection or the most recent session.</comment>
+  </data>
+  <data name="VerticalTabsHistoryEmpty" xml:space="preserve">
+    <value>କୌଣସି ଏଜେଣ୍ଟ ସେସନ୍ ମିଳିଲା ନାହିଁ।</value>
+  </data>
+  <data name="VerticalTabsHistoryNoMatches" xml:space="preserve">
+    <value>ମେଳ ଖାଉଥିବା କୌଣସି ଏଜେଣ୍ଟ ସେସନ୍ ନାହିଁ।</value>
+  </data>
+  <data name="VerticalTabsHistoryLoadError" xml:space="preserve">
+    <value>ଏଜେଣ୍ଟ ସେସନ୍‌ଗୁଡ଼ିକ ଲୋଡ୍ କରିହେଲା ନାହିଁ।</value>
+    <comment>Error shown when the Agent sessions sidebar view cannot load its list of live and historical AI-agent sessions. This refers to loading the session list, not starting or resuming a session.</comment>
+  </data>
+  <data name="VerticalTabsHistoryInvalidResponse" xml:space="preserve">
+    <value>ଏଜେଣ୍ଟ ସେସନ୍‌ଗୁଡ଼ିକ ଲୋଡ୍ କରିହେଲା ନାହିଁ: ଅବୈଧ ପ୍ରତିକ୍ରିୟା।</value>
+    <comment>Error shown when the Agent sessions sidebar receives an invalid response while loading its list of live and historical AI-agent sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistoryActivationError" xml:space="preserve">
+    <value>ଚୟନିତ ସେସନ୍ ସକ୍ରିୟ କରିହେଲା ନାହିଁ।</value>
+  </data>
+  <data name="VerticalTabsHistoryLiveAgentTitleFormat" xml:space="preserve">
+    <value>{0} ଏଜେଣ୍ଟ ସେସନ୍</value>
+    <comment>History row title for a live agent-pane session whose provider did not supply a conversation title. {0} is the provider display name.</comment>
+  </data>
+  <data name="CompactNewTabButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ନୂଆ ଟ୍ୟାବ୍</value>
+  </data>
+  <data name="CompactNewTabButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>ନୂଆ ଟ୍ୟାବ୍</value>
+  </data>
+  <data name="CompactNewTabMenuButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ନୂଆ ଟ୍ୟାବ୍ ମେନୁ</value>
+  </data>
+  <data name="CompactNewTabMenuButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>ନୂଆ ଟ୍ୟାବ୍ ମେନୁ</value>
+  </data>
+  <data name="SwitchToHorizontalTabsText" xml:space="preserve">
+    <value>ଭୂସମାନ୍ତର ଟ୍ୟାବ୍‌କୁ ବଦଳାନ୍ତୁ</value>
+  </data>
+  <data name="SwitchToHorizontalTabsToolTip" xml:space="preserve">
+    <value>ସମସ୍ତ Terminal ୱିଣ୍ଡୋରେ ଭୂସମାନ୍ତର ଟ୍ୟାବ୍ ବ୍ୟବହାର କରନ୍ତୁ</value>
+  </data>
+  <data name="SwitchToVerticalTabsText" xml:space="preserve">
+    <value>ସାଇଡବାର୍‌କୁ ବଦଳାନ୍ତୁ</value>
+    <comment>Context-menu command that changes the tab layout from horizontal tabs to the sidebar.</comment>
+  </data>
+  <data name="SwitchToVerticalTabsToolTip" xml:space="preserve">
+    <value>ସମସ୍ତ Terminal ୱିଣ୍ଡୋରେ ସାଇଡବାର୍ ବ୍ୟବହାର କରନ୍ତୁ</value>
+    <comment>Tooltip for the command that changes the tab layout from horizontal tabs to the sidebar in every Terminal window.</comment>
+  </data>
+  <data name="TabCloseBelowToolTip" xml:space="preserve">
+    <value>ଏହି ଟ୍ୟାବ୍ ତଳେ ଥିବା ସମସ୍ତ ଟ୍ୟାବ୍ ବନ୍ଦ କରନ୍ତୁ</value>
+  </data>
+  <data name="NotificationIconRestoreKeptTab" xml:space="preserve">
+    <value>ପୁନଃସ୍ଥାପନ କରନ୍ତୁ</value>
+    <comment>Command in the notification-area menu that brings a background tab and its still-running terminal panes back into a window. It does not restart the processes or restore a file backup.</comment>
+  </data>
+  <data name="KeepTabRunningText" xml:space="preserve">
+    <value>ଟ୍ୟାବ୍ ଚାଲୁ ରଖନ୍ତୁ</value>
+    <comment>Command at the top of a vertical terminal tab's context menu that enables keeping all panes running after the tab or window is closed. Also labels the tab's keep-running status indicator. This does not pin the tab or save it for a restart.</comment>
+  </data>
+  <data name="PinTabText" xml:space="preserve">
+    <value>ଟ୍ୟାବ୍ ପିନ୍ କରନ୍ତୁ</value>
+    <comment>Context menu action to keep a terminal tab at the start of the tab list until unpinned. Does not keep its processes running after closing or persist across restarts.</comment>
+  </data>
+  <data name="PinTabToolTip" xml:space="preserve">
+    <value>ଏହି ଟ୍ୟାବ୍‌କୁ ପିନ୍ ହୋଇନଥିବା ଟ୍ୟାବ୍‌ଗୁଡ଼ିକର ଆଗକୁ ନିଅନ୍ତୁ।</value>
+  </data>
+  <data name="UnpinTabText" xml:space="preserve">
+    <value>ଟ୍ୟାବ୍‌ର ପିନ୍ ହଟାନ୍ତୁ</value>
+    <comment>Context menu action to move a pinned terminal tab back into the regular tab group.</comment>
+  </data>
+  <data name="UnpinTabToolTip" xml:space="preserve">
+    <value>ଏହି ଟ୍ୟାବ୍‌କୁ ପିନ୍ ହୋଇଥିବା ଟ୍ୟାବ୍‌ଗୁଡ଼ିକର ପଛକୁ ନିଅନ୍ତୁ।</value>
+  </data>
+  <data name="PinnedTabName" xml:space="preserve">
+    <value>ପିନ୍ ହୋଇଛି</value>
+    <comment>Accessibility name and tooltip for a terminal tab pinned at the beginning of the tab list.</comment>
+  </data>
+  <data name="CollapsedPinnedTabIcon.AutomationProperties.Name" xml:space="preserve">
+    <value>ପିନ୍ ହୋଇଛି</value>
+    <comment>Accessibility name for the pin indicator on a terminal tab in the collapsed sidebar.</comment>
+  </data>
+  <data name="KeepTabRunningToolTip" xml:space="preserve">
+    <value>ଟ୍ୟାବ୍ କିମ୍ବା ୱିଣ୍ଡୋ ବନ୍ଦ କରିବା ପରେ ମଧ୍ୟ ଏହି ଟ୍ୟାବ୍‌କୁ ପୃଷ୍ଠଭୂମିରେ ଚାଲୁ ରଖନ୍ତୁ।</value>
+    <comment>Tooltip and accessibility help for Keep tab running. Includes shell panes and the AI assistant; their current processes and sessions stay alive, rather than restarting later.</comment>
+  </data>
+  <data name="TurnOffKeepTabRunningText" xml:space="preserve">
+    <value>ଚାଲୁ ରଖିବା ସୁବିଧା ବନ୍ଦ କରନ୍ତୁ</value>
+    <comment>Command shown instead of Keep tab running when that tab already has keep running enabled. It only turns off the background-running behavior; it does not close the tab or stop its current processes immediately.</comment>
+  </data>
+  <data name="TurnOffKeepTabRunningToolTip" xml:space="preserve">
+    <value>ଆପଣ ଟ୍ୟାବ୍ କିମ୍ବା ୱିଣ୍ଡୋ ବନ୍ଦ କରିବା ପରେ ଏହି ଟ୍ୟାବ୍ ଆଉ ଚାଲୁ ରହିବ ନାହିଁ।</value>
+    <comment>Tooltip and accessibility help for Turn off keep running. After this action, closing the tab or its window closes its panes normally instead of retaining them in the background. The current tab and processes are not closed by this action.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusIdle" xml:space="preserve">
+    <value>ନିଷ୍କ୍ରିୟ</value>
+    <comment>Agent History session status: the session is live but has no active work.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusWorking" xml:space="preserve">
+    <value>ସକ୍ରିୟ</value>
+    <comment>Agent History session status: the agent is actively processing a request.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusAttention" xml:space="preserve">
+    <value>ଇନ୍‌ପୁଟ୍ ପାଇଁ ଅପେକ୍ଷା</value>
+    <comment>Agent History session status: the agent needs a response or approval from the user.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusError" xml:space="preserve">
+    <value>ତ୍ରୁଟି</value>
+    <comment>Agent History session status: the session encountered an error.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusHistorical" xml:space="preserve">
+    <value>ଇତିହାସରୁ</value>
+    <comment>Agent History session status: a closed or saved session with no live pane. Both ended and historical registry states use this label.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusUnknown" xml:space="preserve">
+    <value>ଅଜ୍ଞାତ</value>
+    <comment>Agent History session status: the registry did not provide a recognized status.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeJustNow" xml:space="preserve">
+    <value>ଏମାତ୍ର</value>
+    <comment>Agent History relative time: the session&apos;s latest activity was less than one minute ago.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeMinute" xml:space="preserve">
+    <value>1 ମିନିଟ୍ ପୂର୍ବରୁ</value>
+    <comment>Agent History relative time: the session&apos;s latest activity was one minute ago.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeMinutes" xml:space="preserve">
+    <value>{0} ମିନିଟ୍ ପୂର୍ବରୁ</value>
+    <comment>Agent History relative time. {0} is the whole number of minutes since the session&apos;s latest activity, from 2 to 59.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeHour" xml:space="preserve">
+    <value>1 ଘଣ୍ଟା ପୂର୍ବରୁ</value>
+    <comment>Agent History relative time: the session&apos;s latest activity was one hour ago.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeHours" xml:space="preserve">
+    <value>{0} ଘଣ୍ଟା ପୂର୍ବରୁ</value>
+    <comment>Agent History relative time. {0} is the whole number of hours since the session&apos;s latest activity, from 2 to 23.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeDay" xml:space="preserve">
+    <value>1 ଦିନ ପୂର୍ବରୁ</value>
+    <comment>Agent History relative time: the session&apos;s latest activity was one day ago.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeDays" xml:space="preserve">
+    <value>{0} ଦିନ ପୂର୍ବରୁ</value>
+    <comment>Agent History relative time. {0} is the whole number of days since the session&apos;s latest activity, at least 2.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeUnknown" xml:space="preserve">
+    <value>ଅଜ୍ଞାତ</value>
+    <comment>Agent History time label when the session&apos;s latest activity timestamp is missing or invalid. Do not imply that the session was recently active.</comment>
+  </data>
+  <data name="NotificationIconCloseAllKeptTabs" xml:space="preserve">
+    <value>ପୃଷ୍ଠଭୂମିରେ ଚାଲୁଥିବା ସମସ୍ତ ଟ୍ୟାବ୍ ବନ୍ଦ କରନ୍ତୁ</value>
+    <comment>Command below the background tabs in the notification-area menu. Closes all detached tabs retained by Keep tab running and terminates their panes and processes. Does not close tabs still in a window or only turn off keep running.</comment>
   </data>
 </root>

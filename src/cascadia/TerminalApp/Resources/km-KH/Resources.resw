@@ -11,6 +11,7 @@
   </data>
   <data name="FreOverlay_WelcomeSubtitlePrefix" xml:space="preserve">
     <value>រៀបចំអ្នកជំនួយការដែលដំឡើងដើម្បីជួយអ្នកពន្យល់កំហុស តែងពាក្យបញ្ជា និងដោះស្រាយកិច្ចការត្រង់កន្លែងដែលអ្នកត្រូវធ្វើការ។ </value>
+    <comment>Text shown immediately before the FreOverlay_WelcomeSubtitleLink hyperlink. Include any spacing needed to separate the prefix from the link in the target language.</comment>
   </data>
   <data name="FreOverlay_WelcomeSubtitleLink" xml:space="preserve">
     <value>ស្វែងយល់បន្ថែមអំពី ស្ថានីយឆ្លាតវៃ</value>
@@ -34,16 +35,36 @@
   <data name="FreOverlay_NextButton.Content" xml:space="preserve">
     <value>បន្ត</value>
   </data>
+  <data name="FreOverlay_PolicyLocked" xml:space="preserve">
+    <value>ការកំណត់នេះត្រូវបានគ្រប់គ្រងដោយអង្គការរបស់អ្នក។</value>
+    <comment>Text shown below a first-run setting when Group Policy manages or restricts the feature. The associated control may be disabled or filtered to allowed choices. Standard Windows policy notice wording.</comment>
+  </data>
   <!-- ═══ FRE Settings Page ═══ -->
   <data name="FreOverlay_SettingsTitle.Text" xml:space="preserve">
-    <value>សូមស្វាគមន៍មកកាន់ ស្ថានីយឆ្លាតវៃ</value>
-    <comment>{Locked=qps-ploc,qps-ploca,qps-plocm} "Intelligent Terminal" is the product name.</comment>
+    <value>រៀបចំតេរ្មីណលរបស់អ្នក</value>
   </data>
   <data name="FreOverlay_SettingsSubtitlePrefix" xml:space="preserve">
     <value>ជ្រើសរើសអ្វីដែលត្រូវដំឡើងឥឡូវនេះ។ អ្នកអាចផ្លាស់ប្តូរទាំងនេះបានគ្រប់ពេល។ </value>
+    <comment>Text shown immediately before the FreOverlay_SettingsSubtitleLink hyperlink. Include any spacing needed to separate the prefix from the link in the target language.</comment>
   </data>
   <data name="FreOverlay_SettingsSubtitleLink" xml:space="preserve">
     <value>ស្វែងយល់អំពីរបៀបប្រើប្រាស់ទិន្នន័យ</value>
+  </data>
+  <data name="FreOverlay_TabModeLabel.Text" xml:space="preserve">
+    <value>របៀបផ្ទាំង</value>
+    <comment>Label for the first-run dropdown that chooses the layout of terminal tabs, not indentation or the keyboard Tab key.</comment>
+  </data>
+  <data name="FreOverlay_TabModeDescription.Text" xml:space="preserve">
+    <value>ប្ដូររវាងរបារចំហៀងថ្មី និងទិដ្ឋភាពផ្ទាំងផ្ដេកបែបបុរាណ</value>
+    <comment>Help text for the first-run tab layout dropdown. The sidebar shows tabs vertically in a side panel; the classic layout shows tabs horizontally across the top. This is a choice between layouts, not an on/off switch.</comment>
+  </data>
+  <data name="FreOverlay_TabModeSidebar" xml:space="preserve">
+    <value>របារចំហៀង</value>
+    <comment>Dropdown option for displaying terminal tabs vertically in a side panel. This is the same layout called Vertical in Settings.</comment>
+  </data>
+  <data name="FreOverlay_TabModeHorizontal" xml:space="preserve">
+    <value>ផ្ដេក</value>
+    <comment>Dropdown option for displaying terminal tabs across the top of the window. Use the same terminology as the Horizontal tab layout option in Settings.</comment>
   </data>
   <data name="FreOverlay_AgentLabel.Text" xml:space="preserve">
     <value>ភ្នាក់ងារ</value>
@@ -51,46 +72,63 @@
   </data>
   <data name="FreOverlay_AgentDescription.Text" xml:space="preserve">
     <value>ជ្រើសរើសភ្នាក់ងារដែលប្រើក្នុងផ្ទាំងភ្នាក់ងារ និងគាំទ្រ ACP។</value>
-    <comment>{Locked="ACP"} In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
+    <comment>{Locked="ACP"} Description for choosing an AI agent for the agent pane. The selected agent must support ACP. "ACP" is rendered as a hyperlink at runtime and must appear exactly once. In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
   </data>
-  <data name="FreOverlay_AgentInstallHint.Text" xml:space="preserve">
-    <value>ភ្នាក់ងារនេះត្រូវការ Node.js និង NPX ដែលនឹងត្រូវបានតំឡើងដោយស្វ័យប្រវត្តិប្រសិនបើមិនទាន់មាន។</value>
-    <comment>{Locked="Node.js","NPX"} In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
+  <data name="FreOverlay_ErrorDetectionLabel.Text" xml:space="preserve">
+    <value>ការរកឃើញកំហុស</value>
+    <comment>Header for the dropdown that configures how the terminal handles failed commands.</comment>
   </data>
-  <data name="FreOverlay_AutoErrorLabel.Text" xml:space="preserve">
-    <value>ការណែនាំកំហុសដោយស្វ័យប្រវត្តិ</value>
+  <data name="FreOverlay_ErrorDetectionDescription.Text" xml:space="preserve">
+    <value>រកឃើញពាក្យបញ្ជាដែលបរាជ័យនៅក្នុង shell ដោយស្វ័យប្រវត្តិ ហើយជាជម្រើស ផ្ញើពាក្យបញ្ជាទាំងនោះទៅភ្នាក់ងាររបស់អ្នកដើម្បីជួសជុលដោយស្វ័យប្រវត្តិ។</value>
+    <comment>Description for the error-detection dropdown in the first-run wizard. The dropdown includes detect-only, detect-and-fix, and off modes; the selected mode controls whether shell errors are detected and whether failed commands are automatically sent to the selected AI agent. In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
   </data>
-  <data name="FreOverlay_AutoErrorDescription.Text" xml:space="preserve">
-    <value>ផ្តល់សិទ្ធិឱ្យ Intelligent Terminal ផ្ញើកំហុសទៅភ្នាក់ងាររបស់អ្នក ដើម្បីណែនាំការកែតម្រូវដោយស្វ័យប្រវត្តិ។</value>
-    <comment>{Locked=qps-ploc,qps-ploca,qps-plocm} "Intelligent Terminal" is the product name.</comment>
+  <data name="FreOverlay_ErrorDetectionDetectOption.Content" xml:space="preserve">
+    <value>រកឃើញកំហុស</value>
+    <comment>Dropdown option that detects shell errors without automatically sending failed commands to the selected AI agent.</comment>
+  </data>
+  <data name="FreOverlay_ErrorDetectionAutoFixOption.Content" xml:space="preserve">
+    <value>រកឃើញ និងជួសជុលកំហុស</value>
+    <comment>Dropdown option that detects shell errors and automatically sends failed commands to the selected AI agent. In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
+  </data>
+  <data name="FreOverlay_ErrorDetectionOffOption.Content" xml:space="preserve">
+    <value>បិទ</value>
+    <comment>Dropdown option that disables automatic shell error detection.</comment>
+  </data>
+  <data name="FreOverlay_ErrorDetectionAutoFixPolicyLocked" xml:space="preserve">
+    <value>ជម្រើសជួសជុលដោយស្វ័យប្រវត្តិត្រូវបានគ្រប់គ្រងដោយអង្គការរបស់អ្នក។</value>
+    <comment>Text shown below the error-detection dropdown when Group Policy disables its automatic-fix option.</comment>
   </data>
   <data name="FreOverlay_SessionLabel.Text" xml:space="preserve">
-    <value>ការគ្រប់គ្រងវគ្គ</value>
+    <value>វគ្គ</value>
   </data>
   <data name="FreOverlay_SessionDescription.Text" xml:space="preserve">
-    <value>អនុញ្ញាត ស្ថានីយឆ្លាតវៃ ឲ្យតាមដានស្ថានភាពភ្នាក់ងារដែលកំពុងត្រូវដំណើរការ ឬសកម្ម។</value>
-    <comment>{Locked=qps-ploc,qps-ploca,qps-plocm} "Intelligent Terminal" is the product name. In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
-  </data>
-  <data name="FreOverlay_SessionHint.Text" xml:space="preserve">
-    <value>ការបើកនេះនឹងតំឡើង hooks វគ្គដើម្បីតាមដានវគ្គក្នុងភ្នាក់ងាររបស់អ្នក។</value>
-    <comment>{Locked="hooks"} In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
-  </data>
-  <data name="FreOverlay_PanePositionLabel.Text" xml:space="preserve">
-    <value>ទីតាំងផ្ទាំង</value>
-  </data>
-  <data name="FreOverlay_PanePositionDescription.Text" xml:space="preserve">
-    <value>ផ្ទាំងភ្នាក់ងារបើកនៅកន្លែងណាប្រៀបធៀបនឹងតេរ្មីណលរបស់អ្នក។</value>
+    <value>តាមដានថាភ្នាក់ងារណាខ្លះកំពុងដំណើរការ និងភ្នាក់ងារណាខ្លះត្រូវការការយកចិត្តទុកដាក់ពីអ្នក។</value>
     <comment>In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
   </data>
+  <data name="FreOverlay_ShowTokenUsageAndCostLabel.Text" xml:space="preserve"><value>ការប្រើប្រាស់ថូខិន</value><comment>Header for a first-run toggle that shows remaining context and session cost in the terminal bottom bar.</comment></data>
+  <data name="FreOverlay_ShowTokenUsageAndCostDescription.Text" xml:space="preserve"><value>បង្ហាញបរិបទដែលនៅសល់ និងតម្លៃវគ្គ នៅពេលមាន។</value><comment>Description for the token-usage visibility toggle in the first-run wizard. Either value may be unavailable.</comment></data>
+  <data name="FreOverlay_PanePositionLabel.Text" xml:space="preserve">
+    <value>ទីតាំងភ្នាក់ងារ</value>
+  </data>
+  <data name="FreOverlay_PanePositionDescription.Text" xml:space="preserve">
+    <value>កន្លែងដែលភ្នាក់ងាររបស់អ្នកស្ថិតនៅ។</value>
+    <comment>Description for choosing where the AI agent pane appears within the terminal window. In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
+  </data>
   <data name="FreOverlay_SaveButton.Content" xml:space="preserve">
-    <value>រក្សាទុក</value>
+    <value>ចាប់ផ្ដើម</value>
   </data>
   <!-- ═══ FRE Dynamic strings (used from C++ code-behind) ═══ -->
-  <data name="FreOverlay_AgentStatusWillInstall" xml:space="preserve">
-    <value> (នឹងត្រូវបានតំឡើង)</value>
+  <data name="FreOverlay_AgentStatusSetupRequired" xml:space="preserve">
+    <value> (ត្រូវការរៀបចំ)</value>
+    <comment>Status suffix appended directly to the GitHub Copilot display name when Copilot is confirmed missing and will be set up later in the Agent pane. Include any spacing and punctuation needed to separate the suffix from the agent name.</comment>
   </data>
   <data name="FreOverlay_AgentStatusInstalled" xml:space="preserve">
     <value> (តៀឡើងរួចហើយ)</value>
+    <comment>Status suffix appended directly to an AI agent display name when that agent is already installed. Include any spacing and punctuation needed to separate the suffix from the agent name.</comment>
+  </data>
+  <data name="FreOverlay_AgentProbeUnavailable" xml:space="preserve">
+    <value>យើងមិនអាចពិនិត្យមើលថាតើ AI អេជេន្ត់ណាខ្លះត្រូវបានតំឡើងទេ។ ភាពអាចប្រើបាននឹងត្រូវបានពិនិត្យម្តងទៀតនៅពេលបើកផ្ទាំង AI អេជេន្ត់។</value>
+    <comment>Non-blocking warning shown in the first-run settings page when installed AI agents could not be detected. In this context, "Agent pane" is the product UI that hosts an AI agent.</comment>
   </data>
   <data name="FreOverlay_PanePositionBottom" xml:space="preserve">
     <value>ខាងក្រោម</value>
@@ -107,17 +145,79 @@
   <data name="FreOverlay_SettingUp" xml:space="preserve">
     <value>កំពុងដំឡើង...</value>
   </data>
-  <data name="FreOverlay_InstallErrorCopilot" xml:space="preserve">
-    <value>⚠ ការតំឡើង GitHub Copilot បានបរាជ័យ។ ពិនិត្យម៉ោងការតភ្ជាប់បណ្តាញ និងសាកល្បងឡើងវិញ។</value>
-    <comment>{Locked="GitHub Copilot"}</comment>
+  <data name="FreOverlay_HookingUpAgent" xml:space="preserve">
+    <value>កំពុងភ្ជាប់ {0} ទៅផ្ទាំងភ្នាក់ងាររបស់អ្នក...</value>
+    <comment>Progress text shown while preparing the selected AI agent. {0} is the localized agent display name, for example "GitHub Copilot". In this context, "agent" refers to an AI agent, not a human representative.</comment>
+  </data>
+  <data name="FreOverlay_HookingUpAgentFallback" xml:space="preserve">
+    <value>កំពុងភ្ជាប់ផ្ទាំងភ្នាក់ងាររបស់អ្នក...</value>
+    <comment>Progress text shown while preparing an AI agent when its display name is unavailable. In this context, "agent" refers to an AI agent, not a human representative.</comment>
+  </data>
+  <data name="FreOverlay_TurningOnErrorDetection" xml:space="preserve">
+    <value>កំពុងបើកការរកឃើញកំហុស...</value>
+  </data>
+  <data name="FreOverlay_TurningOnSessions" xml:space="preserve">
+    <value>កំពុងបើកវគ្គ...</value>
+  </data>
+  <data name="FreOverlay_ProgressCompleted" xml:space="preserve">
+    <value>បានបញ្ចប់</value>
+    <comment>Accessible status for a completed step in the FRE setup progress checklist.</comment>
+  </data>
+  <data name="FreOverlay_ProgressWarning" xml:space="preserve">
+    <value>បានបញ្ចប់ដោយមានការព្រមាន</value>
+    <comment>Accessible status for a non-blocking warning in the FRE setup progress checklist.</comment>
+  </data>
+  <data name="FreOverlay_ProgressFailed" xml:space="preserve">
+    <value>បរាជ័យ</value>
+    <comment>Accessible status for a failed step in the FRE setup progress checklist.</comment>
+  </data>
+  <data name="FreOverlay_ProgressAccessibleStatus" xml:space="preserve">
+    <value>{0}, {1}</value>
+    <comment>Accessible name for a completed FRE setup step. {0} is the step label and {1} is its result, such as "Completed" or "Failed".</comment>
+  </data>
+  <data name="FreOverlay_InstallError_BlockedByPolicy" xml:space="preserve">
+    <value>ការដំឡើង {0} ត្រូវបានរារាំងដោយគោលការណ៍ Windows Package Manager។ ប្រសិនបើអ្នកកំពុងប្រើឧបករណ៍ដែលគ្រប់គ្រង សូមទាក់ទងអ្នកគ្រប់គ្រង IT របស់អ្នក។</value>
+    <comment>FRE setup error. {0} is the package display name. Shown when winget reports BlockedByPolicy or an equivalent policy-related HRESULT.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_Generic" xml:space="preserve">
+    <value>មិនអាចដំឡើង {0} បានទេ (កូដកំហុស {1})។ មើលកំណត់ហេតុសម្រាប់ព័ត៌មានលម្អិត ឬដំឡើង {0} ដោយដៃ។</value>
+    <comment>FRE setup error fallback. {0} is the package display name (appears twice). {1} is a pre-formatted HRESULT string like "0x80190194". Shown for failure causes we don't have a more specific message for.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_GenericNoCode" xml:space="preserve">
+    <value>មិនអាចដំឡើង {0} បានទេ។ មើលកំណត់ហេតុសម្រាប់ព័ត៌មានលម្អិត ឬដំឡើង {0} ដោយដៃ។</value>
+    <comment>FRE setup error fallback used when no actionable error code is available (e.g. the catalog connect/search failed before an installer ever ran). {0} is the package display name (appears twice).</comment>
+  </data>
+  <data name="FreOverlay_InstallError_InstallerFailed" xml:space="preserve">
+    <value>កម្មវិធីដំឡើង {0} បានរាយការណ៍កំហុស (កូដ {1})។ មើលកំណត់ហេតុសម្រាប់ព័ត៌មានលម្អិត ឬដំឡើង {0} ដោយដៃ។</value>
+    <comment>FRE setup error. {0} is the package display name (appears twice). {1} is the installer-reported error code as a decimal number (e.g. MSI 1603). Shown when winget reached the install phase but the installer itself failed.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_Network" xml:space="preserve">
+    <value>មិនអាចភ្ជាប់ទៅ Windows Package Manager ខណៈពេលដំឡើង {0} បានទេ។ ពិនិត្យការតភ្ជាប់អ៊ីនធឺណិតរបស់អ្នក (VPN, proxy ឬជញ្ជាំងភ្លើងអាចកំពុងរារាំងវា) ហើយសាកល្បងម្តងទៀត។</value>
+    <comment>{Locked="VPN"} FRE setup error. {0} is the package display name (FreOverlay_PackageDisplayName_Copilot or _Node). Shown when winget couldn't reach its catalog or the package download failed with a network-class HRESULT.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_NoCompatibleInstaller" xml:space="preserve">
+    <value>មិនមានកម្មវិធីដំឡើងដែលឆបគ្នាសម្រាប់ {0} នៅលើប្រព័ន្ធនេះទេ (អាចមិនគាំទ្រកំណែ OS ឬស្ថាបត្យកម្ម)។ ដំឡើង {0} ដោយដៃ។</value>
+    <comment>FRE setup error. {0} is the package display name (appears twice). Shown when winget returned NoApplicableInstallers — the manifest exists but no installer entry matches this OS/arch/scope.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_PackageNotFound" xml:space="preserve">
+    <value>រកមិនឃើញ {0} នៅក្នុងកាតាឡុក Windows Package Manager ទេ។ សាកល្បងធ្វើឱ្យប្រភព winget ស្រស់ឡើងវិញ ឬដំឡើង {0} ដោយដៃ។</value>
+    <comment>{Locked="winget"} FRE setup error. {0} is the package display name (appears twice). Shown when no manifest with the requested package ID was returned from the catalog search.</comment>
+  </data>
+  <data name="FreOverlay_InstallError_Timeout" xml:space="preserve">
+    <value>ការដំឡើង {0} ចំណាយពេលលើសពី 20 នាទី។ Intelligent Terminal បានឈប់រង់ចាំ ប៉ុន្តែកម្មវិធីដំឡើងអាចនៅតែដំណើរការនៅផ្ទៃខាងក្រោយ។ ពិនិត្យ Task Manager ឬសាកល្បងម្តងទៀតនៅពេលក្រោយ។</value>
+    <comment>{Locked="Intelligent Terminal","Task Manager"} FRE setup error. {0} is the package display name. Shown when our 20-minute hard timeout expired before the install completed.</comment>
   </data>
   <data name="FreOverlay_InstallErrorWingetMissing" xml:space="preserve">
-    <value>⚠ Windows Package Manager (winget) មិនទាន់បានដំឡើង ឬមិនអាចប្រើបានទេ។ ដំឡើងវាជាមុនសិន បន្ទាប់មកសាកល្បងម្ដងទៀត។</value>
-    <comment>{Locked="winget","PATH"} Error shown in the FRE setup overlay when a prerequisite install was attempted but the winget command is not on PATH.</comment>
+    <value>Windows Package Manager (winget) មិនទាន់បានដំឡើង ឬមិនអាចប្រើបានទេ។ ដំឡើងវាជាមុនសិន បន្ទាប់មកសាកល្បងម្ដងទៀត។</value>
+    <comment>{Locked="winget"} Error shown in the FRE setup overlay when a prerequisite install was attempted but winget itself is not available on this system.</comment>
   </data>
-  <data name="FreOverlay_InstallErrorNode" xml:space="preserve">
-    <value>⚠ ការតំឡើង Node.js បានបរាជ័យ។ ពិនិត្យម៉ោងការតភ្ជាប់បណ្តាញ និងសាកល្បងឡើងវិញ។</value>
-    <comment>{Locked="Node.js"}</comment>
+  <data name="FreOverlay_PackageDisplayName_Copilot" xml:space="preserve">
+    <value>GitHub Copilot</value>
+    <comment>{Locked="GitHub Copilot"} Product display name substituted into the FreOverlay_InstallError_* templates when reporting a winget install failure for the Copilot CLI prerequisite.</comment>
+  </data>
+  <data name="FreOverlay_PackageDisplayName_Node" xml:space="preserve">
+    <value>Node.js (LTS)</value>
+    <comment>{Locked="Node.js","LTS"} Product display name substituted into the FreOverlay_InstallError_* templates when reporting a winget install failure for the Node.js prerequisite.</comment>
   </data>
   <data name="FreOverlay_ToggleOn" xml:space="preserve">
     <value>បើក</value>
@@ -125,32 +225,315 @@
   <data name="FreOverlay_ToggleOff" xml:space="preserve">
     <value>បិទ</value>
   </data>
-  <data name="FreOverlay_AutoDetectLabel.Text" xml:space="preserve">
-    <value>ការរកឃើញកំហុសដោយស្វ័យប្រវត្តិ</value>
-  </data>
-  <data name="FreOverlay_AutoDetectDescription.Text" xml:space="preserve">
-    <value>ផ្តល់សិទ្ធិឱ្យ Intelligent Terminal ចូលប្រើសែលរបស់អ្នក និងរកឃើញកំហុសដោយស្វ័យប្រវត្តិ។</value>
-  </data>
 <data name="FreOverlay_InstallErrorShellIntegration" xml:space="preserve">
-    <value>⚠ បានបរាជ័យក្នុងការតំឡើងការរួមបញ្ចូល shell។ ការរកឃើញកំហុសត្រូវបានបិទ។ អ្នកអាចបើកវាឡើងវិញ ហើយសាកល្បងម្ដងទៀត ឬរក្សាទុកដើម្បីបន្តដោយគ្មានវា។</value>
+    <value>បានបរាជ័យក្នុងការតំឡើងការរួមបញ្ចូល shell។ ការរកឃើញកំហុសត្រូវបានបិទ។ អ្នកអាចបើកវាឡើងវិញ ហើយសាកល្បងម្ដងទៀត ឬរក្សាទុកដើម្បីបន្តដោយគ្មានវា។</value>
+    <comment>FRE setup error shown when shell integration cannot be installed. Error detection is turned off so setup can continue, and the user may re-enable it to retry.</comment>
   </data><data name="FreOverlay_InstallErrorHooks" xml:space="preserve">
-    <value>⚠ បានបរាជ័យក្នុងការតំឡើង session hooks។ ការគ្រប់គ្រងវគ្គត្រូវបានបិទ។ អ្នកអាចបើកវាឡើងវិញ ហើយសាកល្បងម្ដងទៀត ឬរក្សាទុកដើម្បីបន្តដោយគ្មានវា។</value>
-    <comment>{Locked="hooks"}</comment>
+    <value>បានបរាជ័យក្នុងការតំឡើង session hooks។ ការគ្រប់គ្រងវគ្គត្រូវបានបិទ។ អ្នកអាចបើកវាឡើងវិញ ហើយសាកល្បងម្ដងទៀត ឬរក្សាទុកដើម្បីបន្តដោយគ្មានវា។</value>
+    <comment>{Locked="hooks"} FRE setup error shown when session hooks cannot be installed. Session management is turned off so setup can continue, and the user may re-enable it to retry.</comment>
   </data><data name="FreOverlay_ErrorHelpLink" xml:space="preserve">
     <value>ស្វែងយល់ពីរបៀបជួសជុលវាដោយដៃ</value>
     <comment>Hyperlink shown below an FRE setup error message. Opens step-by-step manual setup instructions in the browser.</comment>
-  </data>  <data name="FreOverlay_AutoDetectShellIntegrationHintPrefix" xml:space="preserve">
-    <value>ការបើកនេះនឹងតំឡើងការរួមបញ្ចូល shell ដើម្បីរកឃើញការបរាជ័យនៃពាក្យបញ្ជា។ </value>
-  </data>
-  <data name="FreOverlay_AutoDetectShellIntegrationHintLink" xml:space="preserve">
-    <value>ស្វែងយល់បន្ថែម</value>
   </data>
   <data name="InitShellIntegrationExecutionPolicyErrorMessage" xml:space="preserve">
     <value>គោលនយោបាយប្រតិបត្តិរបស់ PowerShell កំពុងទប់ស្កាត់ស្គ្រីប។</value>
     <comment>Body of an error dialog shown after the user tries to install PowerShell shell integration but their PowerShell execution policy (Restricted or AllSigned) is blocking scripts. A separate "Learn how to fix this manually" hyperlink (FreOverlay_ErrorHelpLink) is rendered on its own line below this sentence. {Locked="PowerShell"}</comment>
   </data>
   <data name="FreOverlay_InstallErrorShellIntegrationExecutionPolicy" xml:space="preserve">
-    <value>⚠ គោលនយោបាយប្រតិបត្តិរបស់ PowerShell កំពុងទប់ស្កាត់ស្គ្រីប។ ការរកឃើញកំហុសត្រូវបានបិទ។</value>
-    <comment>{Locked="PowerShell"}</comment>
+    <value>គោលនយោបាយប្រតិបត្តិរបស់ PowerShell កំពុងទប់ស្កាត់ស្គ្រីប។ ការរកឃើញកំហុសត្រូវបានបិទ។</value>
+    <comment>{Locked="PowerShell"} FRE setup error shown when PowerShell execution policy prevents shell-integration scripts from running. Error detection is turned off so setup can continue.</comment>
+  </data>
+  <data name="UsageGroup/[using:Windows.UI.Xaml.Automation]AutomationProperties/Name" xml:space="preserve"><value>ការប្រើប្រាស់</value><comment>Accessibility name for the session usage summary in the terminal bottom bar.</comment></data>
+  <data name="Usage_TokensUnit" xml:space="preserve"><value>ថូខឹន</value><comment>Unit label for AI context-window token counts. Translate this term using the established AI/LLM terminology for the locale.</comment></data>
+  <data name="Usage_ContextWindowLabel" xml:space="preserve"><value>បង្អួចបរិបទ</value><comment>Label for the AI agent context-window usage percentage shown in the terminal bottom bar.</comment></data>
+  <data name="AgentPane_DefaultTitle" xml:space="preserve">
+    <value>ជំនួយការ AI</value>
+    <comment>Default title shown in the agent pane title bar before an agent reports its name. "AI assistant" refers to the built-in AI coding assistant, not a human assistant.</comment>
+  </data>
+  <data name="AgentPane_ConnectingTitle" xml:space="preserve">
+    <value>ភ្នាក់ងារ · កំពុងតភ្ជាប់</value>
+    <comment>Status shown in the agent pane title bar while the AI agent is connecting. Preserve the centered dot separator. Here "agent" means an AI intelligent agent, not a proxy or human agent.</comment>
+  </data>
+  <data name="AgentPane_SessionsDisabledHint.Text" xml:space="preserve">
+    <value>ដើម្បីទទួលបានបទពិសោធន៍គ្រប់គ្រងវគ្គល្អបំផុត សូមបើក Sessions នៅក្នុង Settings &gt; Agents។</value>
+    <comment>Subtle hint below the agent sessions title, shown only in session management when Sessions is off and policy permits changes. Navigation is Settings &gt; Agents, then turn on Sessions. Match the displayed labels: Settings uses SettingsMenuItem/SettingsTab, Agents uses Nav_AIAgents.Content, and Sessions uses AIAgents_SessionManagement.Header, including fallback labels where a locale has no translation. Turning Sessions off only prevents hook updates; existing hooks and session functionality can keep working. Do not imply that tracking, data refresh, or functionality stops.</comment>
+  </data>
+  <data name="TabCloseBelow" xml:space="preserve">
+    <value>បិទផ្ទាំងខាងក្រោម</value>
+  </data>
+  <data name="VerticalTabsCollapsePane" xml:space="preserve">
+    <value>បង្រួមរបារចំហៀង</value>
+    <comment>Tooltip and accessible name for the vertical tabs sidebar toggle button. Refers to the left sidebar, not the Agent Pane.</comment>
+  </data>
+  <data name="VerticalTabsExpandPane" xml:space="preserve">
+    <value>ពង្រីករបារចំហៀង</value>
+    <comment>Tooltip and accessible name for the vertical tabs sidebar toggle button. Refers to the left sidebar, not the Agent Pane.</comment>
+  </data>
+  <data name="VerticalTabsExpandGroup" xml:space="preserve">
+    <value>ពង្រីកក្រុមផ្ទាំង</value>
+    <comment>Accessibility name and tooltip for the button that expands a group of tabs in the sidebar.</comment>
+  </data>
+  <data name="VerticalTabsCollapseGroup" xml:space="preserve">
+    <value>បង្រួមក្រុមផ្ទាំង</value>
+    <comment>Accessibility name and tooltip for the button that collapses a group of tabs in the sidebar.</comment>
+  </data>
+  <data name="VerticalTabsFallbackTabTitle" xml:space="preserve">
+    <value>ផ្ទាំង</value>
+    <comment>Fallback title for a terminal tab in the sidebar when no title is available.</comment>
+  </data>
+  <data name="VerticalTabsHeader.Text" xml:space="preserve">
+    <value>ផ្ទាំង</value>
+  </data>
+  <data name="VerticalTabsSearchButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ស្វែងរកផ្ទាំង</value>
+  </data>
+  <data name="VerticalTabsSearchButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>ស្វែងរកផ្ទាំង</value>
+  </data>
+  <data name="VerticalTabsSearchBox.PlaceholderText" xml:space="preserve">
+    <value>ស្វែងរកផ្ទាំង</value>
+  </data>
+  <data name="VerticalTabsSearchBox.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ស្វែងរកផ្ទាំង</value>
+  </data>
+  <data name="VerticalTabsFilterButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ត្រងផ្ទាំង</value>
+  </data>
+  <data name="VerticalTabsFilterButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>ត្រងផ្ទាំង</value>
+  </data>
+  <data name="VerticalTabsFilterSection.Text" xml:space="preserve">
+    <value>តម្រង</value>
+    <comment>Section heading above the controls that filter which tabs are shown in the sidebar.</comment>
+  </data>
+  <data name="VerticalTabsFilterAllTabs.Text" xml:space="preserve">
+    <value>ផ្ទាំងទាំងអស់</value>
+  </data>
+  <data name="VerticalTabsFilterAgentsOnly.Text" xml:space="preserve">
+    <value>តែភ្នាក់ងារប៉ុណ្ណោះ</value>
+  </data>
+  <data name="VerticalTabsMetadataSection.Text" xml:space="preserve">
+    <value>ទិន្នន័យមេតាថេប</value>
+    <comment>Section heading above the options that choose which metadata appears in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsMetadataAgentStatus.Text" xml:space="preserve">
+    <value>ស្ថានភាពភ្នាក់ងារ</value>
+    <comment>Option that shows an agent's current status in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsMetadataWorkingDirectory.Text" xml:space="preserve">
+    <value>បញ្ជីការងារបច្ចុប្បន្ន</value>
+    <comment>Option that shows the current working directory in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsMetadataRepository.Text" xml:space="preserve">
+    <value>ឃ្លាំង Git</value>
+    <comment>Option that shows the Git repository name in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsMetadataBranch.Text" xml:space="preserve">
+    <value>សាខា Git</value>
+    <comment>Option that shows the Git branch name in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsMetadataChanges.Text" xml:space="preserve">
+    <value>ការផ្លាស់ប្តូរ Git</value>
+    <comment>Option that shows the Git working tree change summary in sidebar tab rows.</comment>
+  </data>
+  <data name="VerticalTabsFilterStatusSingle" xml:space="preserve">
+    <value>កំពុងបង្ហាញវគ្គភ្នាក់ងារ 1</value>
+  </data>
+  <data name="VerticalTabsFilterStatusPlural" xml:space="preserve">
+    <value>កំពុងបង្ហាញវគ្គភ្នាក់ងារ {0}</value>
+  </data>
+  <data name="VerticalTabsFilterCurrentHidden.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ផ្ទាំងបច្ចុប្បន្នត្រូវបានលាក់ដោយតម្រងនេះ</value>
+  </data>
+  <data name="VerticalTabsFilterCurrentHidden.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>ផ្ទាំងបច្ចុប្បន្នត្រូវបានលាក់ដោយតម្រងនេះ</value>
+  </data>
+  <data name="VerticalTabsFilterShowAll.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>បង្ហាញផ្ទាំងទាំងអស់</value>
+  </data>
+  <data name="VerticalTabsFilterShowAll.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>បង្ហាញផ្ទាំងទាំងអស់</value>
+  </data>
+  <data name="VerticalTabsHistoryButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ភ្នាក់ងារ</value>
+    <comment>Accessible name of the toolbar button that opens the Agents sidebar view. Agents are AI agents, not human representatives; the view lists their live and historical sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistoryButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>ភ្នាក់ងារ</value>
+    <comment>Tooltip for the toolbar button that opens the Agents sidebar view. Agents are AI agents, not human representatives; the view lists their live and historical sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistoryHeader.Text" xml:space="preserve">
+    <value>ភ្នាក់ងារ</value>
+    <comment>Header of the Agents sidebar view. Agents are AI agents, not human representatives; the view lists their live and historical sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistoryCloseButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>បិទទិដ្ឋភាពភ្នាក់ងារ</value>
+    <comment>Accessible name of the button that closes the Agents sidebar view. Closing this view hides the sidebar; it does not terminate any agents or sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistoryCloseButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>បិទទិដ្ឋភាពភ្នាក់ងារ</value>
+    <comment>Tooltip for the button that closes the Agents sidebar view. Closing this view hides the sidebar; it does not terminate any agents or sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistorySearchBox.PlaceholderText" xml:space="preserve">
+    <value>ស្វែងរកវគ្គភ្នាក់ងារ</value>
+  </data>
+  <data name="VerticalTabsHistorySearchBox.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ស្វែងរកវគ្គភ្នាក់ងារ</value>
+  </data>
+  <data name="VerticalTabsHistoryCurrentSession" xml:space="preserve">
+    <value>វគ្គបច្ចុប្បន្ន</value>
+    <comment>UI Automation status for the live AI-agent session associated with the active terminal pane. This identifies the currently displayed session, not keyboard selection or the most recent session.</comment>
+  </data>
+  <data name="VerticalTabsHistoryEmpty" xml:space="preserve">
+    <value>រកមិនឃើញវគ្គភ្នាក់ងារទេ។</value>
+  </data>
+  <data name="VerticalTabsHistoryNoMatches" xml:space="preserve">
+    <value>គ្មានវគ្គភ្នាក់ងារដែលត្រូវគ្នាទេ។</value>
+  </data>
+  <data name="VerticalTabsHistoryLoadError" xml:space="preserve">
+    <value>មិនអាចផ្ទុកវគ្គភ្នាក់ងារបានទេ។</value>
+    <comment>Error shown when the Agent sessions sidebar view cannot load its list of live and historical AI-agent sessions. This refers to loading the session list, not starting or resuming a session.</comment>
+  </data>
+  <data name="VerticalTabsHistoryInvalidResponse" xml:space="preserve">
+    <value>មិនអាចផ្ទុកវគ្គភ្នាក់ងារបានទេ: ការឆ្លើយតបមិនត្រឹមត្រូវ។</value>
+    <comment>Error shown when the Agent sessions sidebar receives an invalid response while loading its list of live and historical AI-agent sessions.</comment>
+  </data>
+  <data name="VerticalTabsHistoryActivationError" xml:space="preserve">
+    <value>មិនអាចធ្វើឱ្យវគ្គដែលបានជ្រើសសកម្មបានទេ។</value>
+  </data>
+  <data name="VerticalTabsHistoryLiveAgentTitleFormat" xml:space="preserve">
+    <value>វគ្គភ្នាក់ងារ {0}</value>
+    <comment>History row title for a live agent-pane session whose provider did not supply a conversation title. {0} is the provider display name.</comment>
+  </data>
+  <data name="CompactNewTabButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ផ្ទាំងថ្មី</value>
+  </data>
+  <data name="CompactNewTabButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>ផ្ទាំងថ្មី</value>
+  </data>
+  <data name="CompactNewTabMenuButton.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ម៉ឺនុយផ្ទាំងថ្មី</value>
+  </data>
+  <data name="CompactNewTabMenuButton.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>ម៉ឺនុយផ្ទាំងថ្មី</value>
+  </data>
+  <data name="SwitchToHorizontalTabsText" xml:space="preserve">
+    <value>ប្ដូរទៅផ្ទាំងផ្ដេក</value>
+  </data>
+  <data name="SwitchToHorizontalTabsToolTip" xml:space="preserve">
+    <value>ប្រើផ្ទាំងផ្ដេកនៅក្នុងបង្អួច Terminal ទាំងអស់</value>
+  </data>
+  <data name="SwitchToVerticalTabsText" xml:space="preserve">
+    <value>ប្ដូរទៅរបារចំហៀង</value>
+    <comment>Context-menu command that changes the tab layout from horizontal tabs to the sidebar.</comment>
+  </data>
+  <data name="SwitchToVerticalTabsToolTip" xml:space="preserve">
+    <value>ប្រើរបារចំហៀងនៅក្នុងបង្អួច Terminal ទាំងអស់</value>
+    <comment>Tooltip for the command that changes the tab layout from horizontal tabs to the sidebar in every Terminal window.</comment>
+  </data>
+  <data name="TabCloseBelowToolTip" xml:space="preserve">
+    <value>បិទផ្ទាំងទាំងអស់នៅខាងក្រោមផ្ទាំងនេះ</value>
+  </data>
+  <data name="NotificationIconRestoreKeptTab" xml:space="preserve">
+    <value>ស្ដារ</value>
+    <comment>Command in the notification-area menu that brings a background tab and its still-running terminal panes back into a window. It does not restart the processes or restore a file backup.</comment>
+  </data>
+  <data name="KeepTabRunningText" xml:space="preserve">
+    <value>រក្សាផ្ទាំងឱ្យដំណើរការ</value>
+    <comment>Command at the top of a vertical terminal tab's context menu that enables keeping all panes running after the tab or window is closed. Also labels the tab's keep-running status indicator. This does not pin the tab or save it for a restart.</comment>
+  </data>
+  <data name="PinTabText" xml:space="preserve">
+    <value>ខ្ទាស់ផ្ទាំង</value>
+    <comment>Context menu action to keep a terminal tab at the start of the tab list until unpinned. Does not keep its processes running after closing or persist across restarts.</comment>
+  </data>
+  <data name="PinTabToolTip" xml:space="preserve">
+    <value>ផ្លាស់ទីផ្ទាំងនេះទៅមុខផ្ទាំងដែលមិនបានខ្ទាស់។</value>
+  </data>
+  <data name="UnpinTabText" xml:space="preserve">
+    <value>ដោះខ្ទាស់ផ្ទាំង</value>
+    <comment>Context menu action to move a pinned terminal tab back into the regular tab group.</comment>
+  </data>
+  <data name="UnpinTabToolTip" xml:space="preserve">
+    <value>ផ្លាស់ទីផ្ទាំងនេះទៅក្រោយផ្ទាំងដែលបានខ្ទាស់។</value>
+  </data>
+  <data name="PinnedTabName" xml:space="preserve">
+    <value>បានខ្ទាស់</value>
+    <comment>Accessibility name and tooltip for a terminal tab pinned at the beginning of the tab list.</comment>
+  </data>
+  <data name="CollapsedPinnedTabIcon.AutomationProperties.Name" xml:space="preserve">
+    <value>បានខ្ទាស់</value>
+    <comment>Accessibility name for the pin indicator on a terminal tab in the collapsed sidebar.</comment>
+  </data>
+  <data name="KeepTabRunningToolTip" xml:space="preserve">
+    <value>រក្សាផ្ទាំងនេះឱ្យដំណើរការក្នុងផ្ទៃខាងក្រោយ បន្ទាប់ពីបិទផ្ទាំង ឬបង្អួច។</value>
+    <comment>Tooltip and accessibility help for Keep tab running. Includes shell panes and the AI assistant; their current processes and sessions stay alive, rather than restarting later.</comment>
+  </data>
+  <data name="TurnOffKeepTabRunningText" xml:space="preserve">
+    <value>បិទមុខងាររក្សាឱ្យដំណើរការ</value>
+    <comment>Command shown instead of Keep tab running when that tab already has keep running enabled. It only turns off the background-running behavior; it does not close the tab or stop its current processes immediately.</comment>
+  </data>
+  <data name="TurnOffKeepTabRunningToolTip" xml:space="preserve">
+    <value>ផ្ទាំងនេះនឹងលែងបន្តដំណើរការ បន្ទាប់ពីអ្នកបិទផ្ទាំង ឬបង្អួច។</value>
+    <comment>Tooltip and accessibility help for Turn off keep running. After this action, closing the tab or its window closes its panes normally instead of retaining them in the background. The current tab and processes are not closed by this action.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusIdle" xml:space="preserve">
+    <value>ទំនេរ</value>
+    <comment>Agent History session status: the session is live but has no active work.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusWorking" xml:space="preserve">
+    <value>សកម្ម</value>
+    <comment>Agent History session status: the agent is actively processing a request.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusAttention" xml:space="preserve">
+    <value>រង់ចាំការបញ្ចូល</value>
+    <comment>Agent History session status: the agent needs a response or approval from the user.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusError" xml:space="preserve">
+    <value>កំហុស</value>
+    <comment>Agent History session status: the session encountered an error.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusHistorical" xml:space="preserve">
+    <value>ពីប្រវត្តិ</value>
+    <comment>Agent History session status: a closed or saved session with no live pane. Both ended and historical registry states use this label.</comment>
+  </data>
+  <data name="VerticalTabsHistoryStatusUnknown" xml:space="preserve">
+    <value>មិនស្គាល់</value>
+    <comment>Agent History session status: the registry did not provide a recognized status.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeJustNow" xml:space="preserve">
+    <value>ទើបតែឥឡូវនេះ</value>
+    <comment>Agent History relative time: the session&apos;s latest activity was less than one minute ago.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeMinute" xml:space="preserve">
+    <value>1 នាទីមុន</value>
+    <comment>Agent History relative time: the session&apos;s latest activity was one minute ago.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeMinutes" xml:space="preserve">
+    <value>{0} នាទីមុន</value>
+    <comment>Agent History relative time. {0} is the whole number of minutes since the session&apos;s latest activity, from 2 to 59.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeHour" xml:space="preserve">
+    <value>1 ម៉ោងមុន</value>
+    <comment>Agent History relative time: the session&apos;s latest activity was one hour ago.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeHours" xml:space="preserve">
+    <value>{0} ម៉ោងមុន</value>
+    <comment>Agent History relative time. {0} is the whole number of hours since the session&apos;s latest activity, from 2 to 23.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeDay" xml:space="preserve">
+    <value>1 ថ្ងៃមុន</value>
+    <comment>Agent History relative time: the session&apos;s latest activity was one day ago.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeDays" xml:space="preserve">
+    <value>{0} ថ្ងៃមុន</value>
+    <comment>Agent History relative time. {0} is the whole number of days since the session&apos;s latest activity, at least 2.</comment>
+  </data>
+  <data name="VerticalTabsHistoryAgeUnknown" xml:space="preserve">
+    <value>មិនស្គាល់</value>
+    <comment>Agent History time label when the session&apos;s latest activity timestamp is missing or invalid. Do not imply that the session was recently active.</comment>
+  </data>
+  <data name="NotificationIconCloseAllKeptTabs" xml:space="preserve">
+    <value>បិទផ្ទាំងទាំងអស់ដែលកំពុងដំណើរការនៅផ្ទៃខាងក្រោយ</value>
+    <comment>Command below the background tabs in the notification-area menu. Closes all detached tabs retained by Keep tab running and terminates their panes and processes. Does not close tabs still in a window or only turn off keep running.</comment>
   </data>
 </root>

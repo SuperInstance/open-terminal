@@ -3,9 +3,16 @@
 
 #pragma once
 
+#include <optional>
+
 #include "AgentPaneContent.g.h"
+#include "AgentUsage.h"
 #include "TerminalPaneContent.h"
 #include "BasicPaneEvents.h"
+#include "../inc/AgentPaneRestore.h"
+
+#include "AutofixState.h"
+#include "AgentPaneLifetime.h"
 
 namespace winrt::TerminalApp::implementation
 {
@@ -20,10 +27,10 @@ namespace winrt::TerminalApp::implementation
         void UpdateAgentStatus(const winrt::hstring& name,
                                const winrt::hstring& version,
                                const winrt::hstring& model,
-                               const winrt::hstring& state);
+                               const winrt::hstring& state,
+                               const winrt::hstring& backend);
 
         void SetSessionsView(bool active);
-
         // Whether the agent pane is currently displaying its sessions view
         // (vs the chat view). Reflects the last `agent_state_changed` snapshot
         // from wta for this pane. Read by the window-level bottom bar to
@@ -31,23 +38,85 @@ namespace winrt::TerminalApp::implementation
         // active, the next press closes the pane; otherwise it switches
         // into sessions view.
         bool IsSessionsView() const noexcept { return _isSessionsView; }
+        winrt::hstring AgentSessionId() const noexcept { return _agentSessionId; }
+        void SetAgentSessionId(const winrt::hstring& sessionId);
+        const winrt::hstring& YoloControlOwner() const noexcept { return _yoloControlOwner; }
+        void SetYoloControlOwner(const winrt::hstring& owner) noexcept
+        {
+            _yoloControlOwner =
+                ::Microsoft::Terminal::AgentPaneRestore::IsValidYoloControlOwner(
+                    std::wstring_view{ owner }) ?
+                    owner :
+                    winrt::hstring{};
+        }
+
+        // The agent identity this pane is currently running, as an
+        // `AgentPaneBackend` token (`claude`, `wsl:Ubuntu:claude`, ...), plus
+        // the launch command when it names a custom provider.
+        //
+        // Refreshed from the tab immediately before every save rather than
+        // cached at creation: `/agent` switches the running agent through
+        // `OnAgentSwitchRequested`, and a stale copy here would persist the
+        // agent the pane started with instead of the one it ended up on.
+        void SetAgentRestoreIdentity(const winrt::hstring& identity, const winrt::hstring& customCommand) noexcept
+        {
+            // An ACP session belongs to the agent that created it. If the tab
+            // has switched agents since this session was recorded, the id is
+            // not resumable by the agent we are about to persist — asking the
+            // new agent to load it fails with "no rollout found for thread id"
+            // and the pane comes back empty anyway, minus the error.
+            if (!_agentSessionId.empty() && _agentSessionOwner != identity)
+            {
+                _agentSessionId = {};
+                _agentSessionOwner = {};
+                _yoloControlOwner = {};
+            }
+
+            _agentRestoreIdentity = identity;
+            _agentRestoreCustomCommand = customCommand;
+        }
+
+        // The agent that owned `_agentSessionId` when it was recorded. Always
+        // written together with a non-empty session id.
+        void SetAgentSessionOwner(const winrt::hstring& agentIdentity) noexcept
+        {
+            _agentSessionOwner = agentIdentity;
+        }
+
+        // The wta executable the pane was launched with. Only cosmetic — a
+        // restore re-detects wta rather than trusting a saved path — so it is
+        // captured once and never refreshed.
+        void SetAgentRestoreExecutable(const winrt::hstring& executablePath) noexcept
+        {
+            _wtaExecutablePath = executablePath;
+        }
+
+        void CopyRestoreStateFrom(const AgentPaneContent& source) noexcept
+        {
+            // A save before helper status replay must retain the same resumable session.
+            _agentSessionId = source._agentSessionId;
+            _agentSessionOwner = source._agentSessionOwner;
+            _agentRestoreIdentity = source._agentRestoreIdentity;
+            _agentRestoreCustomCommand = source._agentRestoreCustomCommand;
+            _wtaExecutablePath = source._wtaExecutablePath;
+        }
+
+        void CopyLiveStateFrom(const AgentPaneContent& source)
+        {
+            UpdateAgentStatus(source._agentName, source._agentVersion, source._agentModel, source._agentState, source._agentBackend);
+            _helperEventReady = source._helperEventReady;
+            _yoloControlOwner = source._yoloControlOwner;
+            _agentUsage = source._agentUsage;
+            ApplyAutofixState(source._autofixState, source._lastErrorPaneId, source._detectedSummary, source._fixPreview, source._hotkeyHint, source._suggestionTitle);
+        }
 
         // --- Per-pane autofix / diagnostics state ---
         // Driven by inbound `autofix_state_changed` events for this pane's
         // owning tab. The window-level bottom bar reads these accessors
         // when refreshing for the active tab.
-        enum class AutofixState
-        {
-            Idle,
-            Detected,
-            Pending,
-            // Analysis finished; the result (fix or explanation) is waiting
-            // in the agent pane chat. Surfaced only when the pane is closed
-            // — the helper decides via pane_open and sends Idle instead when
-            // it's already open. Replaces the old Armed/Suggested split:
-            // autofix no longer auto-executes, so both surface identically.
-            Review,
-        };
+        // Analysis results use Review while waiting in a closed agent pane.
+        // The helper sends Idle instead when the pane is already open.
+        using AutofixState = ::TerminalApp::Autofix::State;
         // Update the diagnostics state from an inbound autofix_state event
         // (single-writer for this pane's state). `pane_id` and other fields
         // come from the JSON payload; we only stash strings that the bar
@@ -63,37 +132,59 @@ namespace winrt::TerminalApp::implementation
         // Update the cached pane-position. Fires StateChanged so the
         // bottom bar can refresh its toggle-icon orientation.
         void SetAgentPanePosition(const winrt::hstring& position);
-        // --- Cross-window drag rename plumbing ---
-        // When a tab is dragged into this window, the source side has stashed
-        // the originating tab's StableId keyed by ContentId. The target
-        // window's `_MakeTerminalPane` consumes that entry, wraps the
-        // ContentId-reattached pane back into an AgentPaneContent, and stores
-        // the old StableId here. After the new Tab is constructed (with its
-        // own fresh StableId), the page walks the agent leaves and emits a
-        // `tab_renamed` event so the wta-helper can rekey its `--owner-tab-id`.
-        // Internal-only (not on IDL) — only TerminalPage calls these.
         void SetPendingRenameFromTabId(const winrt::hstring& value) noexcept { _pendingRenameFromTabId = value; }
         winrt::hstring TakePendingRenameFromTabId() noexcept
         {
-            const auto v = _pendingRenameFromTabId;
+            const auto value = _pendingRenameFromTabId;
             _pendingRenameFromTabId = {};
-            return v;
+            return value;
         }
+        void SetTransferSourceTabId(const winrt::hstring& value) noexcept { _transferSourceTabId = value; }
+        winrt::hstring TransferSourceTabId() const noexcept { return _transferSourceTabId; }
+        void ClearTransferSourceTabId() noexcept { _transferSourceTabId = {}; }
+        void SetPendingAgentSourceProfileGuid(const std::optional<winrt::guid>& value) noexcept { _pendingAgentSourceProfileGuid = value; }
+        std::optional<winrt::guid> TakePendingAgentSourceProfileGuid() noexcept
+        {
+            const auto value = _pendingAgentSourceProfileGuid;
+            _pendingAgentSourceProfileGuid.reset();
+            return value;
+        }
+        void AdoptLifetime(AgentPaneLifetime lifetime) noexcept { _lifetime = std::move(lifetime); }
+        AgentPaneLifetime TakeLifetime() noexcept { return std::move(_lifetime); }
+        bool HasLifetime() const noexcept { return static_cast<bool>(_lifetime); }
+        uint64_t TransferId() const noexcept { return _transferId; }
+        void RestoreHiddenAfterTransfer(bool hidden) noexcept { _restoreHiddenAfterTransfer = hidden; }
+        bool TakeHiddenAfterTransfer() noexcept { return std::exchange(_restoreHiddenAfterTransfer, false); }
+        void AwaitingTransferredTabContent(bool awaiting) noexcept { _awaitingTransferredTabContent = awaiting; }
+        bool AwaitingTransferredTabContent() const noexcept { return _awaitingTransferredTabContent; }
+
+        // Apply the provided background and foreground brushes to the
+        // agent-pane top bar (#348). Internal-only (not on IDL).
+        void ApplyThemeColors(const winrt::Windows::UI::Xaml::Media::Brush& background,
+                              const winrt::Windows::UI::Xaml::Media::Brush& foreground);
 
         // Accessors for state that the window-level bottom bar projects.
         AutofixState GetAutofixState() const noexcept { return _autofixState; }
         // True once the helper's ACP session has reached Connected (driven
-        // by the `agent_status` `state` field via UpdateAgentStatus). The
-        // bottom-bar diagnostics group is gated on this: no autofix
+        // by the `agent_status` `state` field via UpdateAgentStatus). This is
+        // one gate for the bottom-bar diagnostics group: no autofix
         // capability exists before connect (cold start) or after a
-        // failure/disconnect, so the button must not appear at all.
+        // failure/disconnect. An actionable autofix state is also required.
         bool IsAgentConnected() const noexcept { return _agentState == L"connected"; }
+        // True after the first agent_status routed to this pane. The helper
+        // subscribes to WT events before it can publish that status, so this
+        // also proves that settings events can reach the helper.
+        bool IsHelperEventReady() const noexcept { return _helperEventReady; }
+        winrt::hstring GetAgentName() const noexcept { return _agentName; }
+        winrt::hstring GetAgentModel() const noexcept { return _agentModel; }
         winrt::hstring GetLastErrorPaneId() const noexcept { return _lastErrorPaneId; }
         winrt::hstring GetFixPreview() const noexcept { return _fixPreview; }
         winrt::hstring GetHotkeyHint() const noexcept { return _hotkeyHint; }
         winrt::hstring GetSuggestionTitle() const noexcept { return _suggestionTitle; }
         winrt::hstring GetDetectedSummary() const noexcept { return _detectedSummary; }
         winrt::hstring GetAgentPanePosition() const noexcept { return _agentPanePosition; }
+        [[nodiscard]] bool ApplyAgentUsage(const Json::Value& usage);
+        const std::vector<::TerminalApp::AgentUsage::Item>& GetAgentUsage() const noexcept { return _agentUsage; }
 
         // Fired whenever cached bottom-bar-relevant state changes (autofix
         // state, sessions view, agent pane position). The outer page
@@ -133,11 +224,20 @@ namespace winrt::TerminalApp::implementation
         winrt::hstring _agentVersion{};
         winrt::hstring _agentModel{};
         winrt::hstring _agentState{};
+        winrt::hstring _agentBackend{};
+        bool _helperEventReady{ false };
 
-        // When true, the bar replaces "<agent> <version>" with "Agent sessions"
+        // When true, the bar replaces the agent/model label with "Agent sessions"
         // and hides the agent logo. Driven by TerminalPage::OnAgentStateChanged
         // (the single writer for view-derived UI state).
         bool _isSessionsView{ false };
+        bool _canEnableSessions{ false };
+        winrt::hstring _agentSessionId{};
+        winrt::hstring _agentSessionOwner{};
+        winrt::hstring _yoloControlOwner{};
+        winrt::hstring _agentRestoreIdentity{};
+        winrt::hstring _agentRestoreCustomCommand{};
+        winrt::hstring _wtaExecutablePath{};
 
         // --- Diagnostics / autofix state (projected by the window bottom bar) ---
         AutofixState _autofixState{ AutofixState::Idle };
@@ -146,15 +246,22 @@ namespace winrt::TerminalApp::implementation
         winrt::hstring _hotkeyHint{};
         winrt::hstring _suggestionTitle{};
         winrt::hstring _detectedSummary{};
-        // Current AgentPanePosition for icon orientation. Set by
-        // TerminalPage on creation + on settings change.
+        std::vector<::TerminalApp::AgentUsage::Item> _agentUsage;
+        // Effective per-tab AgentPanePosition for icon orientation.
+        // TerminalPage updates it from the Tab runtime override or global
+        // fallback; generic settings propagation must not overwrite it.
         winrt::hstring _agentPanePosition{ L"bottom" };
-
-        // Source-tab StableId stashed during a cross-window agent-pane drag
-        // (target side, between `_MakeTerminalPane` ContentId-reattach and
-        // post-Tab-construction in `_InitializeTab`). Empty when no rename
-        // is pending. See SetPendingRenameFromTabId / TakePendingRenameFromTabId.
         winrt::hstring _pendingRenameFromTabId{};
+        // The old StableId remains a temporary alias until this replacement
+        // wrapper recovers the helper's first post-transfer status.
+        winrt::hstring _transferSourceTabId{};
+        std::optional<winrt::guid> _pendingAgentSourceProfileGuid;
+        AgentPaneLifetime _lifetime;
+        inline static std::atomic<uint64_t> _nextTransferId{ 0 };
+        const uint64_t _transferId{ ++_nextTransferId };
+        bool _closed{ false };
+        bool _restoreHiddenAfterTransfer{ false };
+        bool _awaitingTransferredTabContent{ false };
 
         // Inner content event tokens — forwarded to our own BasicPaneEvents.
         winrt::event_token _innerCloseRequested{};
@@ -171,6 +278,8 @@ namespace winrt::TerminalApp::implementation
 
         void _refreshLabel();
         void _refreshLogo();
+        void _refreshSessionsHint();
+        float _chromeHeight();
     };
 }
 

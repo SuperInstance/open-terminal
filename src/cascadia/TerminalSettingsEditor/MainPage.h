@@ -9,6 +9,8 @@
 #include "Utils.h"
 #include "SearchIndex.h"
 
+#include <unordered_set>
+
 namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
 {
     struct Breadcrumb : BreadcrumbT<Breadcrumb>
@@ -56,6 +58,8 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
 
         void SettingsNav_Loaded(const Windows::Foundation::IInspectable& sender, const Windows::UI::Xaml::RoutedEventArgs& args);
         void SettingsNav_ItemInvoked(const Microsoft::UI::Xaml::Controls::NavigationView& sender, const Microsoft::UI::Xaml::Controls::NavigationViewItemInvokedEventArgs& args);
+        void SettingsNav_PaneOpened(const Microsoft::UI::Xaml::Controls::NavigationView& sender, const Windows::Foundation::IInspectable& args);
+        void SettingsNav_PaneClosed(const Microsoft::UI::Xaml::Controls::NavigationView& sender, const Windows::Foundation::IInspectable& args);
         void SaveButton_Click(const Windows::Foundation::IInspectable& sender, const Windows::UI::Xaml::RoutedEventArgs& args);
         void ResetButton_Click(const Windows::Foundation::IInspectable& sender, const Windows::UI::Xaml::RoutedEventArgs& args);
         void BreadcrumbBar_ItemClicked(const Microsoft::UI::Xaml::Controls::BreadcrumbBar& sender, const Microsoft::UI::Xaml::Controls::BreadcrumbBarItemClickedEventArgs& args);
@@ -102,8 +106,12 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
         void _NavigateToColorSchemeHandler(const IInspectable& sender, const IInspectable& args);
         Microsoft::UI::Xaml::Controls::NavigationViewItem _FindProfileNavItem(winrt::guid profileGuid) const;
 
+        void _AnnounceNavPaneState(bool opened);
+
         void _UpdateBackgroundForMica();
         void _MoveXamlParsedNavItemsIntoItemSource();
+        void _ApplyHostAgentAvailability(const Editor::ProfileViewModel& profile);
+        safe_void_coroutine _ProbeHostAgentAvailabilityAsync();
 
         safe_void_coroutine _UpdateSearchIndex();
 
@@ -121,6 +129,8 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
         Windows::UI::Xaml::Data::INotifyPropertyChanged::PropertyChanged_revoker _actionsViewModelChangedRevoker;
         Windows::UI::Xaml::Data::INotifyPropertyChanged::PropertyChanged_revoker _ntmViewModelChangedRevoker;
         Windows::UI::Xaml::Data::INotifyPropertyChanged::PropertyChanged_revoker _extensionsViewModelChangedRevoker;
+
+        std::unordered_set<std::wstring> _availableHostAgents;
     };
 }
 

@@ -1,0 +1,345 @@
+# Per-CLI history filtering
+
+## Summary
+
+The agent **session management view** only ever displays sessions for the
+**currently configured agent CLI** (Copilot / Claude / Gemini / Codex). Yet
+both processes that scan on-disk session history —
+`wta-master` and every per-tab `wta-helper` — load **all four CLIs** every
+time. This spec narrows the history scan to the current CLI and removes the
+helper's redundant local scan entirely, so the whole WT process performs
+**one** filtered history scan (in master) instead of `N+1` full scans
+(`N` helpers + master).
+
+## Motivation
+
+`history_loader::load_all()` opens and parses every session transcript on
+disk for all four CLIs. After the two-phase optimization
+(`per-CLI cap by mtime, skip Class A`) this is ~940 ms on a populated
+machine; before it was ~3.5 s. That cost is paid:
+
+- **once per `wta-master`** at startup (seeds the registry), and
+- **once per `wta-helper`** — eagerly, at helper startup
+  (`ensure_history_loaded` → `load_all`), for **every pre-warmed tab**, even
+  tabs whose session view the user never opens.
+
+Three facts make most of that work wasteful:
+
+1. The view filters to the current CLI (`current_cli_filter()` =
+   `CliSource::from_agent_id(current_agent_id)`), so 3 of the 4 CLIs scanned
+   are never shown.
+2. The view renders from **master's snapshot** (a `session/list` reply
+   issued fresh every time the view opens), **not** from the helper's local
+   registry. The helper's local scan result is shadowed.
+3. Switching the agent in Settings **restarts** master + all helpers, so a
+   fresh process re-scans automatically — no runtime "agent switched" signal
+   exists or is needed.
+
+## Background: how the session view gets its data
+
+> This section describes the data flow **before** this change, to establish
+> why the helper's local scan is redundant. The Design section below removes
+> the helper scan; afterward the helper's local registry holds only live
+> rows (no `load_all`).
+
+There are two stores in a helper:
+
+| Store | Populated by | Role |
+|---|---|---|
+| local registry `App::agent_sessions` | helper's own `load_all` (`HistoricalSessionsLoaded` → `merge_historical`) + live `apply(...)` events | fallback / live-session tracker |
+| per-tab `agents_view.snapshot` | master's `session/list` reply (`AgentsSnapshotLoaded`) | **the rendered source** |
+
+`agents_view::render` and `agents_rows_for_tab` use the snapshot when it is
+`Some`, and fall back to the local registry only when it is `None`
+(`app.rs` `agents_rows_for_tab`).
+
+Snapshot lifecycle:
+
+- **open view** (`open_agents_view_for_tab`) → sets `snapshot = Some(vec![])`
+  and fires a `session/list` refetch to master.
+- **master replies** → `snapshot = Some(rows)`.
+- **close view** → `snapshot = None` (but then `current_view != Agents`, so
+  the agents view is not rendered at all).
+- **refetch fails / times out** (`handle_agents_snapshot_failed`) → snapshot
+  is **left untouched** ("rendered rows stay on the last good data instead of
+  flashing empty").
+
+Consequence: whenever the agents view is on screen, `snapshot` is always
+`Some` (a loading placeholder, the last good rows, or fresh master rows). The
+local-registry `else` branch is effectively never rendered. The local scan
+therefore drives **display** for nothing; its only live effects are:
+
+- the instant-open cursor pre-selection (see *Consumer audit*), and
+- being the upgrade target for `apply_alive_session_join` (Historical → Live).
+
+Both are non-critical, because master's snapshot already carries liveness and
+seeds selection on arrival.
+
+### Why live / watcher sessions are unaffected
+
+Filtering the history scan only drops **historical** (on-disk, dead) rows of
+other CLIs. Live rows do not come from `load_all`:
+
+- Sessions created through master may span multiple CLIs because master owns
+  a per-agent pool. The helper's **view filter** narrows master's snapshot to
+  that helper's current CLI.
+- The hookless **watcher** discovers Class B shell sessions **machine-wide /
+  cross-CLI** (`master/mod.rs` "the file watcher sees session files
+  machine-wide"). Those are narrowed to the current CLI by the **view filter**
+  (`cli_filter` retain), not by `load_all`.
+
+So the existing view filter remains the mechanism that keeps live/watcher
+cross-CLI sessions out of the display. This spec does not touch it.
+
+## Design
+
+### 1. Master side — filter the authoritative scan (primary lever)
+
+Add a filtered entry point to `history_loader`:
+
+```rust
+/// Scan on-disk history for a single CLI, or all CLIs when `None`.
+pub fn load_for_cli(cli_filter: Option<&CliSource>) -> Vec<AgentSession>;
+```
+
+Dispatch on the filter:
+
+| `cli_filter` | scans |
+|---|---|
+| `Some(Copilot)` / `Claude` / `Gemini` / `Codex` | that one CLI's loader |
+| `None` or `Some(Unknown(_))` (custom / unrecognized agent) | all four (current behavior) |
+
+The "scan everything" path is `load_for_cli(None)`, reached via master when
+the agent is custom / unrecognized. The dispatch decision lives in a small
+testable helper, `cli_scan_flags`. (The old unconditional `load_all()` is
+removed — every caller now passes a filter.) The two-phase scan internals
+(per-CLI cap by mtime, Class A skip) are unchanged.
+
+`MAX_PER_CLI` (= 50) is a *discovery-phase acquisition cap*, not a
+guaranteed post-filter row count: the cheap phase keeps the newest 50
+candidates, then the expensive phase drops any phantoms among them, so a
+CLI can finish with fewer than 50 rows. This is intentional — it bounds
+phase-2 content reads at 50 per CLI, and we deliberately do not back-fill
+from older candidates to refill to 50.
+
+Master passes its already-resolved CLI:
+
+- `master/mod.rs` history-seed task → `load_for_cli(inner.cli_source.as_ref())`
+  (`cli_source` is resolved once at startup from the `--agent` arg via
+  `resolve_agent_id_from_cmd` → `CliSource::from_agent_id`).
+
+Master's registry, its `sessions/changed` broadcasts, and the `session/list`
+snapshot the view renders are now scoped to the current CLI.
+
+> **Superseded.** The on-disk `history_loader` was later replaced by ACP
+> `session/list`, and master became a multi-agent pool whose history is
+> sourced and stamped **per `AgentCli`** rather than from one process-wide
+> `cli_source`. See *Amendment: per-agent history in a multi-agent master*
+> below; that amendment is authoritative for the master side.
+
+### 2. Helper side — remove the redundant local scan
+
+The helper no longer scans history. Remove:
+
+- the eager `ensure_history_loaded()` calls at helper startup
+  (`main.rs` ACP TUI path) and the lazy calls from the `/sessions` open path,
+- `ensure_history_loaded` itself,
+- the `AppEvent::HistoricalSessionsLoaded` variant, its handler, and the
+  `merge_historical` call site. `merge_historical` is now used only by registry
+  tests (seeding Historical rows to exercise the still-live alive-join logic),
+  so it is gated `#[cfg(test)]`. The `HistoryLoadState` enum / field and the
+  unconditional `load_all()` are removed; the loading-shimmer animation now
+  keys off `App::agents_view_awaiting_snapshot()` (open agents view + empty
+  placeholder snapshot + in-flight refetch) instead of the old scan state.
+
+The helper's `agent_sessions` registry continues to exist and is populated by
+live `apply(...)` events (SessionStarted hooks, new_session, pane events) and
+`apply_alive_session_join`. It now holds only **live** rows this helper learns
+about — used by pane lookups (`key_for_pane`, `origin_for_pane`). Display
+comes from master's snapshot.
+
+### 3. Re-load on agent switch — automatic
+
+Changing `acpAgent` in Settings runs
+`_AgentSettingsChanged → _RebuildAgentStack → SharedWta::Restart` (kill +
+respawn master with the new `--agent`) and tears down + re-warms all helper
+agent panes. The new master re-runs `load_for_cli` with the new CLI; helpers
+have no scan to redo. No runtime "switch" message is added.
+
+> **No longer true.** A built-in agent change has not restarted master since
+> PR #296 made it a multi-agent broker; the incidental restart that kept this
+> section honest disappeared entirely with PR #637. See the amendment below.
+
+## Consumer audit (local registry with no historical rows)
+
+| Consumer | Behavior after removal |
+|---|---|
+| Display render (`agents_view::render`) | Safe — renders from master snapshot; local-registry branch was already unreachable while the view is visible. |
+| Enter / resume / delete dispatch | Safe — operate on `agents_rows_for_tab`, which uses the snapshot while the view is open. |
+| `key_for_pane` / `origin_for_pane` | Safe — live-only pane lookups, never depended on historical rows. |
+| Instant-open cursor pre-selection (`open_agents_view_for_tab`, the `rows_available` check) | Degrades gracefully — local registry is empty at that instant so no instant pre-select; `restore_agents_selection` seeds row 0 when master's snapshot arrives a moment later. Cosmetic. |
+| `apply_alive_session_join` | No-op without historical rows to upgrade; display liveness comes from the snapshot regardless. |
+| Optimistic resume flip on a dead historical row (`apply(resume_event)`) | Applies to a row not in the local registry → local no-op; real state arrives on the next snapshot refetch. Cosmetic. |
+| `wta sessions list --origin all` (asks master) | Now shows only the current CLI's history (master is filtered). Accepted — debug eye-of-god view narrows to the current agent. |
+
+## Decisions
+
+- **Custom / unrecognized agent** (`CliSource` resolves to `None`): scan all
+  four CLIs, matching the view's behavior when `current_cli_filter()` is
+  `None` (it shows all CLIs).
+- **`wta sessions list --origin all`** narrowing to the current CLI's history
+  is accepted; it reads master's (now filtered) registry. Live rows are
+  unaffected.
+- **Setup / FRE mode** (`current_agent_id` empty before an agent is picked):
+  not applicable to the helper scan anymore (the helper no longer scans);
+  master is launched with a concrete `--agent` so its filter is always
+  resolved.
+
+## Edge case: cold-open latency
+
+Master scans history asynchronously at startup (~520 ms filtered for Copilot,
+much less for other CLIs). If the user opens a session view before that scan
+completes, the first `session/list` reply returns only the live rows scanned
+so far; the loading shimmer shows until master finishes and broadcasts
+`sessions/changed`, which triggers a refetch that fills in the historicals.
+The window is small because master starts scanning at process startup, well
+before a user typically opens the view. No local helper scan is needed to
+cover it.
+
+## Performance
+
+| | Before | After |
+|---|---|---|
+| master history scan | all 4 CLIs (~940 ms) | 1 CLI (Copilot ~520 ms; Gemini ~50 ms) |
+| helper history scan | all 4 CLIs, **per pre-warmed tab**, eager | **none** |
+| total scans per WT process | `N` helpers + master, full | **1** (master), filtered |
+| master registry / broadcast / snapshot size | up to ~200 historical rows | up to ~50 (one CLI) |
+
+## Testing
+
+- `cli_scan_flags(Some(CliSource::Copilot))` selects only the Copilot loader;
+  `Some(Gemini)` only Gemini.
+- `cli_scan_flags(None)` and `Some(CliSource::Unknown("custom:x"))` select all
+  four (the custom / unrecognized-agent path).
+- Helper-side: `App::agents_view_awaiting_snapshot()` is true only while the
+  agents view is open and waiting on its first `session/list` reply; the
+  existing snapshot tests already exercise the (now always empty) local
+  registry rendering from the master snapshot.
+- Existing two-phase / per-loader history tests are unaffected (they call
+  `load_copilot` etc. directly).
+
+## Out of scope
+
+- Changing the view's CLI filter or the MVP origin filter.
+- Any runtime (non-restart) agent-switch mechanism.
+- Reworking the watcher's machine-wide discovery.
+
+---
+
+## Amendment: per-agent history in a multi-agent master
+
+This amendment supersedes the master-side design above (§1 and §3). The helper
+side (§2), the view's CLI filter, and the consumer audit are unchanged.
+
+### What broke
+
+Two later changes invalidated §3's core assumption — *"switching the agent in
+Settings restarts master, so a fresh process re-scans automatically"*:
+
+1. **PR #296** turned master into a lazy multi-agent broker. `_RebuildAgentStack`
+   stopped calling `SharedWta::Restart` for a built-in agent change, because the
+   pool can now spawn the new CLI without a restart. Per-session stamping moved
+   to the bound `AgentCli`, but **host history did not**: it stayed on a
+   process-wide `agent_conn: OnceLock` (set by the *first* agent to initialize)
+   and a process-wide `cli_source` resolved from master's launch `--agent`.
+2. **PR #637** deferred `SharedWta::ReleasePane` by a 16 s session-close grace
+   period. Until then the agent pane's `Closed` handler released synchronously
+   — ~46 ms *before* `_RebuildAgentStack` reopened the pane — so the refcount
+   momentarily hit zero and master was killed and respawned with the new
+   `--agent`. That accident had been silently preserving §3's invariant. With
+   the release deferred, the reopen re-acquires first and master survives.
+
+Combined symptom: after switching agents in Settings, master kept answering
+`session/list` with the **launch** CLI's rows, stamped with the **launch** CLI.
+The helper's `current_cli_filter()` retained nothing, so session management
+rendered empty for every switched-to agent until Terminal was restarted.
+
+A second, latent defect shared the same root: `is_stale_host_history_row`
+pruned any terminal Class-B host row missing from *the* `session/list`. Since
+the file watcher discovers shell sessions machine-wide across CLIs, one CLI's
+listing could delete another CLI's rows.
+
+### Design
+
+Host history is sourced, stamped, refreshed, and reconciled **per `AgentCli`**.
+
+| Concern | Before | After |
+|---|---|---|
+| ACP connection for `session/list` | `MasterStateInner::agent_conn` (`OnceLock`, first agent wins) | `AgentCli::conn` of the requesting/seeding agent |
+| Capability gate | `MasterStateInner::cached_init_resp` | `AgentCli::cached_init_resp` |
+| Refresh deduplication | TTL result cache | `AgentCli::history_refresh`, one in-flight refresh per connection; no TTL cache |
+| Row `cli_source` stamp | `MasterStateInner::cli_source` (launch CLI) | `AgentCli::cli_source` |
+| History seed | first pooled agent only | **every** agent entering the pool |
+| Reconcile authority | any listing prunes any row | only rows whose `cli_source` equals the listing agent's |
+| WSL scan in-flight / throttle | one global slot | keyed by `CliSource` |
+
+`MasterStateInner::cli_source` survives only as a fallback for callers that
+never bound an agent, and is explicitly documented as unusable for history.
+
+Row-driven paths (session hooks, the file watcher) resolve their responder with
+`agent_for_cli(state, row.cli_source)` — the pooled agent that can actually
+enumerate that row — instead of assuming master's launch CLI. This also fixes a
+preexisting gap: a Claude row could never get a title while master had launched
+as Copilot, even with a live Claude CLI in the pool.
+
+Both production title refresh and reconciliation require the listing connection's
+exact provider, execution source, and session identity through
+`row_belongs_to_agent`. Reconciliation additionally requires a previously listed,
+terminal shell-history row; live and AgentPane rows are never pruned.
+
+The title an agent reports is not stable, so the poll re-adopts it rather than
+only filling a blank. Copilot answers `session/list` with a session's **first
+user message** until it generates a real summary; that echo is an ordinary
+non-synthetic title, so a synthetic-only upgrade latched it permanently and the
+session view kept showing the first message after the CLI had renamed the
+session. `refresh_titles_from_listing` therefore adopts the current listing
+title for each row admitted by both the candidate checks and the actual agent's
+ownership guard. History and title updates consume one response directly; there
+is no two-second response cache or additional title-query round trip.
+
+Raw session IDs are not sufficient authority. Host Copilot and Copilot in two WSL
+distros may return the same ID while enumerating different stores. An Ubuntu
+connection may update its Ubuntu row, not a Host/Debian row with the same ID or
+an unqualified legacy row whose source is still unknown. A missing source is not
+inferred from whichever connection happens to list the ID first.
+
+Because `adopt_agent_title` overwrites unconditionally, the candidate filters
+became load-bearing in a way they were not before: an injected-context echo or a
+provider placeholder would clobber a good title on every poll instead of merely
+failing to replace a synthetic one. They live in
+`session_registry::title_is_displayable` and are applied both where
+`titles_from_listing` builds the map and at the point of mutation.
+
+### Consequences
+
+- The registry now holds up to `N × 50` historical rows for `N` pooled CLIs
+  rather than ~50, and `session/list` returns all of them; the helper filters
+  client-side as before. Server-side pre-filtering per requesting helper was
+  considered and deliberately deferred — it would change the
+  `wta sessions list --origin all` eye-of-god semantics.
+- Switching agents shows a brief empty list (~1 s) while the new CLI's seed
+  runs, then fills in via the `sessions/changed` broadcast. This matches the
+  existing cold-open latency behavior described above.
+- `wta sessions list` binds no agent, so it skips the ACP re-pull and returns
+  the current registry snapshot rather than guessing an agent to ask.
+
+### Testing
+
+- `is_stale_host_history_row_never_prunes_another_clis_rows` — a Codex listing
+  must not prune a Claude row; an unstamped row is never pruned; an agent with
+  no resolved CLI has no pruning authority.
+- `each_pooled_agent_seeds_and_stamps_its_own_history` — two pooled agents each
+  seed, each row carries its own CLI, and re-seeding one does not drop the
+  other's rows.
+
+Both fail if the per-agent stamping or the reconcile guard is removed.

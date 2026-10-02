@@ -56,6 +56,26 @@ public:                                                      \
 
 namespace winrt::Microsoft::Terminal::Control::implementation
 {
+    enum class CompletedTurnAction
+    {
+        None,
+        Collapse,
+        Expand,
+    };
+
+    constexpr CompletedTurnAction ParseCompletedTurnActionHyperlink(const std::wstring_view uri) noexcept
+    {
+        if (uri == L"wta-action://collapse")
+        {
+            return CompletedTurnAction::Collapse;
+        }
+        if (uri == L"wta-action://expand")
+        {
+            return CompletedTurnAction::Expand;
+        }
+        return CompletedTurnAction::None;
+    }
+
     struct SelectionColor : SelectionColorT<SelectionColor>
     {
         TextColor AsTextColor() const noexcept;
@@ -144,6 +164,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
 
         void SetHoveredCell(Core::Point terminalPosition);
         void ClearHoveredCell();
+        void RefreshHoveredCell();
         winrt::hstring GetHyperlink(const Core::Point position) const;
         winrt::hstring HoveredUriText() const;
         Windows::Foundation::IReference<Core::Point> HoveredCell() const;
@@ -167,11 +188,15 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         hstring Title();
         Windows::Foundation::IReference<winrt::Windows::UI::Color> TabColor() noexcept;
         hstring WorkingDirectory() const;
+        bool WorkingDirectoryReportedByShell() const;
+        hstring ShellName() const;
+        hstring ShellVersion() const;
 
         TerminalConnection::ConnectionState ConnectionState() const;
 
         int ScrollOffset();
         int ViewHeight() const;
+        int ViewWidth() const;
         int BufferHeight() const;
 
         bool HasSelection() const;
@@ -242,7 +267,9 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         void SetReadOnlyMode(const bool readOnlyState);
 
         hstring ReadEntireBuffer() const;
+        hstring ReadBufferTail(int32_t maxLogicalLines, int32_t maxCharacters) const;
         hstring ReadLastPrompt() const;
+        hstring ReadLastPromptBounded(int32_t maxLogicalLines, int32_t maxCharacters) const;
         Control::CommandHistoryContext CommandHistory() const;
         bool QuickFixesAvailable() const noexcept;
         void UpdateQuickFixes(const Windows::Foundation::Collections::IVector<hstring>& quickFixes);
@@ -294,6 +321,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         til::typed_event<IInspectable, Control::CompletionsChangedEventArgs> CompletionsChanged;
         til::typed_event<IInspectable, Control::SearchMissingCommandEventArgs> SearchMissingCommand;
         til::typed_event<IInspectable, winrt::hstring> VtSequenceReceived;
+        til::typed_event<IInspectable, Control::ShowNotificationEventArgs> ShowNotification;
         til::typed_event<> RefreshQuickFixUI;
         til::typed_event<IInspectable, Control::WindowSizeChangedEventArgs> WindowSizeChanged;
 
@@ -335,6 +363,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
                                    const int velocity,
                                    const std::chrono::microseconds duration);
         void _terminalSearchMissingCommand(std::wstring_view missingCommand, const til::CoordType& bufferRow);
+        void _terminalShowNotification(std::wstring_view title, std::wstring_view body);
         void _terminalWindowSizeChanged(int32_t width, int32_t height);
 
         void _terminalCompletionsChanged(std::wstring_view menuJson, unsigned int replaceLength);
@@ -353,6 +382,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         void _connectionOutputHandler(winrt::array_view<const char16_t> str);
         void _connectionStateChangedHandler(const TerminalConnection::ITerminalConnection&, const Windows::Foundation::IInspectable&);
         void _updateHoveredCell(const std::optional<til::point> terminalPosition);
+        void _refreshHoveredCell();
         void _setOpacity(const float opacity, const bool focused = true);
 
         bool _isBackgroundTransparent();
@@ -373,7 +403,8 @@ namespace winrt::Microsoft::Terminal::Control::implementation
 #ifndef NDEBUG
             if (_dispatcher)
             {
-                // _closing isn't atomic and may only be accessed from the main thread.
+                // Normal core access remains dispatcher-bound. Close() may also
+                // retire exclusively owned, abandoned content on a worker.
                 //
                 // Though, the unit tests don't actually run in TAEF's main
                 // thread, so we don't care when we're running in tests.
@@ -393,6 +424,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         bool _colorGlyphs = true;
         CSSLengthPercentage _cellWidth;
         CSSLengthPercentage _cellHeight;
+        float _accumulatedFontSizeDelta = 0.f; // Preserved across reloads to prevent user zoom from being overwritten.
 
         // Rendering stuff.
         winrt::handle _lastSwapChainHandle{ nullptr };
@@ -422,7 +454,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         uint16_t _lastHoveredId{ 0 };
         std::atomic<bool> _initializedTerminal{ false };
         bool _isReadOnly{ false };
-        bool _closing{ false };
+        std::atomic<bool> _closing{ false };
 
         struct StashedColorScheme
         {

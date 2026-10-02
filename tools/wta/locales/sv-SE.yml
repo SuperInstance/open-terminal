@@ -1,9 +1,7 @@
 # Setup screen titles
 # {Locked="Intelligent Terminal"} - product name, do not translate
-setup.title.first_run: "Välkommen till Intelligent Terminal!"
 setup.title.agent_missing: "Agenten hittades inte"
 setup.title.agent_error: "Anslutningen till agenten misslyckades"
-setup.title.switch_agent: "Byt agent"
 setup.title.not_available: "Agenten är inte tillgänglig"
 setup.title.sign_in: "Inloggning krävs"
 
@@ -12,10 +10,9 @@ setup.subtitle.copilot_missing: "Din agent \"%{agent}\" är inte installerad. F�
 setup.subtitle.agent_missing: "Din agent \"%{agent}\" är inte installerad. Installera om den manuellt och försök sedan igen. Om du vill byta agent, gå till Intelligent Terminal Settings > Agent."
 setup.subtitle.copilot_auth: "Din agent \"%{agent}\" kräver autentisering. Följ stegen nedan för att logga in. Om du vill byta agent, gå till Intelligent Terminal Settings > Agent."
 setup.subtitle.agent_auth: "Din agent \"%{agent}\" kräver autentisering. Logga in via agenten och välj sedan \"Jag har loggat in\" nedan. Om du vill byta agent, gå till Intelligent Terminal Settings > Agent."
+setup.subtitle.connection_failed: "Det gick inte att starta %{agent}."
 
 # {Locked="Intelligent Terminal"}
-setup.description.fre_line1: "Välj den standardagent du vill använda i Intelligent Terminal. Du kan"
-setup.description.fre_line2: "gå till Settings för att konfigurera och ställa in din arbetsyta."
 
 setup.option.install: "Installera %{agent}"
 setup.option.install_hint: "(Installeras automatiskt)"
@@ -23,10 +20,14 @@ setup.option.signin: "Logga in på %{agent}"
 setup.option.retry_detection: "Försök igen"
 setup.option.retry_auth: "Jag har loggat in — försök ansluta igen"
 setup.option.retry_connection: "Försök ansluta igen"
-setup.option.switch_to: "Byt till %{agent}"
 setup.status.installing: "Installerar..."
+setup.status.installing_copilot_cli: "Installerar GitHub Copilot CLI"
+setup.status.connecting_agent: "Ansluter till %{agent}"
 setup.status.install_failed: "Installationen misslyckades: "
 setup.status.installing_winget: " Installerar via winget..."
+setup.error.install_start_failed: "Installationsprogrammet kunde inte startas. Välj \"Försök igen\" för att försöka igen."
+setup.error.install_timed_out: "Tidsgränsen för installationen överskreds. Välj \"Försök igen\" innan du startar en annan installation."
+setup.error.install_detection_timed_out: "Installationen har slutförts, men Copilot visas inte ännu. Välj \"Försök igen\" för att kontrollera igen."
 
 # ── Auth flow (src/ui/auth.rs) ──────────────────────────────────────────────
 # {Locked="CLI"} - acronym, common usage across Microsoft localizations
@@ -35,17 +36,19 @@ auth.agent_selected_with_status: "Agent %{name} — "
 auth.checking_authentication: "  %{spinner} Kontrollerar autentisering..."
 auth.waiting_for_authorization: "  %{spinner} Väntar på auktorisering..."
 auth.code_copied_hint: "  Koden har kopierats till urklipp — klistra in den i webbläsaren."
-auth.sign_in_prompt: "Logga in för att använda din agent:"
+auth.device_code_prompt: "Besök %{url} och ange koden: %{code}"  # Copilot device-flow sign-in progress; %{url} is the verification URL, %{code} is the device code
 auth.card_connect: "  Anslut %{name} för att aktivera agentfunktioner"
-auth.button_sign_in_github: "[ Logga in med GitHub ]"  # {Locked="GitHub"}
-auth.button_sign_in_with: "[ Logga in med %{name} ]"
-auth.hint_footer: "  Tryck Enter för att logga in, Esc för att gå tillbaka"  # {Locked="Enter","Esc"}
+auth.enterprise_prompt: "  Enter för att logga in · E för GitHub Enterprise · Esc för att gå tillbaka"  # {Locked="Enter","E","Esc"}
+auth.enterprise_domain_label: "  Enterprise-domän: "
+auth.enterprise_hint_footer: "  Enter för att logga in · Esc för github.com"  # {Locked="Enter","Esc","github.com"}
+auth.login_failed_help_enterprise: "  Tryck på Enter för att försöka igen, eller Esc för github.com. Vanliga orsaker: en felskriven eller oåtkomlig domän, en utgången kod eller ingen Copilot-åtkomst på den värden."  # {Locked="Enter","Esc","github.com","Copilot"}
+auth.login_failed_help_default: "  Tryck på Enter för att försöka igen, eller Esc för att gå tillbaka."  # {Locked="Enter","Esc"}
 
 # ── Chat view (src/ui/chat.rs) ──────────────────────────────────────────────
 chat.activity_thinking: "Tänker..."
 # {Locked="Intelligent Terminal"} - product name, do not translate
 chat.welcome_title: "Välkommen till Intelligent Terminal!"
-chat.welcome_disclaimer: "Intelligent Terminal använder AI. Kontrollera om det finns fel."
+chat.welcome_disclaimer: "Intelligent Terminal använder AI."
 chat.plan_header: "Plan:"
 chat.plan_marker_completed: "[x]"  # {Locked}
 chat.plan_marker_in_progress: "[>]"  # {Locked}
@@ -53,11 +56,24 @@ chat.plan_marker_pending: "[ ]"  # {Locked}
 chat.autofix_prompt_label: "Automatiskt diagnostiserat ett nyligen inträffat kommandofel"
 chat.turn_canceled: "(avbruten)"
 chat.turn_executed: "→ utförd: %{title}"
+# Beständiga verktygskategorier som visas efter en statusmarkör och före ett ämne.
+chat.tool_kind.run: "Körning"
+chat.tool_kind.insert: "Infoga"
+chat.tool_kind.read: "Läsning"
+chat.tool_kind.search: "Sökning"
+chat.tool_kind.edit: "Redigering"
+chat.tool_kind.delete: "Borttagning"
+chat.tool_kind.move: "Flytt"
+chat.tool_kind.fetch: "Hämtning"
+chat.tool_kind.think: "Tänkande"
+chat.tool_kind.mode: "Läge"
+chat.tool_kind.other: "Verktyg"
 
 # ── Input placeholders (src/ui/input.rs) ────────────────────────────────────
 input.placeholder.connected: "Fråga vad som helst, / för kommandon.."  # {Locked="/"}
 input.placeholder.connecting: "ansluter..."
 input.placeholder.disconnected: "frånkopplad"
+input.image_attachments: "📎 Bilder: %{items}"  # {Locked="📎","%{items}"}
 
 # ── Command popup (src/ui/command_popup.rs) ─────────────────────────────────
 # {Locked="/"} - slash-command prefix, must remain ASCII
@@ -93,9 +109,7 @@ permission.compact.prefix: "[!] "  # {Locked}
 permission.compact.hint: "[Y/N för att svara · ändra storlek för fullständigt kort]"  # {Locked="Y/N"}
 
 # ── Agent status (src/agent_check.rs) ───────────────────────────────────────
-agent.status.not_installed_auto: "Inte installerad — välj för att installera automatiskt"
 agent.status.not_found: "Hittades inte"
-agent.status.detected: "Identifierad"
 # {Locked="winget","GitHub.Copilot","GitHub","Copilot"} - tool names and command, must run verbatim
 agent.install.running_winget: "Running: winget install GitHub.Copilot"
 agent.install.launch_failed: "Failed to launch winget: %{error}"
@@ -106,8 +120,8 @@ agent.custom.auth_hint: "Se till att %{name} är installerat och finns i din PAT
 
 # ── Agents view (src/ui/agents_view.rs) ─────────────────────────────────────
 agents.loading: "Laddar..."
-# {Locked="Enter","Esc","↑","↓"} - key combinations, do not translate
-agents.footer_hint: "(↑ ↓ för att navigera • Enter för att starta session • Esc för att avsluta)"
+# {Locked="Enter","Esc","F5","↑","↓","/"} - key combinations, do not translate
+agents.footer_hint: "(↑ ↓ för att navigera • Enter för att starta session • Esc för att avsluta • F5 för att uppdatera • / för att söka)"
 agents.status.active: "Aktiv"
 agents.status.waiting_for_input: "Väntar på inmatning"
 agents.status.error: "Fel"
@@ -117,26 +131,47 @@ agents.status.idle: "Inaktiv"
 layout.welcome_hint: "  (Ctrl+Shift+. för att visa/dölja agentpanelen • Ctrl+Shift+/ för att visa/dölja agentsessionen)"  # {Locked="Ctrl+Shift+.","Ctrl+Shift+/"}
 
 # ── Connection state ────────────────────────────────────────────────────────
-connection.starting: "Startar agenten..."
+# Preparing the AI agent connection, including preflight and reuse of a cached agent.
+connection.starting: "Förbereder anslutningen till agenten..."
+# Retiring old AI agent sessions for /restart, before the next connection phases.
+connection.restarting: "Startar om agenten..."
 connection.reconnecting: "Återansluter..."
+# Connecting the pane to WTA's local coordinator process, not to an AI model.
+connection.coordinator: "Ansluter till den lokala samordnaren..."
+# Initializing the helper/coordinator connection, including local preparation and AI agent initialization.
+connection.initializing: "Initierar anslutningen till agenten..."
+# Refreshing the user's authentication with the AI agent after login; not verifying the agent's identity.
+connection.authenticating: "Autentiserar användaren hos agenten..."
+# Reading the coordinator's registry snapshot, including existing history; not fetching history from the AI agent.
+connection.syncing_sessions: "Läser sessionslistan..."
+# Creating the AI agent session, including local registration; internal agent progress is unknown.
+connection.creating_session: "Skapar agentsession..."
+# Applying the requested AI model before the connection is ready. Preserve %{model}.
+connection.selecting_model: "Ställer in sessionsmodell: %{model}..."  # {Locked="%{model}"}
+# Activity row while connecting to restore a conversation. Keep the actual stage first so narrow panes show it; session_id is shortened to eight characters.
+connection.resuming_stage: "%{stage} (återupptar %{session_id})"  # {Locked="%{stage}","%{session_id}"}
 connection.connecting_activity: "Ansluter till agenten…"
 connection.lost: "Anslutningen till agenten bröts. Skriv /restart för att återansluta."  # {Locked="/restart"}
 
 # ── System messages (src/app.rs) ────────────────────────────────────────────
+system.close_pane_hint: "Tryck på Ctrl+C igen för att stänga panelen."  # {Locked="Ctrl+C"}
+system.selection_copied: "Kopierat"  # Brief hint shown after selected terminal text is copied
 system.cancelled: "Avbröts."
 system.no_prompt_in_flight: "Ingen fråga pågår."
 system.authentication_failed: "Autentisering misslyckades"
-system.command_copied_retry: "Kommandot kopierat — kör det i en annan terminal och tryck sedan Enter för att försöka igen"  # {Locked="Enter"}
 system.stopped_max_tokens: "Svaret avbröts efter att modellens utdatagräns nåtts."
 system.stopped_max_turn_requests: "Agenten stoppade efter att ha nått sin begäransgräns för den här omgången."
 system.stopped_refusal: "Agenten avböjde att fortsätta med den här begäran."
 system.agent_busy: "Agenten är upptagen på den här fliken — vänta tills den aktuella prompten är klar."
+system.image_clipboard_empty: "Ingen bild i urklipp att klistra in."
+system.image_not_supported: "Den här agenten stöder inte bildinmatning."
+system.image_pasted: "Bild bifogad (%{label}). Tryck på Enter för att skicka."  # {Locked="%{label}","Enter"}
 system.resuming_session: "Återupptar session %{session_id}..."
 system.unknown_command: "Okänt kommando \"%{command}\" — skickades som prompt. Skriv /help för listan."
 system.busy_use_stop: "Vänta tills den aktuella prompten är klar, eller använd /stop först."
 system.cannot_focus_session: "Det går inte att fokusera på session %{session_id}: den verkar vara aktiv men inget fönster-GUID är bundet ännu. Försök igen om en stund."
-system.cannot_resume_no_load_session: "Det går inte att återuppta i agentfönstret: %{agent} annonserade inte ACP `loadSession`-funktionen. Tryck på Enter (utan Shift) för att i stället återuppta i ett nytt terminalfönster."
-system.cannot_resume_no_resume_flag: "Det går inte att återuppta %{agent}-sessionen: den här agenten har ingen `--resume`-liknande flagga. Tryck på Shift+Enter för att i stället försöka återuppta inne i agentfönstret via ACP."
+system.cannot_resume_no_load_session: "Det går inte att återuppta i agentfönstret: %{agent} annonserade inte ACP `loadSession`-funktionen."
+system.cannot_resume_no_resume_flag: "Det går inte att återuppta %{agent}-sessionen: den här agenten har ingen `--resume`-liknande flagga."
 system.cannot_resume_unknown_agent: "Det går inte att återuppta session %{session_id}: dess källagent är okänd för den här versionen."
 system.cannot_resume_phantom_via_flag: "Det går inte att återuppta %{agent}-sessionen %{session_id}: den startades men samlade aldrig någon konversation, så %{agent} skulle själv avvisa återupptagningen. Tar bort raden."
 system.cannot_resume_phantom_via_load: "Det går inte att återuppta %{agent}-sessionen %{session_id}: den startades men samlade aldrig någon konversation, så %{agent} skulle avvisa inläsningen. Tar bort raden."
@@ -178,7 +213,7 @@ hooks.marketplace_path_stale: "⚠ marketplace path stale"
 hooks.installed_but_disabled: "⚠ installed but disabled"
 hooks.not_installed: "✗ not installed"
 hooks.uninstall_skipped: "skipped (CLI not on PATH)"
-hooks.install_attempted: "wt-agent-hooks install attempted (idempotent). Run `wta hooks status` to inspect the result. Trace log: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
+hooks.install_succeeded: "✓ wt-agent-hooks installed for %{clis}"
 
 # ── Relative time and date formatting (src/ui/agents_view.rs) ───────────────
 time.just_now: "nyss"
@@ -189,5 +224,46 @@ time.hours_other: "%{count} timmar sedan"
 time.day_singular: "%{count} dag sedan"
 time.days_other: "%{count} dagar sedan"
 
+# ── Slash-command summaries (src/commands.rs) ─────────────────────────────
+# Command names (/help, /clear, etc.) stay English; descriptions translate.
+# {Locked="ACP","Ctrl+Shift+/"} - protocol name and shortcut, do not translate
+commands.help.summary: "Visa den här kommandolistan"
+commands.clear.summary: "Rensa chattens rullningshistorik (behåller sessionen)"
+commands.new.summary: "Starta en ny ACP-session (slänger historiken)"  # {Locked="ACP"}
+commands.fix.summary: "Diagnostisera den aktiva terminalen och föreslå en korrigering (/fix <hint>)"  # {Locked="/fix","<hint>"}
+commands.restart.summary: "Starta om agenten"
+commands.stop.summary: "Avbryt den pågående prompten"
+commands.sessions.summary: "Öppna väljaren för historiska sessioner (Ctrl+Shift+/)"  # {Locked="Ctrl+Shift+/"}
+commands.agent.summary: "Välj agenten för den här panelen (/agent <id> för att växla direkt)"  # {Locked="/agent","<id>"}
+
 # ── Körning av rekommendation (src/coordinator.rs) ───────────────────────────
 system.choice_execution_failed: "Val %{choice} misslyckades: %{error}"
+
+# ── Agent picker (src/ui/agent_popup.rs) ────────────────────────────────────
+# {Locked="↑","↓","Enter","Esc"} - key names, do not translate
+agent_picker.title: "Välj agent (↑ ↓ • Enter • Esc)"  # Agent means an AI coding agent
+# Shown when no policy-allowed AI agent CLI is installed on the machine.
+system.no_agents: "Det gick inte att hitta något tillgängligt agent-CLI på den här datorn."  # {Locked="CLI"}
+# {agent} is the unrecognized text the user typed after /agent.
+system.agent_unknown: "Okänd eller otillgänglig agent %{agent} — skriv /agent för att se den tillgängliga listan."  # {Locked="/agent"}
+# Shown only when /agent is used outside a Windows Terminal-owned agent pane.
+system.agent_switch_unavailable: "Agentbyte är inte tillgängligt utanför en Windows Terminal-flik."
+
+# ── Model picker (/model) ───────────────────────────────────────────────────
+commands.model.summary: "Välj modellen för den här panelen (/model <id> för att växla direkt)"  # {Locked="/model","<id>"}
+commands.config.summary: "Konfigurera den här agentsessionen"  # Agent means an AI coding agent; shown for the /config command. {Locked="/config"}
+commands.move.summary: "Flytta agentpanelen för den här fliken (/move <position>)"  # {Locked="/move","<position>"}
+model_picker.title: "Välj modell (↑ ↓ • Enter • Esc)"  # {Locked="↑","↓","Enter","Esc"}
+system.no_models: "Den anslutna agenten annonserade inga valbara modeller."
+system.model_set: "Modellen för den här panelen är inställd på %{model}."  # {Locked="%{model}"}
+
+# ── Session configuration picker (src/ui/config_popup.rs) ───────────────────
+# {Locked="↑","↓","Enter","Esc","ACP"} - key names and protocol name
+config_picker.title: "Sessionskonfiguration (↑ ↓ • Enter • Esc)"
+# Shown when /config is used but the AI agent exposed no ACP select options.
+system.no_config_options: "Den anslutna agenten annonserade inga konfigurerbara sessionsalternativ."
+# {option} is an Agent-provided option name; {error} is the ACP error.
+system.config_update_failed: "Det gick inte att uppdatera %{option}: %{error}"
+system.yolo_disable_pending: "AI-agentleverantören har inte bekräftat att sessionen är i det nödvändiga icke-privilegierade läget"  # Shown after the localized failure prefix while prompts remain blocked until the AI agent provider confirms that its privileged session mode is off. Provider means an AI agent provider, not a network provider.
+system.provider_command_blocked_by_policy: "%{command}: Automatiskt godkännande är inaktiverat av organisationens policy."  # {Locked="%{command}"} Shown when AllowAutomaticApproval blocks a provider-advertised privileged command.
+system.model_unknown: "Okänd modell %{model} — skriv /model för att se den tillgängliga listan."  # {Locked="%{model}","/model"}

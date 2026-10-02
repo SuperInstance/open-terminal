@@ -17,6 +17,8 @@ Abstract:
 
 #pragma once
 
+#include <mutex>
+
 class AppHost;
 struct TerminalProtocolComServer;
 
@@ -30,6 +32,17 @@ public:
         WM_MESSAGE_BOX_CLOSED,
         WM_IDENTIFY_ALL_WINDOWS,
         WM_NOTIFY_FROM_NOTIFICATION_AREA,
+        WM_GET_WINDOW_LIST,
+        WM_KEPT_SESSIONS_CHANGED,
+    };
+
+    // Used by WM_GET_WINDOW_LIST.  Callers allocate a vector on their
+    // stack and pass a pointer through LPARAM; the emperor fills it in
+    // synchronously via SendMessage.
+    struct WindowListEntry
+    {
+        uint64_t Id;
+        std::wstring Name;
     };
 
     WindowEmperor();
@@ -38,14 +51,19 @@ public:
     HWND GetMainWindow() const noexcept;
     AppHost* GetWindowById(uint64_t id) const noexcept;
     AppHost* GetWindowByName(std::wstring_view name) const noexcept;
+    // CreateNewWindow is used for creating a new window from existing Content
     void CreateNewWindow(winrt::TerminalApp::WindowRequestedArgs args);
     void HandleCommandlineArgs(int nCmdShow);
     void FocusTabInAnyWindow(const winrt::TerminalApp::Tab& tab) const;
+    // OpenWindow is used for opening a new window or summoning an existing window by name.
+    void OpenWindow(const winrt::hstring& name);
 
     // Protocol server access
     const std::wstring& GetComClsid() const noexcept { return _comClsid; }
-    const std::vector<std::shared_ptr<::AppHost>>& GetWindows() const noexcept { return _windows; }
+    std::vector<std::shared_ptr<::AppHost>> GetWindows() const;
+    std::vector<winrt::TerminalApp::TerminalPage> GetProtocolPages() const;
     AppHost* GetMostRecentWindow() const noexcept { return _mostRecentWindow(); }
+    void TrackPaneAgentSession(const winrt::hstring& eventJson);
 
 private:
     struct SummonWindowSelectionArgs
@@ -59,6 +77,7 @@ private:
     [[nodiscard]] static LRESULT __stdcall _wndProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) noexcept;
 
     AppHost* _mostRecentWindow() const noexcept;
+    void _createWindowMaybeRestoringWorkspace(uint64_t windowId, const winrt::hstring& windowName, winrt::TerminalApp::CommandlineArgs args);
     bool _summonWindow(const SummonWindowSelectionArgs& args) const;
     void _summonAllWindows() const;
     void _dispatchSpecialKey(const MSG& msg) const;
@@ -70,11 +89,17 @@ private:
     void _postQuitMessageIfNeeded() const;
     safe_void_coroutine _showMessageBox(winrt::hstring message, bool error);
     void _notificationAreaMenuRequested(WPARAM wParam);
-    void _notificationAreaMenuClicked(WPARAM wParam, LPARAM lParam) const;
+    void _notificationAreaMenuClicked(WPARAM wParam, LPARAM lParam);
+    bool _restoreKeptGroup(const winrt::guid& groupId);
+    void _createWindowForKeptGroups(std::vector<winrt::guid> groups);
+    bool _restoreAllKeptGroups();
+    void _setupKeptSessions();
     void _hotkeyPressed(long hotkeyIndex);
     void _registerHotKey(int index, const winrt::Microsoft::Terminal::Control::KeyChord& hotkey) noexcept;
     void _unregisterHotKey(int index) noexcept;
     void _setupGlobalHotkeys();
+    bool _restorePersistedWindows(wil::zwstring_view currentDirectory, wil::zwstring_view envString, uint32_t showWindowCommand);
+    bool _restoreDeferredPersistedLayouts(wil::zwstring_view currentDirectory, wil::zwstring_view envString, uint32_t showWindowCommand);
     void _setupSessionPersistence(bool enabled);
     void _persistState(const winrt::Microsoft::Terminal::Settings::Model::ApplicationState& state) const;
     void _finalizeSessionPersistence() const;
@@ -83,6 +108,7 @@ private:
 
     wil::unique_hwnd _window;
     winrt::TerminalApp::App _app{ nullptr };
+    mutable std::mutex _windowsMutex;
     std::vector<std::shared_ptr<::AppHost>> _windows;
 
     // Protocol server for AI CLI integration
@@ -92,10 +118,26 @@ private:
     NOTIFYICONDATA _notificationIcon{};
     UINT WM_TASKBARCREATED = 0;
     HMENU _currentWindowMenu = nullptr;
+    static constexpr UINT _closeAllKeptTabsMenuId = 1;
     bool _notificationIconShown = false;
+    winrt::TerminalApp::ContentManager _keptManager{ nullptr };
+    mutable std::mutex _keptPagesMutex;
+    std::vector<winrt::TerminalApp::TerminalPage> _keptPages;
+    winrt::Windows::System::DispatcherQueue _keptDispatcher{ nullptr };
+    winrt::TerminalApp::ContentManager::KeptSessionsChanged_revoker _keptChanged;
+    winrt::TerminalApp::ContentManager::DetachedSessionEvent_revoker _keptEvents;
+    std::unordered_map<HMENU, winrt::guid> _keptSessionMenus;
     bool _skipPersistence = false;
     bool _needsPersistenceCleanup = false;
+    bool _deferPersistedLayoutRestore = false;
+    bool _restoringPersistedLayouts = false;
     SafeDispatcherTimer _persistStateTimer;
+    // Captured at startup so a deferred layout restore, which can be triggered
+    // long after HandleCommandlineArgs() returned, still sees the environment
+    // the process was launched with.
+    std::wstring _startupCurrentDirectory;
+    std::wstring _startupEnvironment;
+    uint32_t _startupShowWindowCommand = SW_SHOWDEFAULT;
     std::optional<bool> _currentSystemThemeIsDark;
     int32_t _windowCount = 0;
     int32_t _messageBoxCount = 0;

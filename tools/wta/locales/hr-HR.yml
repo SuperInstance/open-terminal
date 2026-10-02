@@ -1,9 +1,7 @@
 # Setup screen titles
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.title.first_run: "Dobro došli u Inteligentni Terminal!"
 setup.title.agent_missing: "Agent nije pronađen"
 setup.title.agent_error: "Povezivanje s agentom nije uspjelo"
-setup.title.switch_agent: "Promijeni agenta"
 setup.title.not_available: "Agent nije dostupan"
 setup.title.sign_in: "Potrebna je prijava"
 
@@ -12,21 +10,24 @@ setup.subtitle.copilot_missing: "Vaš agent \"%{agent}\" nije instaliran. Slijed
 setup.subtitle.agent_missing: "Vaš agent \"%{agent}\" nije instaliran. Ručno ga ponovno instalirajte pa pokušajte ponovno. Za promjenu agenta idite na Inteligentni Terminal Settings > Agent."
 setup.subtitle.copilot_auth: "Vaš agent \"%{agent}\" zahtijeva provjeru autentičnosti. Slijedite donje korake za prijavu. Za promjenu agenta idite na Inteligentni Terminal Settings > Agent."
 setup.subtitle.agent_auth: "Vaš agent \"%{agent}\" zahtijeva provjeru autentičnosti. Prijavite se putem agenta pa odaberite \"Prijavio/la sam se\" u nastavku. Za promjenu agenta idite na Inteligentni Terminal Settings > Agent."
+setup.subtitle.connection_failed: "Nismo mogli pokrenuti %{agent}."
 
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.description.fre_line1: "Odaberite zadanog agenta koji želite koristiti u Inteligentni Terminal. Možete"
-setup.description.fre_line2: "otići na Settings kako biste konfigurirali radni prostor."
 
 setup.option.install: "Instaliraj %{agent}"
 setup.option.install_hint: "(Bit će automatski instalirano)"
 setup.option.signin: "Prijava u %{agent}"
 setup.option.retry_detection: "Pokušaj ponovno"
 setup.option.retry_auth: "Prijavio/la sam se — pokušaj ponovno povezati"
-setup.option.retry_connection: "Pokušaj ponovno povezati"
-setup.option.switch_to: "Prebaci na %{agent}"
+setup.option.retry_connection: "Pokušaj se ponovno povezati"
 setup.status.installing: "Instaliranje..."
+setup.status.installing_copilot_cli: "Instaliranje aplikacije GitHub Copilot CLI"
+setup.status.connecting_agent: "Povezivanje s %{agent}"
 setup.status.install_failed: "Instalacija nije uspjela: "
 setup.status.installing_winget: " Instaliranje putem winget..."
+setup.error.install_start_failed: "Instalacijski program nije se mogao pokrenuti. Odaberite \"Pokušaj ponovno\" da biste pokušali ponovno."
+setup.error.install_timed_out: "Isteklo je vrijeme za instalaciju. Odaberite \"Pokušaj ponovno\" prije pokretanja druge instalacije."
+setup.error.install_detection_timed_out: "Instalacija je završena, ali Copilot još nije vidljiv. Odaberite \"Pokušaj ponovno\" za ponovnu provjeru."
 
 # ── Auth flow (src/ui/auth.rs) ──────────────────────────────────────────────
 # {Locked="CLI"} - acronym, common usage across Microsoft localizations
@@ -35,17 +36,19 @@ auth.agent_selected_with_status: "CLI agenta %{name} — "
 auth.checking_authentication: "  %{spinner} Provjera autentičnosti..."
 auth.waiting_for_authorization: "  %{spinner} Čekanje na autorizaciju..."
 auth.code_copied_hint: "  Kod kopiran u međuspremnik — zalijepite ga u pregledniku."
-auth.sign_in_prompt: "Prijavite se za korištenje agenta:"
+auth.device_code_prompt: "Posjetite %{url} i unesite kod: %{code}"  # Copilot device-flow sign-in progress; %{url} is the verification URL, %{code} is the device code
 auth.card_connect: "  Povežite %{name} za omogućavanje značajki agenta"
-auth.button_sign_in_github: "[ Prijava putem GitHub ]"  # {Locked="GitHub"}
-auth.button_sign_in_with: "[ Prijava putem %{name} ]"
-auth.hint_footer: "  Pritisnite Enter za prijavu, Esc za povratak"  # {Locked="Enter","Esc"}
+auth.enterprise_prompt: "  Enter za prijavu · E za GitHub Enterprise · Esc za povratak"  # {Locked="Enter","E","Esc"}
+auth.enterprise_domain_label: "  Domena GitHub Enterprise: "
+auth.enterprise_hint_footer: "  Enter za prijavu · Esc za github.com"  # {Locked="Enter","Esc","github.com"}
+auth.login_failed_help_enterprise: "  Pritisnite Enter za ponovni pokušaj ili Esc za github.com. Česti uzroci: pogrešno unesena ili nedostupna domena, istekli kod ili nema pristupa Copilot na tom hostu."  # {Locked="Enter","Esc","github.com","Copilot"}
+auth.login_failed_help_default: "  Pritisnite Enter za ponovni pokušaj ili Esc za povratak."  # {Locked="Enter","Esc"}
 
 # ── Chat view (src/ui/chat.rs) ──────────────────────────────────────────────
 chat.activity_thinking: "Razmišljam..."
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
 chat.welcome_title: "Dobro došli u Inteligentni Terminal!"
-chat.welcome_disclaimer: "Inteligentni Terminal koristi AI. Provjerite pogreške."
+chat.welcome_disclaimer: "Inteligentni Terminal koristi AI."
 chat.plan_header: "Plan:"
 chat.plan_marker_completed: "[x]"  # {Locked}
 chat.plan_marker_in_progress: "[>]"  # {Locked}
@@ -53,11 +56,24 @@ chat.plan_marker_pending: "[ ]"  # {Locked}
 chat.autofix_prompt_label: "Automatski dijagnosticiran nedavni neuspjeh naredbe"
 chat.turn_canceled: "(otkazano)"
 chat.turn_executed: "→ izvršeno: %{title}"
+# Trajne oznake kategorije alata prikazane nakon oznake statusa i prije predmeta.
+chat.tool_kind.run: "Pokreni"
+chat.tool_kind.insert: "Umetni"
+chat.tool_kind.read: "Čitaj"
+chat.tool_kind.search: "Pretraži"
+chat.tool_kind.edit: "Uredi"
+chat.tool_kind.delete: "Izbriši"
+chat.tool_kind.move: "Premjesti"
+chat.tool_kind.fetch: "Dohvati"
+chat.tool_kind.think: "Razmisli"
+chat.tool_kind.mode: "Način"
+chat.tool_kind.other: "Alat"
 
 # ── Input placeholders (src/ui/input.rs) ────────────────────────────────────
 input.placeholder.connected: "Pitajte bilo što, / za naredbe.."  # {Locked="/"}
 input.placeholder.connecting: "povezivanje..."
 input.placeholder.disconnected: "prekinuta veza"
+input.image_attachments: "📎 Slike: %{items}"  # {Locked="📎","%{items}"}
 
 # ── Command popup (src/ui/command_popup.rs) ─────────────────────────────────
 # {Locked="/"} - slash-command prefix, must remain ASCII
@@ -71,9 +87,11 @@ commands.help_close_hint: "  Esc        Zatvori ovu pomoć"  # {Locked="Esc"}
 commands.help.summary: "Prikaži ovaj popis naredbi"
 commands.clear.summary: "Očisti povijest razgovora (zadržava sesiju)"
 commands.new.summary: "Pokreni novu sesiju ACP (odbacuje povijest)"  # {Locked="ACP"}
+commands.fix.summary: "Diagnose the active terminal and suggest a fix (/fix <hint>)"  # {Locked="/fix","<hint>"}
 commands.restart.summary: "Ponovno pokreni agenta"
 commands.stop.summary: "Otkaži upit u tijeku"
 commands.sessions.summary: "Otvori birač prethodnih sesija (Ctrl+Shift+/)"  # {Locked="Ctrl+Shift+/"}
+commands.agent.summary: "Odaberite agent za ovu karticu (/agent <id> za izravno prebacivanje)"  # {Locked="/agent","<id>"}
 # ── Recommendations panel (src/ui/recommendations.rs) ───────────────────────
 # {Locked="Enter","Esc","↵","↑","↓","←","→"} - key names and Return-key glyph, do not translate
 recommendations.nav_hint: "(↑ ↓ za navigaciju • ← → za prebacivanje gumba • Enter za odabir • Esc za odustajanje)"
@@ -100,9 +118,7 @@ permission.compact.prefix: "[!] "  # {Locked}
 permission.compact.hint: "[Y/N za odgovor · promijenite veličinu za punu karticu]"  # {Locked="Y/N"}
 
 # ── Agent status (src/agent_check.rs) ───────────────────────────────────────
-agent.status.not_installed_auto: "Nije instalirano — odaberite za automatsku instalaciju"
 agent.status.not_found: "Nije pronađeno"
-agent.status.detected: "Otkriveno"
 # {Locked="winget","GitHub.Copilot","GitHub","Copilot"} - tool names and command, must run verbatim
 agent.install.running_winget: "Running: winget install GitHub.Copilot"
 agent.install.launch_failed: "Failed to launch winget: %{error}"
@@ -113,8 +129,8 @@ agent.custom.auth_hint: "Provjerite je li %{name} instaliran i nalazi li se u PA
 
 # ── Agents view (src/ui/agents_view.rs) ─────────────────────────────────────
 agents.loading: "Učitavanje..."
-# {Locked="Enter","Esc","↑","↓"} - key combinations, do not translate
-agents.footer_hint: "(↑ ↓ za navigaciju • Enter za pokretanje sesije • Esc za izlaz)"
+# {Locked="Enter","Esc","F5","↑","↓","/"} - key combinations, do not translate
+agents.footer_hint: "(↑ ↓ za navigaciju • Enter za pokretanje sesije • Esc za izlaz • F5 za osvježavanje • / za pretraživanje)"
 agents.status.active: "Aktivno"
 agents.status.waiting_for_input: "Čeka unos"
 agents.status.error: "Pogreška"
@@ -124,26 +140,47 @@ agents.status.idle: "Neaktivno"
 layout.welcome_hint: "  (Ctrl+Shift+. prikaži/sakrij okno agenta • Ctrl+Shift+/ prikaži/sakrij sesiju agenta)"  # {Locked="Ctrl+Shift+.","Ctrl+Shift+/"}
 
 # ── Connection state ────────────────────────────────────────────────────────
-connection.starting: "Pokretanje agenta..."
+# Preparing the AI agent connection, including preflight and reuse of a cached agent.
+connection.starting: "Priprema veze s agentom..."
 connection.reconnecting: "Ponovno povezivanje..."
+# Retiring old AI agent sessions for /restart, before the next connection phases.
+connection.restarting: "Ponovno pokretanje agenta..."
+# Connecting the pane to WTA's local coordinator process, not to an AI model.
+connection.coordinator: "Povezivanje s lokalnim koordinatorom..."
+# Initializing the helper/coordinator connection, including local preparation and AI agent initialization.
+connection.initializing: "Inicijalizacija veze s agentom..."
+# Refreshing the user's authentication with the AI agent after login; not verifying the agent's identity.
+connection.authenticating: "Provjera autentičnosti korisnika kod agenta..."
+# Reading the coordinator's registry snapshot, including existing history; not fetching history from the AI agent.
+connection.syncing_sessions: "Čitanje popisa sesija..."
+# Creating the AI agent session, including local registration; internal agent progress is unknown.
+connection.creating_session: "Stvaranje sesije agenta..."
+# Applying the requested AI model before the connection is ready. Preserve %{model}.
+connection.selecting_model: "Postavljanje modela sesije: %{model}..."  # {Locked="%{model}"}
+# Activity row while connecting to restore a conversation. Keep the actual stage first so narrow panes show it; session_id is shortened to eight characters.
+connection.resuming_stage: "%{stage} (nastavljanje %{session_id})"  # {Locked="%{stage}","%{session_id}"}
 connection.connecting_activity: "Povezivanje s agentom…"
 connection.lost: "Veza s agentom je izgubljena. Upišite /restart za ponovno povezivanje."  # {Locked="/restart"}
 
 # ── System messages (src/app.rs) ────────────────────────────────────────────
+system.close_pane_hint: "Ponovno pritisnite Ctrl+C da biste zatvorili okno"  # {Locked="Ctrl+C"}
+system.selection_copied: "Kopirano"  # Brief hint shown after selected terminal text is copied
 system.cancelled: "Otkazano."
 system.no_prompt_in_flight: "Nema aktivnog upita."
 system.authentication_failed: "Provjera autentičnosti nije uspjela"
-system.command_copied_retry: "Naredba kopirana — pokrenite je u drugom terminalu, zatim pritisnite Enter za ponovni pokušaj"  # {Locked="Enter"}
 system.stopped_max_tokens: "Odgovor je odrezan nakon dosezanja izlaznog ograničenja modela."
 system.stopped_max_turn_requests: "Agent se zaustavio nakon dosezanja ograničenja zahtjeva za ovaj potez."
 system.stopped_refusal: "Agent je odbio nastaviti s ovim zahtjevom."
 system.agent_busy: "Agent je zauzet na ovoj kartici — pričekajte da se trenutni upit dovrši."
+system.image_clipboard_empty: "Na međuspremniku nema slike za lijepljenje."
+system.image_not_supported: "Ovaj agent ne podržava unos slika."
+system.image_pasted: "Slika je priložena (%{label}). Pritisnite Enter za slanje."  # {Locked="%{label}","Enter"}
 system.resuming_session: "Nastavlja se sesija %{session_id}..."
 system.unknown_command: "Nepoznata naredba \"%{command}\" — poslana kao upit. Upišite /help za popis."  # {Locked="/help"}
 system.busy_use_stop: "Pričekajte da se trenutni upit dovrši ili najprije upotrijebite /stop."  # {Locked="/stop"}
 system.cannot_focus_session: "Nije moguće fokusirati sesiju %{session_id}: izgleda aktivna, ali još nije povezan GUID okna. Pokušajte ponovno za trenutak."
-system.cannot_resume_no_load_session: "Nije moguće nastaviti u oknu agenta: %{agent} nije oglasio mogućnost ACP `loadSession`. Pritisnite Enter (bez Shift) da umjesto toga nastavite u novom terminalskom oknu."  # {Locked="ACP","loadSession","Enter","Shift"}
-system.cannot_resume_no_resume_flag: "Nije moguće nastaviti sesiju agenta %{agent}: ovaj agent nema zastavicu u stilu `--resume`. Pritisnite Shift+Enter da pokušate nastaviti unutar okna agenta putem ACP-a."  # {Locked="--resume","Shift","Enter","ACP"}
+system.cannot_resume_no_load_session: "Nije moguće nastaviti u oknu agenta: %{agent} nije oglasio mogućnost ACP `loadSession`."  # {Locked="ACP","loadSession"}
+system.cannot_resume_no_resume_flag: "Nije moguće nastaviti sesiju agenta %{agent}: ovaj agent nema zastavicu u stilu `--resume`."  # {Locked="--resume"}
 system.cannot_resume_unknown_agent: "Nije moguće nastaviti sesiju %{session_id}: njezin izvorni agent nije poznat ovoj verziji WTA."
 system.cannot_resume_phantom_via_flag: "Nije moguće nastaviti sesiju agenta %{agent} %{session_id}: pokrenuta je, ali nikada nije prikupila razgovor, pa bi sam %{agent} odbio nastavak. Redak se uklanja."
 system.cannot_resume_phantom_via_load: "Nije moguće nastaviti sesiju agenta %{agent} %{session_id}: pokrenuta je, ali nikada nije prikupila razgovor, pa bi %{agent} odbio učitavanje. Redak se uklanja."
@@ -185,7 +222,7 @@ hooks.marketplace_path_stale: "⚠ marketplace path stale"
 hooks.installed_but_disabled: "⚠ installed but disabled"
 hooks.not_installed: "✗ not installed"
 hooks.uninstall_skipped: "skipped (CLI not on PATH)"
-hooks.install_attempted: "wt-agent-hooks install attempted (idempotent). Run `wta hooks status` to inspect the result. Trace log: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
+hooks.install_succeeded: "✓ wt-agent-hooks instaliran za %{clis}"
 
 # ── Relative time + date formatting (src/ui/agents_view.rs) ─────────────────
 # rust-i18n has no CLDR plural support; Rust selects singular vs. other.
@@ -201,3 +238,32 @@ time.days_other: "prije %{count} dana"
 
 # ── Izvršavanje preporuke (src/coordinator.rs) ──────────────────────────────
 system.choice_execution_failed: "Odabir %{choice} nije uspio: %{error}"
+
+# ── Agent picker (src/ui/agent_popup.rs) ────────────────────────────────────
+# {Locked="↑","↓","Enter","Esc"} - key names, do not translate
+agent_picker.title: "Odaberite agent (↑ ↓ • Enter • Esc)"  # Agent means an AI coding agent
+# Shown when no policy-allowed AI agent CLI is installed on the machine.
+system.no_agents: "Na ovom računalu nije pronađen nijedan dostupan CLI agenta."  # {Locked="CLI"}
+# {agent} is the unrecognized text the user typed after /agent.
+system.agent_unknown: "Nepoznat model %{agent} — upišite /agent za prikaz dostupnog popisa."  # {Locked="/agent"}
+# Shown only when /agent is used outside a Windows Terminal-owned agent pane.
+system.agent_switch_unavailable: "Prebacivanje agenata nije dostupno izvan kartice Windows Terminala."
+
+# ── Model picker (/model) ───────────────────────────────────────────────────
+commands.model.summary: "Odaberite model za ovo okno (/model <id> za izravno prebacivanje)"  # {Locked="/model","<id>"}
+commands.config.summary: "Konfigurirajte ovu sesiju agenta"  # Agent means an AI coding agent; shown for the /config command. {Locked="/config"}
+commands.move.summary: "Premjesti okno agenta ove kartice (/move <position>)"  # {Locked="/move","<position>"}
+model_picker.title: "Odaberite model (↑ ↓ • Enter • Esc)"  # {Locked="↑","↓","Enter","Esc"}
+system.no_models: "Povezani agent nije oglasio nijedan model koji se može odabrati."
+system.model_set: "Model za ovo okno postavljen je na %{model}."  # {Locked="%{model}"}
+
+# ── Session configuration picker (src/ui/config_popup.rs) ───────────────────
+# {Locked="↑","↓","Enter","Esc","ACP"} - key names and protocol name
+config_picker.title: "Konfiguracija sesije (↑ ↓ • Enter • Esc)"
+# Shown when /config is used but the AI agent exposed no ACP select options.
+system.no_config_options: "Povezani agent nije najavio nikakve konfigurabilne opcije sesije."
+# {option} is an Agent-provided option name; {error} is the ACP error.
+system.config_update_failed: "Ažuriranje opcije %{option} nije uspjelo: %{error}"
+system.yolo_disable_pending: "pružatelj nije potvrdio potrebno neprivilegirano stanje sesije"  # Shown after the localized failure prefix while prompts remain blocked until the AI agent provider confirms that its privileged session mode is off. Provider means an AI agent provider, not a network provider.
+system.provider_command_blocked_by_policy: "%{command}: Automatsko odobrenje onemogućeno je pravilima vaše organizacije."  # {Locked="%{command}"} Shown when AllowAutomaticApproval blocks a provider-advertised privileged command.
+system.model_unknown: "Nepoznat model %{model} — upišite /model za prikaz dostupnog popisa."  # {Locked="%{model}","/model"}

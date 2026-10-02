@@ -4,6 +4,8 @@
 #include "pch.h"
 #include "GlobalAppSettings.h"
 #include "../inc/AgentPolicy.h"
+#include "../inc/AgentRegistry.h"
+#include "../inc/AgentYoloPolicy.h"
 #include "../../types/inc/Utils.hpp"
 #include "JsonUtils.h"
 #include "KeyChordSerialization.h"
@@ -13,6 +15,7 @@
 #include "MediaResourceSupport.h"
 
 namespace AgentPolicy = ::Microsoft::Terminal::Settings::Model::AgentPolicy;
+namespace AgentYoloPolicy = ::Microsoft::Terminal::Settings::Model::AgentYoloPolicy;
 using namespace winrt::Microsoft::Terminal::Settings::Model::implementation;
 using namespace winrt::Windows::UI::Xaml;
 using namespace ::Microsoft::Console;
@@ -95,12 +98,44 @@ winrt::com_ptr<GlobalAppSettings> GlobalAppSettings::Copy() const
             globals->_NewTabMenu->Append(get_self<NewTabMenuEntry>(entry)->Copy());
         }
     }
+    if (_CustomModelProviders)
+    {
+        globals->_CustomModelProviders = winrt::single_threaded_vector<Model::CustomModelProvider>();
+        for (const auto& provider : *_CustomModelProviders)
+        {
+            globals->_CustomModelProviders->Append(get_self<CustomModelProvider>(provider)->Copy());
+        }
+    }
     if (_DisabledProfileSources)
     {
         globals->_DisabledProfileSources = winrt::single_threaded_vector<hstring>();
         for (const auto& src : *_DisabledProfileSources)
         {
             globals->_DisabledProfileSources->Append(src);
+        }
+    }
+    if (_SafeUriSchemes)
+    {
+        globals->_SafeUriSchemes = winrt::single_threaded_vector<hstring>();
+        for (const auto& src : *_SafeUriSchemes)
+        {
+            globals->_SafeUriSchemes->Append(src);
+        }
+    }
+    if (_AcpCustomCommands)
+    {
+        globals->_AcpCustomCommands = winrt::single_threaded_vector<hstring>();
+        for (const auto& command : *_AcpCustomCommands)
+        {
+            globals->_AcpCustomCommands->Append(command);
+        }
+    }
+    if (_DelegateCustomCommands)
+    {
+        globals->_DelegateCustomCommands = winrt::single_threaded_vector<hstring>();
+        for (const auto& command : *_DelegateCustomCommands)
+        {
+            globals->_DelegateCustomCommands->Append(command);
         }
     }
 
@@ -625,6 +660,12 @@ bool GlobalAppSettings::EffectiveAutoFixEnabled() const
     return AutoFixEnabled();
 }
 
+bool GlobalAppSettings::EffectiveAgentSessionManagementEnabled() const
+{
+    return AgentPolicy::IsAgentSessionHooksAllowed() &&
+           AgentSessionManagementEnabled();
+}
+
 bool GlobalAppSettings::IsAgentPolicyLocked() const
 {
     return AgentPolicy::IsAllowedAgentsPolicyConfigured();
@@ -643,6 +684,65 @@ bool GlobalAppSettings::IsAutoFixPolicyLocked() const
 bool GlobalAppSettings::IsAgentSessionHooksPolicyLocked() const
 {
     return AgentPolicy::GetAgentSessionHooksPolicy() == AgentPolicy::PolicyState::Blocked;
+}
+
+bool GlobalAppSettings::EffectiveAgentPaneYoloMode() const
+{
+    if (!CanEnableAgentPaneYoloMode())
+    {
+        return false;
+    }
+    return AgentPaneYoloMode();
+}
+
+bool GlobalAppSettings::CanEnableAgentPaneYoloMode() const
+{
+    return CanEnableAgentPaneYoloModeForAgent(EffectiveAcpAgent());
+}
+
+bool GlobalAppSettings::CanEnableAgentPaneYoloModeForAgent(const winrt::hstring& agentId) const
+{
+    if (!AgentYoloPolicy::IsAutomaticEnableAvailable(
+            IsYoloModePolicyLocked(),
+            std::wstring_view{ agentId }))
+    {
+        return false;
+    }
+
+    const auto agentIdString = winrt::to_string(agentId);
+    return agentIdString.starts_with("custom:") ?
+               AgentPolicy::IsCustomAgentAllowed() :
+               AgentPolicy::IsAgentAllowed(std::wstring_view{ agentId });
+}
+
+bool GlobalAppSettings::ClearAgentPaneYoloModeIfPolicyBlocked()
+{
+    if (AgentYoloPolicy::CanUserRequestEnable(IsYoloModePolicyLocked()) ||
+        !AgentPaneYoloMode())
+    {
+        return false;
+    }
+
+    AgentPaneYoloMode(false);
+    return true;
+}
+
+bool GlobalAppSettings::ClearAgentPaneYoloModeIfUnavailableDefault()
+{
+    if (!AgentYoloPolicy::IsAutomaticProviderKnownUnsupported(
+            std::wstring_view{ AcpAgent() }) ||
+        !AgentPaneYoloMode())
+    {
+        return false;
+    }
+
+    AgentPaneYoloMode(false);
+    return true;
+}
+
+bool GlobalAppSettings::IsYoloModePolicyLocked() const
+{
+    return AgentPolicy::GetYoloModePolicy() == AgentPolicy::PolicyState::Blocked;
 }
 
 // ── Test-only hooks ─────────────────────────────────────────────────

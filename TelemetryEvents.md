@@ -1,16 +1,22 @@
-# Windows Terminal telemetry events
+# Telemetry reference
 
-> **Note:** This file is **inherited from upstream Windows Terminal**
-> ([`microsoft/terminal`](https://github.com/microsoft/terminal)) and
-> documents the telemetry events emitted by the underlying Windows Terminal
-> / OpenConsole code that Intelligent Terminal forks from.
->
-> **Intelligent Terminal-specific telemetry** (events emitted by WTA,
-> agent-pane lifecycle, autofix, hooks installation, etc.) is **not yet
-> catalogued here**. See [`PRIVACY.md`](./PRIVACY.md) for IT-specific
-> privacy information and how to disable telemetry.
+For the maintained event contract, read the
+**[Intelligent Terminal telemetry reference](./doc/intelligent-terminal-telemetry.md)**.
+It contains the complete typed schemas, trigger definitions, measurement
+rules, and privacy boundaries for the dedicated events.
 
-This document enumerates every **true telemetry event** in the Windows Terminal codebase under `src\` — i.e., every `TraceLoggingWrite(...)` call site whose argument list contains one of the Microsoft telemetry keywords (`MICROSOFT_KEYWORD_MEASURES`, `MICROSOFT_KEYWORD_TELEMETRY`, or `MICROSOFT_KEYWORD_CRITICAL_DATA`) and is therefore reported to Microsoft.
+This document preserves the inherited Windows Terminal / OpenConsole
+reference. Intelligent Terminal-specific schemas are maintained in the
+linked document rather than duplicated here.
+See [`PRIVACY.md`](./PRIVACY.md) for privacy information and controls.
+
+## Inherited Windows Terminal / OpenConsole reference
+
+The following historical inventory covers `TraceLoggingWrite(...)` call sites
+whose arguments contain a Microsoft telemetry keyword
+(`MICROSOFT_KEYWORD_MEASURES`, `MICROSOFT_KEYWORD_TELEMETRY`, or
+`MICROSOFT_KEYWORD_CRITICAL_DATA`). A keyword alone does not establish upload
+or ingestion.
 
 Events grouped by their `TRACELOGGING_DEFINE_PROVIDER`. Diagnostic-only ETW traces tagged with `TIL_KEYWORD_TRACE` (`UiaTracing.cpp`, `parser/tracing.cpp`, most of `host/tracing.cpp`, the server `*Dispatchers.cpp`, `VtIo.cpp`, `VtInputThread.cpp`, etc.) are excluded.
 

@@ -1,9 +1,7 @@
 # Teidil scáileán socraithe
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.title.first_run: "Fáilte go Teirminéal Cliste!"
 setup.title.agent_missing: "Nír aimsíodh an gníomhaire"
 setup.title.agent_error: "Theip ar cheangal an ghníomhaire"
-setup.title.switch_agent: "Athraigh gníomhaire"
 setup.title.not_available: "Níl an gníomhaire ar fáil"
 setup.title.sign_in: "Sínigh isteach riachtanach"
 
@@ -12,10 +10,9 @@ setup.subtitle.copilot_missing: "Níl do ghníomhaire \"%{agent}\" suiteáilte. 
 setup.subtitle.agent_missing: "Níl do ghníomhaire \"%{agent}\" suiteáilte. Athshuiteáil de láimh é, ansin bain triail eile as. Chun gníomhairí a athrú, téigh go Teirminéal Cliste Settings > Agent."
 setup.subtitle.copilot_auth: "Teastaíonn fíordheimhniú ó do ghníomhaire \"%{agent}\". Lean na céimeanna thíos chun síniú isteach. Chun gníomhairí a athrú, téigh go Teirminéal Cliste Settings > Agent."
 setup.subtitle.agent_auth: "Teastaíonn fíordheimhniú ó do ghníomhaire \"%{agent}\". Sínigh isteach tríd an ngníomhaire, ansin roghnaigh \"Tá mé sínithe isteach\" thíos. Chun gníomhairí a athrú, téigh go Teirminéal Cliste Settings > Agent."
+setup.subtitle.connection_failed: "Níorbh fhéidir %{agent} a thosú."
 
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.description.fre_line1: "Roghnaigh an gníomhaire réamhshocraithe ba mhaith leat a úsáid in Teirminéal Cliste. Is féidir leat"
-setup.description.fre_line2: "dul go Settings chun do spás oibre a chumrú agus a shocrú."
 
 setup.option.install: "Suiteáil %{agent}"
 setup.option.install_hint: "(Suiteálfar go huathoibríoch)"
@@ -23,10 +20,14 @@ setup.option.signin: "Sínigh isteach chuig %{agent}"
 setup.option.retry_detection: "Bain triail eile as"
 setup.option.retry_auth: "Tá mé sínithe isteach — bain triail eile as ceangal"
 setup.option.retry_connection: "Bain triail eile as ceangal"
-setup.option.switch_to: "Athraigh go %{agent}"
 setup.status.installing: "Á shuiteáil..."
+setup.status.installing_copilot_cli: "GitHub Copilot CLI á shuiteáil"
+setup.status.connecting_agent: "Ag ceangal le %{agent}"
 setup.status.install_failed: "Theip ar shuiteáil: "
 setup.status.installing_winget: " Á shuiteáil trí winget..."
+setup.error.install_start_failed: "Níorbh fhéidir an suiteálaí a thosú. Roghnaigh \"Bain triail eile as\" chun triail eile a bhaint as."
+setup.error.install_timed_out: "Chuaigh an tsuiteáil thar am. Roghnaigh \"Bain triail eile as\" sula dtosaíonn tú suiteáil eile."
+setup.error.install_detection_timed_out: "Críochnaíodh an tsuiteáil, ach níl Copilot le feiceáil fós. Roghnaigh \"Bain triail eile as\" chun seiceáil arís."
 
 # ── Sreabhadh fíordheimhnithe (src/ui/auth.rs) ──────────────────────────────────────────────
 # {Locked="CLI"} - acrainm, úsáid choitianta i logánú Microsoft
@@ -35,17 +36,19 @@ auth.agent_selected_with_status: "CLI gníomhaire %{name} — "
 auth.checking_authentication: "  %{spinner} Fíordheimhniú á sheiceáil..."
 auth.waiting_for_authorization: "  %{spinner} Ag fanacht le húdarú..."
 auth.code_copied_hint: "  Cód cóipeáilte chuig an ngearrthaisce — greamaigh é i do bhrabhsálaí."
-auth.sign_in_prompt: "Sínigh isteach chun do ghníomhaire a úsáid:"
+auth.device_code_prompt: "Tabhair cuairt ar %{url} agus cuir isteach an cód: %{code}"  # Copilot device-flow sign-in progress; %{url} is the verification URL, %{code} is the device code
 auth.card_connect: "  Ceangail %{name} chun gnéithe gníomhaire a chumasú"
-auth.button_sign_in_github: "[ Sínigh isteach le GitHub ]"  # {Locked="GitHub"}
-auth.button_sign_in_with: "[ Sínigh isteach le %{name} ]"
-auth.hint_footer: "  Brúigh Enter chun síniú isteach, Esc chun dul ar ais"  # {Locked="Enter","Esc"}
+auth.enterprise_prompt: "  Enter = sínigh isteach · E = GitHub Enterprise · Esc = téigh siar"  # {Locked="Enter","E","Esc"}
+auth.enterprise_domain_label: "  Fearann Enterprise: "
+auth.enterprise_hint_footer: "  Enter = sínigh isteach · Esc = github.com"  # {Locked="Enter","Esc","github.com"}
+auth.login_failed_help_enterprise: "  Brúigh Enter chun triail a bhaint as arís, nó Esc le haghaidh github.com. Cúiseanna coitianta: fearann mílitrithe nó nach féidir a bhaint amach, cód imithe in éag, nó gan rochtain Copilot ar an óstach sin."  # {Locked="Enter","Esc","github.com","Copilot"}
+auth.login_failed_help_default: "  Brúigh Enter chun triail a bhaint as arís, nó Esc chun dul siar."  # {Locked="Enter","Esc"}
 
 # ── Amharc comhrá (src/ui/chat.rs) ──────────────────────────────────────────────
 chat.activity_thinking: "Ag smaoineamh…"
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
 chat.welcome_title: "Fáilte go Teirminéal Cliste!"
-chat.welcome_disclaimer: "Úsáideann Teirminéal Cliste AI. Seiceáil le haghaidh botúin."
+chat.welcome_disclaimer: "Úsáideann Teirminéal Cliste AI."
 chat.plan_header: "Plean:"
 chat.plan_marker_completed: "[x]"  # {Locked}
 chat.plan_marker_in_progress: "[>]"  # {Locked}
@@ -53,11 +56,24 @@ chat.plan_marker_pending: "[ ]"  # {Locked}
 chat.autofix_prompt_label: "Diagnóisíodh teip ar ordú le déanaí go huathoibríoch"
 chat.turn_canceled: "(cealaithe)"
 chat.turn_executed: "→ rinneadh: %{title}"
+# Lipéid bhuana chatagóir uirlise a thaispeántar tar éis marcóir stádais agus roimh an ábhar.
+chat.tool_kind.run: "Rith"
+chat.tool_kind.insert: "Ionsáigh"
+chat.tool_kind.read: "Léigh"
+chat.tool_kind.search: "Cuardaigh"
+chat.tool_kind.edit: "Cuir in eagar"
+chat.tool_kind.delete: "Scrios"
+chat.tool_kind.move: "Bog"
+chat.tool_kind.fetch: "Faigh"
+chat.tool_kind.think: "Smaoinigh"
+chat.tool_kind.mode: "Mód"
+chat.tool_kind.other: "Uirlis"
 
 # ── Ionadóirí ionchuir (src/ui/input.rs) ────────────────────────────────────
 input.placeholder.connected: "Cuir ceist ar bith, / le haghaidh orduithe.."  # {Locked="/"}
 input.placeholder.connecting: "ag ceangal..."
 input.placeholder.disconnected: "dícheangailte"
+input.image_attachments: "📎 Íomhánna: %{items}"  # {Locked="📎","%{items}"}
 
 # ── Aníos orduithe (src/ui/command_popup.rs) ─────────────────────────────────
 # {Locked="/"} - réimír ordú scáth, caithfidh sé fanacht ASCII
@@ -93,9 +109,7 @@ permission.compact.prefix: "[!] "  # {Locked}
 permission.compact.hint: "[Y/N le freagairt · athraigh méid le haghaidh cárta iomlán]"  # {Locked="Y/N"}
 
 # ── Stádas gníomhaire (src/agent_check.rs) ───────────────────────────────────
-agent.status.not_installed_auto: "Níl suiteáilte — roghnaigh chun suiteáil go huathoibríoch"
 agent.status.not_found: "Nár aimsíodh"
-agent.status.detected: "Braitheadh"
 # {Locked="winget","GitHub.Copilot","GitHub","Copilot"} - ainmneacha uirlisí agus ordú, caithfidh siad rith mar atá
 agent.install.running_winget: "Ag rith: winget install GitHub.Copilot"
 agent.install.launch_failed: "Theip ar winget a sheoladh: %{error}"
@@ -106,8 +120,8 @@ agent.custom.auth_hint: "Cinntigh go bhfuil %{name} suiteáilte agus ar do PATH.
 
 # ── Amharc gníomhairí (src/ui/agents_view.rs) ─────────────────────────────────
 agents.loading: "Á luchtú..."
-# {Locked="Enter","Esc","↑","↓"} - teaglamaí eochracha, ná haistrigh
-agents.footer_hint: "(↑ ↓ chun nascleanúint • Enter chun seisiún a sheoladh • Esc chun scor)"
+# {Locked="Enter","Esc","F5","↑","↓","/"} - teaglamaí eochracha, ná haistrigh
+agents.footer_hint: "(↑ ↓ chun nascleanúint • Enter chun seisiún a sheoladh • Esc chun scor • F5 chun athnuachan • / chun cuardach)"
 agents.status.active: "Gníomhach"
 agents.status.waiting_for_input: "Ag fanacht le hionchur"
 agents.status.error: "Earráid"
@@ -117,26 +131,47 @@ agents.status.idle: "Díomhaoin"
 layout.welcome_hint: "  (Ctrl+Shift+. chun pána gníomhaire a thaispeáint/a cheilt • Ctrl+Shift+/ chun seisiún gníomhaire a thaispeáint/a cheilt)"  # {Locked="Ctrl+Shift+.","Ctrl+Shift+/"}
 
 # ── Staid ceangail ────────────────────────────────────────────────────────
-connection.starting: "Gníomhaire á thosú..."
+# Preparing the AI agent connection, including preflight and reuse of a cached agent.
+connection.starting: "Ceangal leis an ngníomhaire á ullmhú..."
 connection.reconnecting: "Ag athcheangal..."
+# Retiring old AI agent sessions for /restart, before the next connection phases.
+connection.restarting: "An gníomhaire á atosú..."
+# Connecting the pane to WTA's local coordinator process, not to an AI model.
+connection.coordinator: "Ag ceangal leis an gcomhordaitheoir áitiúil..."
+# Initializing the helper/coordinator connection, including local preparation and AI agent initialization.
+connection.initializing: "Ceangal leis an ngníomhaire á thúsú..."
+# Refreshing the user's authentication with the AI agent after login; not verifying the agent's identity.
+connection.authenticating: "An t-úsáideoir á fhíordheimhniú leis an ngníomhaire..."
+# Reading the coordinator's registry snapshot, including existing history; not fetching history from the AI agent.
+connection.syncing_sessions: "Liosta na seisiún á léamh..."
+# Creating the AI agent session, including local registration; internal agent progress is unknown.
+connection.creating_session: "Seisiún an ghníomhaire á chruthú..."
+# Applying the requested AI model before the connection is ready. Preserve %{model}.
+connection.selecting_model: "Samhail an tseisiúin á socrú: %{model}..."  # {Locked="%{model}"}
+# Activity row while connecting to restore a conversation. Keep the actual stage first so narrow panes show it; session_id is shortened to eight characters.
+connection.resuming_stage: "%{stage} (ag leanúint de %{session_id})"  # {Locked="%{stage}","%{session_id}"}
 connection.connecting_activity: "Ag ceangal leis an ngníomhaire…"
 connection.lost: "Cailleadh an ceangal leis an ngníomhaire. Clóscríobh /restart chun athcheangal."  # {Locked="/restart"}
 
 # ── Teachtaireachtaí córais (src/app.rs) ────────────────────────────────────
+system.close_pane_hint: "Brúigh Ctrl+C arís chun an pána a dhúnadh"  # {Locked="Ctrl+C"}
+system.selection_copied: "Cóipeáladh"  # Brief hint shown after selected terminal text is copied
 system.cancelled: "Cealaithe."
 system.no_prompt_in_flight: "Níl aon leid ar siúl."
 system.authentication_failed: "Theip ar fhíordheimhniú"
-system.command_copied_retry: "Ordú cóipeáilte — rith i dteirminéal eile é, ansin brúigh Enter chun triail eile a bhaint as"  # {Locked="Enter"}
 system.stopped_max_tokens: "Gearradh an freagra tar éis teorainn aschuir an mhúnla a bhaint amach."
 system.stopped_max_turn_requests: "Stop an gníomhaire tar éis a theorainn iarratas don seal seo a bhaint amach."
 system.stopped_refusal: "Dhiúltaigh an gníomhaire leanúint ar aghaidh leis an iarratas seo."
 system.agent_busy: "Tá an gníomhaire gnóthach ar an gcluaisín seo — fan go gcríochnóidh an leid reatha."
+system.image_clipboard_empty: "Níl aon íomhá ar an ngearrthaisce le greamú."
+system.image_not_supported: "Ní thacaíonn an gníomhaire seo le hionchur íomhá."
+system.image_pasted: "Íomhá ceangailte (%{label}). Brúigh Enter chun í a sheoladh."  # {Locked="%{label}","Enter"}
 system.resuming_session: "Seisiún %{session_id} á atosú..."
 system.unknown_command: "Ordú anaithnid \"%{command}\" — seolta mar leid. Clóscríobh /help don liosta."
 system.busy_use_stop: "Fan go gcríochnóidh an leid reatha, nó úsáid /stop ar dtús."
 system.cannot_focus_session: "Ní féidir díriú ar sheisiún %{session_id}: is cosúil go bhfuil sé beo ach níl GUID pána ceangailte fós. Bain triail eile as i gceann nóiméid."
-system.cannot_resume_no_load_session: "Ní féidir atosú i bpána gníomhaire: níor fhógair %{agent} cumas ACP `loadSession`. Brúigh Enter (gan Shift) chun atosú i bpána teirminéil nua ina ionad sin."
-system.cannot_resume_no_resume_flag: "Ní féidir seisiún %{agent} a atosú: níl bratach de stíl `--resume` ag an ngníomhaire seo. Brúigh Shift+Enter chun iarracht a dhéanamh atosú laistigh den phána gníomhaire trí ACP ina ionad sin."
+system.cannot_resume_no_load_session: "Ní féidir atosú i bpána gníomhaire: níor fhógair %{agent} cumas ACP `loadSession`."
+system.cannot_resume_no_resume_flag: "Ní féidir seisiún %{agent} a atosú: níl bratach de stíl `--resume` ag an ngníomhaire seo."
 system.cannot_resume_unknown_agent: "Ní féidir seisiún %{session_id} a atosú: níl a ghníomhaire foinse ar eolas ag an leagan seo."
 system.cannot_resume_phantom_via_flag: "Ní féidir seisiún %{agent} %{session_id} a atosú: cuireadh tús leis ach níor charnaigh sé aon chomhrá riamh, mar sin dhiúltódh %{agent} féin don atosú. An ró á bhaint."
 system.cannot_resume_phantom_via_load: "Ní féidir seisiún %{agent} %{session_id} a atosú: cuireadh tús leis ach níor charnaigh sé aon chomhrá riamh, mar sin dhiúltódh %{agent} don lódáil. An ró á bhaint."
@@ -178,7 +213,7 @@ hooks.marketplace_path_stale: "⚠ conair mhargaidh as feidhm"
 hooks.installed_but_disabled: "⚠ suiteáilte ach díchumasaithe"
 hooks.not_installed: "✗ níl suiteáilte"
 hooks.uninstall_skipped: "léimthe (CLI níl ar PATH)"
-hooks.install_attempted: "Rinneadh iarracht wt-agent-hooks a shuiteáil (iompóiteach). Rith `wta hooks status` chun an toradh a iniúchadh. Loga rianaithe: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
+hooks.install_succeeded: "✓ wt-agent-hooks suiteáilte do %{clis}"
 # ── Relative time + date formatting (src/ui/agents_view.rs) ─────────────────
 time.just_now: "anois díreach"
 time.minute_singular: "%{count} nóiméad ó shin"
@@ -188,5 +223,46 @@ time.hours_other: "%{count} uair an chloig ó shin"
 time.day_singular: "%{count} lá ó shin"
 time.days_other: "%{count} lá ó shin"
 
+# ── Slash-command summaries (src/commands.rs) ─────────────────────────────
+# Command names (/help, /clear, etc.) stay English; descriptions translate.
+# {Locked="ACP","Ctrl+Shift+/"} - protocol name and shortcut, do not translate
+commands.help.summary: "Show this command list"
+commands.clear.summary: "Clear the chat scrollback (keeps session)"
+commands.new.summary: "Start a fresh ACP session (drops history)"  # {Locked="ACP"}
+commands.fix.summary: "Diagnose the active terminal and suggest a fix (/fix <hint>)"  # {Locked="/fix","<hint>"}
+commands.restart.summary: "Restart agent"
+commands.stop.summary: "Cancel the in-flight prompt"
+commands.sessions.summary: "Open the historical sessions picker (Ctrl+Shift+/)"  # {Locked="Ctrl+Shift+/"}
+commands.agent.summary: "Roghnaigh an gníomhaire don chluaisín seo (/agent <id> chun athrú go díreach)"  # {Locked="/agent","<id>"}
+
 # ── Rith moltaí (src/coordinator.rs) ───────────────────────────
 system.choice_execution_failed: "Theip ar rogha %{choice}: %{error}"
+
+# ── Agent picker (src/ui/agent_popup.rs) ────────────────────────────────────
+# {Locked="↑","↓","Enter","Esc"} - key names, do not translate
+agent_picker.title: "Roghnaigh gníomhaire (↑ ↓ • Enter • Esc)"  # Agent means an AI coding agent
+# Shown when no policy-allowed AI agent CLI is installed on the machine.
+system.no_agents: "Níor aimsíodh aon CLI gníomhaire ar fáil ar an meaisín seo."  # {Locked="CLI"}
+# {agent} is the unrecognized text the user typed after /agent.
+system.agent_unknown: "Gníomhaire anaithnid nó nach bhfuil ar fáil %{agent} — clóscríobh /agent chun an liosta atá ar fáil a fheiceáil."  # {Locked="/agent"}
+# Shown only when /agent is used outside a Windows Terminal-owned agent pane.
+system.agent_switch_unavailable: "Níl athrú gníomhaire ar fáil lasmuigh de chluaisín Windows Terminal."
+
+# ── Model picker (/model) ───────────────────────────────────────────────────
+commands.model.summary: "Roghnaigh an samhail don phána seo (/model <id> chun athrú go díreach)"  # {Locked="/model","<id>"}
+commands.config.summary: "Cumfiguraigh an seisiún gníomhaire seo"  # Agent means an AI coding agent; shown for the /config command. {Locked="/config"}
+commands.move.summary: "Bog pána gníomhaire an chluaisín seo (/move <position>)"  # {Locked="/move","<position>"}
+model_picker.title: "Roghnaigh samhail (↑ ↓ • Enter • Esc)"  # {Locked="↑","↓","Enter","Esc"}
+system.no_models: "Níor fhógair an gníomhaire ceangailte aon tsamhail in-roghnaithe."
+system.model_set: "Samhail an phána seo socraithe go %{model}."  # {Locked="%{model}"}
+
+# ── Session configuration picker (src/ui/config_popup.rs) ───────────────────
+# {Locked="↑","↓","Enter","Esc","ACP"} - key names and protocol name
+config_picker.title: "Cumraíocht seisiúin (↑ ↓ • Enter • Esc)"
+# Shown when /config is used but the AI agent exposed no ACP select options.
+system.no_config_options: "Níor fhógair an gníomhaire nasctha aon roghanna seisiúin in-cumraithe."
+# {option} is an Agent-provided option name; {error} is the ACP error.
+system.config_update_failed: "Theip ar nuashonrú %{option}: %{error}"
+system.yolo_disable_pending: "níor dheimhnigh soláthraí an ghníomhaire staid neamhphribhléideach riachtanach an tseisiúin"  # Shown after the localized failure prefix while prompts remain blocked until the AI agent provider confirms that its privileged session mode is off. Provider means an AI agent provider, not a network provider.
+system.provider_command_blocked_by_policy: "%{command}: Tá ceadú uathoibríoch díchumasaithe ag polasaí d’eagraíochta."  # {Locked="%{command}"} Shown when AllowAutomaticApproval blocks a provider-advertised privileged command.
+system.model_unknown: "Samhail anaithnid %{model} — clóscríobh /model chun an liosta atá ar fáil a fheiceáil."  # {Locked="%{model}","/model"}

@@ -1,0 +1,651 @@
+# ItE2E — Intelligent Terminal End-to-End Test Framework
+
+A robust, CLI-composition test framework that drives and verifies a **deployed
+(MSIX-packaged)** Intelligent Terminal. Tests are authored in **PowerShell + Pester 5**.
+Design rationale is captured in the inline notes below and in each suite's header comments.
+
+## Release-checklist coverage
+
+The `tests/` folder implements the `[E2E]` items from
+`doc/release-check-list.md` that are automatable on one machine. Copilot drives
+the baseline suites, while the agent matrix covers other installed and
+authenticated ACP agents. Available suites (results depend on the selected package and revision):
+
+| Suite (file) | Covers | Cases |
+|---|---|---|
+| `Feature.Packaging.Tests.ps1` | §9 packaging/protocol (incl. WT_COM_CLSID injected into pane shells) + §10 logging + log retention/cleanup | 18 |
+| `Feature.HookShutdown.Tests.ps1` | Fixed-CLSID native/cached hook delivery without COM activation, late-hook suppression, and ordinary headless COM compatibility; no windows, agents, or configuration edits | 3 |
+| `Feature.TelemetryFunnels.Tests.ps1` | PR #990: opt-in, provider-only ETW adoption/engagement, per-window startup inventory/sidebar, slash rename, concrete Autofix offer/Run, palette entry, provider changes, and native-ready/startup-policy state; hot-policy checks remain separately visible | 18 (requires `ITE2E_TELEMETRY=1` and explicit policy approval) |
+| `Feature.SidebarTelemetry.Tests.ps1` | Opt-in typed ETW for startup sidebar state, real search/filter/context-menu actions, loaded Agent-view session counts, keep-running opt-in/detach/reattach and surviving-session prompts, rich-tab field changes/session-start snapshots, provider-session-ID exclusion, and suppression during editing/refresh/restore | 9 (requires `ITE2E_TELEMETRY=1`; no policy changes) |
+| `Feature.WtcliPublishStdin.Tests.ps1` | PR #652: WTA/wtcli stdin transport delivers command-line-limit-sized events intact and preserves positional compatibility | 3 |
+| `Feature.Settings.Tests.ps1` | §1 Settings>AI Agents + §0 FRE settings/positions/auto-error/session-mgmt | 18 |
+| `Feature.SettingsUi.Tests.ps1` | Live Settings editor: Agent controls and Appearance's localized Tab Mode label matching FRE | 4 |
+| `Feature.FreFlow.Tests.ps1` | §0 FRE overlay click-through (Next→Save, privacy link, close-safety) plus topmost Tab Mode, Sidebar default, explicit preferences, Save-only persistence, setup failure/retry and restart | 9 (failure injection requires Dev) |
+| `Feature.FreExecutionPolicy.Tests.ps1` | §0 FRE automatic CurrentUser execution-policy remediation (**Dev**, auto-skips) | 4 (1 conditional skip) |
+| `Feature.FreHooks.Tests.ps1` | §0 FRE progressive setup ordering, session hook installation, failure, and retry (**Dev**, auto-skips) | 3 |
+| `Feature.SidebarTabKeyboard.Tests.ps1` | Issue #1045: physical Tab/Up/Down navigate unfiltered and filtered Sidebar tabs without terminal focus; bare Enter activates, Ctrl+Enter does not, pointer selection still works, and Ctrl+Shift+S entry/exit preserves the originating shell while Tab visits a row | 3 |
+| `Feature.AgentPaneInteraction.Tests.ps1` | open/hide/focus, input/rendering, slash, Copilot chat | 14 |
+| `Feature.AgentHotkeys.Tests.ps1` | Physical WT-window accelerators for agent pane/delegation; Sidebar and History hotkeys preserve shell/Agent drafts and tab-search focus, including keyboard focus on the titlebar rail toggle. The public palette action retains visibility toggling; mixed pointer sessions, horizontal suppression, and effective Expand/Collapse hints remain covered | 14 |
+| `Feature.AgentProtocolExperience.Tests.ps1` | PRs #599/#601/#606/#610/#611/#612/#616/#634/#683: intent-based terminal actions (including empty workspaces and configured delegation), ACP tool/transcript rendering, clarification input, session configuration, model title, and replacement cleanup across the deployed helper/master boundary | 8 |
+| `Feature.AgentImageAttachmentEditing.Tests.ps1` | PR #536: inline image tokens move and delete atomically while preserving adjacent prompt text | 1 |
+| `Feature.AgentModelSync.Tests.ps1` | PR #538: ACP config-option updates replace stale session model state in the active picker | 1 |
+| `Feature.AgentModelLifecycle.Tests.ps1` | PR #554: `/model` hot-apply and Settings-driven model restart/reconnect lifecycle | 2 |
+| `Feature.ByokProvider.Tests.ps1` | PR #447: Settings-selected OpenAI-compatible provider request path, credential handling, and BYOK-to-cloud restart lifecycle | 2 |
+| `Feature.AgentCompactLayout.Tests.ps1` | PR #580: compact-height recommendation, input, and Insert interaction at the real splitter minimum | 1 |
+| `Feature.AgentPanePadding.Tests.ps1` | Issue #793: deterministic full recommendation card, navigation hint, and action alignment across the packaged WTA render boundary | 1 |
+| `Feature.ProposalMcpRouting.Tests.ps1` | PR #560: per-session proposal MCP names and two-tab Helper routing isolation | 1 |
+| `Feature.AgentMouse.Tests.ps1` | PR #506 and issue #790: physical chat wheel scrolling, Ctrl+wheel zoom, draft preservation, text selection/copy, and stale-selection suppression; completed-turn full-row clicks across multiline prompts with shared keyboard selection/Enter behavior, row-end/drag guards, and input-dialog focus recovery | 7 |
+| `Feature.AgentSelectAll.Tests.ps1` | Physical Ctrl+A selects only the focused nonempty draft: exact source copy, cut/delete/replace, repeat/Esc/caret collapse, and pending-turn safety; empty input and history focus retain pane copy and stale-selection clearing. Deterministic ACP fixture; unique evidence under `ITE2E_ARTIFACT_ROOT` (default `artifacts`) | 6 |
+| `Feature.AgentInputNavigation.Tests.ps1` | Physical Up/Down edits explicit and soft-wrapped input rows, preserves preferred display columns and viewport following, collapses full-input selection safely, and retains deterministic prompt-history boundary behavior | 5 |
+| `Feature.AgentInputMouseCursor.Tests.ps1` | Physical mouse clicks move the draft caret across ASCII, scrolled multiline, soft-wrapped and wide Unicode text; exact clipboard insertion oracles and a deterministic ACP fixture | 4 |
+| `Feature.AgentInputUndoRedo.Tests.ps1` | Physical Ctrl+Z/Ctrl+Y: grouped typing, atomic edits, multiline Unicode, real clipboard image payload restoration, redo branching, and submission/history boundaries. Deterministic ACP fixture; exact clipboard/capture evidence under `ITE2E_ARTIFACT_ROOT`; requires an English (US) layout and an unused explicitly selected package | 6 |
+| `Feature.PromptHistory.Tests.ps1` | PR #478: per-tab Up/Down prompt recall, draft restoration, and multiline preservation; PR #614: completed-turn collapse/expand rendering | 4 |
+| `Feature.CompletedTurnSelection.Tests.ps1` | Completed-turn Tab/Up/Down selection keeps focused history inside the chat viewport | 1 |
+| `Feature.AutofixPane.Tests.ps1` | Direct Helper Autofix proposal card render/insert/run/reject/target/stashed + across layout + WSL shell identity and Linux fixes | 12 (2 WSL-gated) |
+| `Feature.AutofixParser.Tests.ps1` | issue #474: PowerShell ParserError-to-Autofix pipeline + success/handled-error/blank-input negative controls | 4 |
+| `Feature.AutofixRouting.Tests.ps1` | Two Detected tabs: real diagnostics clicks submit only to the selected tab's ACP session and preserve the other tab's opt-in | 1 |
+| `Feature.PaneContext.Tests.ps1` | issue #838: packaged pane-context capture, marked/unmarked output, explicit routing, missing panes, metadata-only mode, Unicode bounds, and agent-focus source resolution | 7 |
+| `Feature.CommandResolution.Tests.ps1` | PR #418: packaged WTA resolves PowerShell profile-only aliases to their real targets | 1 |
+| `Feature.AutofixCommandResolution.Tests.ps1` | Issue #844: Debug Dev, deterministic ACP fixture; no startup/tab-selection probes, first/later Autofix contracts without enumeration, and explicit local-candidate lookup | 3 |
+| `Feature.SessionList.Tests.ps1` | session view (button + `/sessions` slash), session states, view switching (incl. draft-preservation), focus/restore | 13 (+1 skip) |
+| `Feature.SessionRefresh.Tests.ps1` | Master-owned history synchronization with closed views, read-only snapshots, real 60-second layout-specific fallback, live layout switching, and explicit refresh; deterministic listing-capable ACP fixture, no model quota, explicit Dev hashes and inactive package required | 4 |
+| `Feature.KeepRunningFocus.Tests.ps1` | Explicit history/session `focus-pane` reattachment; ordinary Start-menu and profile launches create a new tab while two kept tabs remain detached; original shell/helper identity and stale-target safety; deterministic ACP fixture | 2 |
+| `Feature.NonAsciiCwd.Tests.ps1` | issue #641: a non-ASCII starting directory survives `wtcli` argv → COM → `CreateProcessW`, so the resume launch path connects and starts in that directory | 2 |
+| `Feature.AgentPaneCwd.Tests.ps1` | agent-pane source workspace reaches ACP `session/new` and remains stable across `/new` without a model prompt | 1 |
+| `Feature.AgentRestart.Tests.ps1` | agent restart after a settings change (/restart reconnects and answers) | 1 |
+| `Feature.ShellIntegration.Tests.ps1` | §3 shell-integration OSC 133 marks (success/failure, ParserError dedup, handled errors, WinPS 5.1 errors) + non-integrated cmd.exe safety | 6 |
+| `Feature.BashPromptIntegration.Tests.ps1` | PR #468: Bash `PROMPT_COMMAND` PS1 rewrites preserve D/A/B boundaries; non-IT hosts remain gated | 1 (Git Bash-gated) |
+| `Feature.AgentProposedCommand.Tests.ps1` | §2 Direct Helper Proposal Insert/Run into the shell pane | 2 |
+| `Feature.YoloMode.Tests.ps1` | Default-provider-scoped automatic approval persistence across global, `/agent`, and profile bindings; deterministic permission boundary; hidden unsupported/policy states; retained Gemini guidance; and live policy reconciliation | 8 (OpenCode, Gemini, `/agent`, profile, and policy gated) |
+| `Feature.AgentProposalFocus.Tests.ps1` | PR #533: Insert returns real window keyboard focus to the target shell pane | 1 |
+| `Feature.AgentMatrix.Tests.ps1` | §2 non-Copilot built-in agents (Claude/Codex/Gemini) connect+chat through the ACP adapter — ONE consolidated case (Copilot is the in-depth suite); skips when none installed+authed | 1 |
+| `Feature.HookTrace.Tests.ps1` | C190 + PR #571 C267-C269, C272: every shipped bundle's guarded command still delivers, `tool_input` survives only for interactive prompts, shells outside Terminal are ignored, and the broadcast envelope stays inside its budget | 5 |
+| `Feature.SessionHookRouting.Tests.ps1` | PR #761: master consumes one `wtcli agent-hook` COM broadcast directly while multiple helpers update only local pane bindings, a terminal hook for an unseen session fabricates no row, and `agent.error` still records the failure | 3 |
+| `Feature.SessionOwnershipRestore.Tests.ps1` | PR #950: a UUID-shaped nested-agent prompt cannot replace the resumable root session persisted for its pane | 1 |
+| `Feature.HookBridgeCli.Tests.ps1` | PR #571 C274, C265, C266: a real agent CLI fires the bundled `hooks.json` command through its own shell, and neither an unreachable protocol server nor an uninstalled Terminal blocks the CLI; skips when the CLI isn't installed+authed | 3 (environment-gated) |
+| `Feature.LegacyHookBundle.Tests.ps1` | PR #571 C270-C271: a pre-#571 PowerShell hook bundle still delivers against a post-#571 Terminal, and degrades quietly when `WT_COM_CLSID` is unset | 2 |
+| `Feature.OpenCodeHookBridge.Tests.ps1` | PR #571 C273: OpenCode's JS plugin spawns `wtcli` through an argv array with no shell, so it resolves the bridge via `WTCLI_PATH` rather than the `PATH` alias | 1 (environment-gated) |
+| `Feature.OpenCodeAgent.Tests.ps1` | PR #458: built-in OpenCode launches its native ACP server and completes agent-pane chat | 1 (environment-gated) |
+| `Feature.OpenCodeSessionResume.Tests.ps1` | PR #464: OpenCode history discovery and `--session` resume restore the prior transcript | 1 (environment-gated) |
+| `Feature.OpenCodeHooks.Tests.ps1` | PR #476: packaged hook install, shell-session lifecycle routing, picker visibility, and ACP duplicate suppression | 1 (environment-gated) |
+| `Feature.SharedAgentLifecycle.Tests.ps1` | PR #425 + ACP cleanup: closing a tab mid-turn physically closes only its session without terminating the shared agent CLI or breaking sibling tabs | 1 |
+| `Feature.AgentPaneLifetime.Tests.ps1` | Issue #841: hidden retention, split-tab cleanup, lease retirement, draining-only crash suppression, agent-first/later cross-window moves, and rejected pane-move rollback preserving both tabs and sessions; deterministic stdio fixture | 10 |
+| `Feature.PerTabAgent.Tests.ps1` | C225-C228 + PR #487: `/agent` picker/direct selection, invalid-id safety, per-tab isolation/shared-master reuse, and global-default/override behavior | 7 |
+| `Feature.WslAgentBackend.Tests.ps1` | PR #481 profile-scoped WSL agent backend: settings hot reload, helper/master source routing, and authenticated chat | 2 (environment-gated) |
+| `Feature.DelegateSource.Tests.ps1` | PR #488 profile-scoped delegate source: strict host/WSL `wta delegate` routing with no fallback in either direction | 2 (environment-gated) |
+| `Feature.AgentChat.Tests.ps1` / `Feature.AgentPopup.Tests.ps1` | agent chat + `/` popup/menu interaction | 1 + 3 |
+| `Feature.AgentPaneMove.Tests.ps1` | PR #429: `/move` stays per-tab, preserves global position, and restores agent input focus | 1 |
+
+**Coverage and results are tracked by stable checklist IDs and generated release reports.**
+The suite table describes available cases, not a blanket pass result for every package or
+environment. Use `Invoke-ItE2EReport.ps1` and its full or incremental release report for the
+selected revision's actual passed, failed, skipped and remaining checklist items.
+`Feature.AgentInputUndoRedo` maps its deterministic editing cases to stable checklist IDs,
+including real clipboard image insertion/replacement and restored ACP payload verification.
+
+Environment-dependent suites declare their prerequisites, including installed/authenticated
+agents, WSL availability, hook or policy provisioning, and interactive-desktop input support.
+Unavailable external prerequisites may be skipped; product failures must remain failures.
+Manual release-sign-off items are not credited by unrelated unit or protocol checks.
+
+For **PR validation** of `Feature.AgentInputUndoRedo`, build/deploy the intended source revision
+and set `ITE2E_EXPECTED_WTA_SHA256` from that build's receipt before running the suite. Verify
+source-to-package freshness as well; copying the hash from an arbitrary installed binary is not
+proof of its source revision. The suite records the actual package and hash in `package.json`.
+An intentional Store/production baseline run may omit the expected hash, but its results must
+not be presented as validation of unshipped PR code.
+
+Token-consuming simulated-real-user tests are deliberately excluded from this publishable suite
+and from CI. They live only in the feature's dev-only local validation harness and run manually
+against an exact deployed publish package with explicitly available provider quota.
+
+### Deterministic mouse and paste regression checks
+
+The `CompletedTurnMouse` group contains four fixture-backed cases; it can run without a real
+provider prompt. Run the group together as well as the `RightClickCopy`/`RightClickPaste` cases
+individually. Each case verifies an empty connected draft at entry and cleanup, with a fresh
+fixture conversation so accumulated history cannot suppress the transient copy hint. The group refuses
+an already-used selected package, preserves clipboard formats and mouse position, and records
+unique captures below `ITE2E_ARTIFACT_ROOT` (or the default artifacts directory).
+The paired paste suite also preserves full clipboard formats. Both fixtures retain a recovery
+target before startup. If startup never returns a launch context, any remaining package process
+blocks automatic recovery; a matching path and recent creation time are not termination authority.
+Configuration is restored only after the selected package is confirmed inactive. Ambiguous
+ownership or ineffective termination fails with the configuration backup retained.
+
+The shared `Get-UiTextBounds` helper locates the first literal match in the single visible named
+TermControl belonging to the test window. It verifies the exact range text before returning
+rectangles; UTF-16 string indexes are not UIA Character offsets. An unrepresentable or mismatched
+range fails instead of guessing a coordinate. `Send-AgentKey -Key Escape` uses a complete Win32
+key event so a pending escape prefix cannot consume the next prompt character.
+
+```powershell
+$env:ITE2E_PACKAGE = 'Dev'
+$env:ITE2E_EXPECTED_WTA_SHA256 = '<hash from the exact-source build receipt>'
+$run = Join-Path $PWD ('test\e2e\artifacts\mouse-' + [guid]::NewGuid().ToString('N'))
+$env:ITE2E_ARTIFACT_ROOT = $run
+.\test\e2e\Invoke-ItE2EReport.ps1 `
+    -Path @('test\e2e\tests\Feature.AgentMouse.Tests.ps1', 'test\e2e\tests\Feature.Paste.Tests.ps1') `
+    -Tag @('CompletedTurnMouse', 'PasteCore', 'PasteRefocus', 'PasteOwnerIsolation') `
+    -OutDir $run
+Invoke-Pester test\e2e\selftests\MouseInput.Unit.Tests.ps1 -Tag Unit
+```
+
+The unit file keeps one representative regression per major helper or cleanup behavior, using
+small stubs without a deployed app. The existing mouse and paste E2E cases retain the broader
+interaction coverage. Existing checklist titles remain unchanged; use fresh full/incremental
+reports rather than treating historical failures as passing after a helper change.
+
+`tools\AutofixPrompt.Local.Tests.ps1` is an opt-in, quota-consuming Dev validation
+of actual Copilot decisions, outside the default `tests`/`selftests` discovery.
+It runs three fresh-session samples each of an obvious Git typo and an unfamiliar
+local command typo. The oracle inspects session-scoped tool calls: the obvious
+typo must go directly to a correction card with no discovery tools, while the
+local command must be resolved and its corrected script must run in the source pane.
+Run it explicitly through `Invoke-ItE2EReport.ps1 -Path` with `ITE2E_PACKAGE=Dev`
+and `ITE2E_EXPECTED_WTA_SHA256` set to the deployed feature build.
+`ITE2E_COMMAND_FIXTURE_DIR` must name an existing writable user PATH directory;
+the test creates uniquely named scripts there and removes them afterward. This
+models an installed local command, rather than assuming a script in the current
+directory is on PowerShell's command search path. Set `ITE2E_AUTOFIX_MODEL` to
+pin the Copilot model being evaluated. Settings are preserved through ItE2E;
+the test does not modify PATH or profiles.
+
+`Feature.AutofixCommandResolution` requires a Debug Dev build so its negative
+probe assertions have enabled diagnostic evidence. Store selections (including
+the Store package family name) skip this suite during default discovery.
+Missing/invalid package selections and Dev build mismatches still fail. Set
+`ITE2E_EXPECTED_WTA_SHA256` to the SHA-256 of the feature-branch build when
+validating a change; the suite rejects a mismatched deployed binary. Its unique
+artifact directory records the package hash, received ACP contracts, query
+results, and scoped helper logs. The fixture uses disposable command files and
+does not modify the user's PowerShell profile or consume model quota.
+
+## What it gives you
+
+### Opt-in telemetry funnel validation
+
+`Feature.SidebarTelemetry` reuses the same bounded elevated ETW collector and
+typed decoder without policy writes. Select `ITE2E_PACKAGE=Dev`, opt in with
+`ITE2E_TELEMETRY=1`, and supply `ITE2E_EXPECTED_APP_SHA256` and
+`ITE2E_EXPECTED_WTA_SHA256` from the new build. The suite refuses an active Dev
+package, uses a deterministic ACP fixture without model quota, restores
+settings/state byte-for-byte, and retains real UI phase evidence and raw ETW
+artifacts. Before deploying Dev from another branch, compare its generated
+`AppxManifest.xml` version with the installed package: the safe Debug deployment
+script rejects downgrades before `DeployAppRecipe.exe` can unregister the working
+package. Bump `Package-Dev.appxmanifest` and rebuild rather than removing the
+installed package (which would discard LocalState).
+
+If registration fails with `0x80070020` while updating
+`AppRepository\Packages\<Dev-package>\PackagedCom\OpenConsoleProxy.dll`,
+check loaded modules in other Terminal processes as well as processes in the
+Dev layout. An ordinary Windows Terminal can retain that COM proxy after Dev
+closes. Rebuild with a fresh Dev manifest version to avoid overwriting the
+mapped proxy; do not terminate the current CLI host or delete AppRepository
+files to release it.
+
+Its `row_count` oracle counts the unified Agent view's session rows
+on first successful load, independently of live-tab search and split-pane
+children. `SidebarTabPinned` means enabling Keep tab running,
+not tab-order pinning. Row-field selection verifies canonical field IDs for
+empty, single, and paired selections, a disabled third choice, and suppression
+during menu-only actions and metadata/layout refresh.
+Every successful agent-session start also emits the selection: the suite pairs
+these snapshots with `AgentSessionStarted` and starts a new fixture session
+after selecting a non-default pair to verify current, not hard-coded, values.
+The same scenario checks that explicit opt-ins emit distinct random `KeepId`
+values and typed post-enable `TotalTabCount` / `KeepRunningTabCount` snapshots,
+including search-hidden attached tabs. A real tab close and restoration emit matching detached/live events,
+and a prompt on the unchanged ACP session after reattachment carries
+`AgentPromptSent.Reattached=true` and `UserPromptOrdinal=Second` while that
+session's earlier prompt carries `false` and `First`. A separate helper's
+first prompt also remains `First`.
+Disabling or restoring a tab alone must not mark it again or dispatch a prompt.
+The decoder explicitly selects startup/sidebar event names; unrelated structured
+diagnostic events remain in the raw ETL rather than blocking these typed
+assertions. Missing or unsupported schemas for selected events still fail.
+The same capture includes a real fixture prompt and verifies that App session
+starts and WTA session creation, prompt, first-text, and completion payloads
+contain no provider session identifiers. Prompt metrics are scoped by process
+and action phase rather than exported session IDs.
+
+To validate only keep-running telemetry without running the unrelated row-field
+and Agent-view scenarios, retain the same Dev selection, telemetry opt-in, and
+build-hash environment variables, then run the existing three contracts:
+
+```powershell
+$cfg = New-PesterConfiguration
+$cfg.Run.Container = New-PesterContainer `
+    -Path test\e2e\tests\Feature.SidebarTelemetry.Tests.ps1 `
+    -Data @{ KeepRunningOnly = $true }
+$cfg.Filter.FullName = @(
+    '*Sidebar pin telemetry counts explicit keep-running opt-ins'
+    '*Keep-running telemetry correlates opt-in, retention, and live reattachment'
+    '*Restored agent prompt telemetry identifies the surviving ACP session'
+)
+$cfg.TestResult.Enabled = $true
+$cfg.TestResult.OutputFormat = 'NUnitXml'
+$cfg.TestResult.OutputPath = 'test\e2e\artifacts\keep-running-results.xml'
+Invoke-Pester -Configuration $cfg
+```
+
+This focused run is not a pass for the complete sidebar suite. Expanded split
+tabs repeat their title in child rows; context-menu targeting selects the
+shallowest matching tab header. The elevated ETW collector runs with its window
+hidden so it does not compete with the unelevated UI runner for foreground.
+
+`Feature.TelemetryFunnels` requires an unused **Dev** package built from the target revision,
+the build receipt's `ITE2E_EXPECTED_WTA_SHA256` and `ITE2E_EXPECTED_APP_SHA256`
+(`TerminalApp.dll`), explicit UAC approval, and permission for temporary HKCU policy
+changes (`ITE2E_TELEMETRY_POLICY_APPROVED=1`). It refuses existing Dev processes
+rather than adopting or closing user windows. Set `ITE2E_TELEMETRY=1` and
+`ITE2E_PACKAGE=Dev`, then pass the suite to `Invoke-ItE2EReport.ps1`.
+
+One bounded elevated `Collect-TelemetryTrace.ps1` capture covers the suite: only the Win32Host,
+App, WTA, and Settings Model providers are enabled. No kernel/session-wide process tracing or
+third-party upload is used. Captures contain these providers' events from any concurrently
+running process; `scoped-events.json` includes only owned App/master/helper PIDs.
+For Win32Host, the typed funnel output includes only `SessionBecameInteractive`;
+unrelated structured diagnostics remain available in the raw ETL/XML.
+Raw ETL, tracerpt XML, TDH-extracted TraceLogging schemas, logman results, and package hashes remain
+in a unique artifact directory. Missing/ambiguous self-describing metadata fails validation;
+diagnostic logs never substitute for typed telemetry. The collector stops only its unique
+session, including on timeout (20 minutes by default, at most 30 minutes).
+Settings/state bytes are restored and hash-checked. Only the approved HKCU
+`AllowAutoFix`, `AllowedAgents`, and `AllowCustomAgents` values are temporarily changed;
+original presence, registry types, and values are retained for verified restoration.
+Machine policy takes precedence and causes a refusal rather than an override.
+Keep the UI/COM test runner non-elevated. Windows may protect the HKCU policy path
+from normal writes, while an elevated UI runner cannot necessarily reach the
+ordinary packaged COM server. The approved elevated collector handles the three
+allowlisted policy values separately; it must not change registry ACLs or HKLM.
+
+The readiness regression uses real fixture ACP model/config updates to produce repeated
+Connected statuses. Native responses must include the boolean Autofix flag in both settings
+states and the correct tab/window scope. The pre-fix native payload is missing this field.
+A wrong-tab status elicits no response; old errors are not replayed, and new helper error
+telemetry carries the effective flag separately from raw policy. This verifies the native
+boundary and downstream state, not recovery of artificially stale helper state. It neither
+publishes privileged host config events nor suspends processes.
+
+The expanded suite triggers the original funnel's 12 distinct client events through real
+UI, shell, ACP, settings, and Session MCP paths. It checks matching offer/acceptance IDs,
+Run versus Insert/Reject, redraw deduplication, foreground palette entry versus hiding and
+submission, both-role provider changes, same-session ordinary prompts, inventory/sidebar
+variants, policy categories, and a second window in the same process versus reactivation.
+Phase-scoped ETW evidence records typed fields and negatives;
+an incomplete trigger phase fails rather than being interpreted as an absent event.
+
+The 18 cases include two independent **Startup Autofix policy labels match effective
+helper state** variants. They set approved `AllowAutoFix=0/1` before a fresh owned host
+launch and require typed WTA `ErrorDetected` values `disabled`/`false` and
+`enabled`/`true`, respectively. Enabled policy uses an actual shell failure with
+`Method=vt_sequence`. Blocked policy intentionally suppresses OSC forwarding:
+the test discovers the sole owned helper without an OSC tab probe, proves a unique
+shell exception rendered, and asserts no forwarded VT event or Autofix prompt.
+It then exits that controlled shell with code 37 and `closeOnExit=never`, retaining
+the helper to observe the real `connection_state` failure. Its disabled-policy
+`ErrorDetected` must have `Method=connection_state`, with no Autofix prompt or offer;
+it is not evidence that the blocked shell failure's VT event was captured.
+These cases can establish the original funnel requirement 3.1 only
+after those fields and controls pass; event names alone are insufficient.
+
+The two existing hot-policy cases remain strict, separately reported tests. Policy
+notification/hot refresh is currently unresolved on the validation host and tracked in
+[issue #991](https://github.com/microsoft/intelligent-terminal/issues/991); startup-policy
+acceptance neither fixes nor establishes hot-refresh behavior. Consequently, a run may
+validate startup field segmentation while still reporting the hot-policy failures.
+New startup-policy coverage is prepared, not a claim of a completed live pass.
+
+The original requirement rows are not equivalent to event counts: several share `AppCreated`
+or ACP session creation. Eight rows concern absent sidebar/keep-running features and remain
+deferred. D7/D28 retention still requires backend device identity, elapsed days, and cohort
+queries; two-prompt depth can be demonstrated locally but does not validate a backend query.
+`DefaultsFallback=true` and compatibility-only unknown categories are not credited by the
+normal-startup scenarios. Results belong to the selected build's generated report and retained
+capture, not a blanket assertion that every environment or backend metric passed.
+
+Three planes, all built on self-verifying primitives:
+
+| Plane | Backed by | Examples |
+|-------|-----------|----------|
+| **Control** | `wtcli` (COM `IProtocolServer`) | panes/tabs, `Send-WtInput`, `Invoke-RunCommand`, `Get-WtCapture`, `Send-WtEvent` |
+| **UI** | `winapp ui` (Windows App CLI) | `Invoke-UiElement`, `Set-UiValue`, `Wait-UiElement`, `Save-UiScreenshot` |
+| **State/Logs** | settings.json / state.json / versioned logs / event stream | `Set-WtSetting`, `Get-FreCompleted`, `Get-ItLogText`, `Start-WtEventListener` |
+
+…plus verification oracles: `Assert-Setting`, `Assert-Ui`/`Assert-Xaml`,
+`Assert-Script`, `Assert-Pane`, `Assert-WtEvent`, `Assert-Log`, and the AI oracle
+`Assert-AI` (LLM judge wrapping an agent CLI's print mode, e.g. `copilot -p`).
+
+## Prerequisites
+
+- Windows, **PowerShell 7+**
+- **Windows App CLI**: `winget install Microsoft.WinAppCli` (gives `winapp ui`)
+- **Pester 5**: `Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser`
+- A deployed Intelligent Terminal package (Store `Microsoft.IntelligentTerminal_8wekyb3d8bbwe`
+  or Dev `IntelligentTerminal_rd9vj3e6a2mbr`).
+- `Feature.AgentSelectAll` and `Feature.AgentInputNavigation` physical letter-key cases require
+  an already loaded English (US) keyboard layout. Each suite activates it only for its own
+  verified window/thread and restores the previous layout before closing, so an active IME
+  cannot retain the probe text as a composition.
+
+When an action's event is the oracle, start its listener with
+`Start-WtEventListener -WaitForReady` before triggering the action. This uses the
+subscription handshake rather than a fixed startup delay.
+
+One-shot setup + verify:
+
+```powershell
+pwsh -File test/e2e/bootstrap.ps1          # install deps, import module
+pwsh -File test/e2e/bootstrap.ps1 -Check   # verify only
+```
+
+## Choosing the build: Dev vs Store
+
+Every harness entry point takes a **`-Package`** selector, so a test can target
+either the production build or the build you're developing:
+
+| `-Package` | Resolves to | When to use |
+|---|---|---|
+| `Store` | `Microsoft.IntelligentTerminal_8wekyb3d8bbwe` | The shipped/production package — real user environment. |
+| `Dev` | `IntelligentTerminal_rd9vj3e6a2mbr` | A locally **sideloaded** build (e.g. your F5 / `bx` output). Use this to validate a change before it ships. |
+| *(explicit PFN)* | the family name you pass | Any other package. |
+
+```powershell
+$app = Start-Terminal       -Package Dev    # control/UI tests against the dev build
+$app = Start-TerminalFre    -Package Store  # drive the FRE overlay on the store build
+```
+
+**Both builds can be installed at once and targeted independently.** The harness
+launches via **AUMID** (`shell:AppsFolder\<PackageFamilyName>!App`), which is
+package-specific, so `-Package Dev` always hits the dev build even while the
+store build is also installed. (The global `wtai` AppExecutionAlias is owned by a
+single package and is therefore ambiguous in that scenario — it is kept only as a
+last-resort fallback.)
+
+To make a build selectable:
+- **Dev**: build + deploy it once, e.g. `cd src/cascadia/CascadiaPackage; bx` then
+  `DeployAppRecipe.exe bin\x64\Debug\CascadiaPackage.build.appxrecipe`.
+- **Store**: install the shipped MSIX.
+
+A suite that asserts on diagnostics only present in a particular build should pin
+its `-Package` and **`-Skip`** itself when that package isn't installed (see
+`Feature.FreExecutionPolicy.Tests.ps1`, which targets `Dev` and skips when the
+dev package is absent — keeping CI green on machines that only have the store build).
+
+## Running the self-tests
+
+```powershell
+Import-Module Pester
+Invoke-Pester test/e2e/selftests -Tag Unit    # hermetic, no terminal needed
+Invoke-Pester test/e2e/selftests -Tag Live    # launches/closes the real terminal
+Invoke-Pester test/e2e/selftests -Tag AI      # AI oracle (needs an agent CLI, e.g. copilot)
+Invoke-Pester test/e2e/selftests -Tag Agent   # agent pane + autofix (needs copilot auth)
+Invoke-Pester test/e2e/selftests              # everything (30 tests)
+```
+
+The self-tests are the framework's own proof: every primitive is exercised against a
+running terminal (`selftests/ItE2E.Live.Tests.ps1`) and the core helpers are unit-tested
+in `selftests/ItE2E.Unit.Tests.ps1` (hermetic, no terminal needed).
+
+## Pane-context performance benchmark
+
+`Measure-PaneContext.ps1` measures issue #838's **wtcli subprocess → COM →
+capture** boundary, without sending an agent prompt or consuming model tokens.
+It attaches to **already running**, explicitly selected Dev/Store/PFN packages and
+existing pane GUIDs. It never launches/closes Terminal, changes settings/focus,
+creates fixtures, or types into panes. Package-local binaries and a readable
+package manifest are required; it does not use an ambiguous `wtcli` PATH alias
+or probe other brands' COM servers. Dependencies: Windows, PowerShell **7.2+**,
+Git, and a deployed package supporting `get-pane-context`. Neither WinApp CLI,
+agent authentication, nor Pester is needed for the benchmark itself.
+
+First prepare stable terminal output yourself, and obtain the existing pane's
+`session_id` through the harness/package-specific `wtcli`. Run the benchmark
+from a **separate process/pane**, not the pane being measured. Leave its content,
+focus, window/tab layout, and package binaries unchanged until completion:
+
+```powershell
+$env:ITE2E_PACKAGE = 'Dev'
+pwsh -NoProfile -File test\e2e\bootstrap.ps1 -Check
+
+# Replace the GUID and marker with those of an existing, settled marked pane.
+# Planner/ManualFix require this to remain the resolved active working pane.
+pwsh -NoProfile -File test\e2e\Measure-PaneContext.ps1 `
+    -Package Dev -Configuration Debug -Mode Planner `
+    -TargetPaneId '11111111-2222-3333-4444-555555555555' `
+    -Scenario 'marked-short' -ExpectedMarks Marked -ExpectedMarker 'BENCH-DONE' `
+    -Warmup 5 -Samples 40 -OutDir test\e2e\artifacts\pane-context-benchmark\debug-marked-planner
+
+# ExplicitAutofix can target an unfocused pane; no focus change is performed.
+pwsh -NoProfile -File test\e2e\Measure-PaneContext.ps1 `
+    -Package Dev -Configuration Debug -Mode ExplicitAutofix `
+    -TargetPaneId '11111111-2222-3333-4444-555555555555' `
+    -Scenario 'unmarked-long-scrollback' -ExpectedMarks Unmarked `
+    -OutDir test\e2e\artifacts\pane-context-benchmark\debug-unmarked-autofix
+```
+
+`-Package`, `-Configuration` (a label, not a build action), `-Mode`,
+`-TargetPaneId`, `-Scenario`, and `-OutDir` are mandatory; `Auto` is rejected.
+`ExplicitAutofix` also accepts an array of existing pane IDs when called from
+PowerShell with `& .\test\e2e\Measure-PaneContext.ps1 ... -TargetPaneId @($id1, $id2)`.
+Each pane gets its own paired measurements. Use distinct output directories
+under ignored `test\e2e\artifacts`; existing result files are never overwritten.
+Run marked, unmarked, and long-scrollback scenarios separately and label them
+honestly. For optional `-ExpectedMarker`, choose text that survives **both**
+paths' intentional bounds.
+
+### Baseline and interpretation
+
+- The baseline is a source-faithful PowerShell reproduction of the collector at
+  `db609f8061f81c2eb9a4bdaf3e0666392596bce4` (HEAD when #838 was restored),
+  pinned in the script. Its `prompt_context.rs` is retrieved with `git show` for
+  provenance. **That planner already used marks**, not a buffer-only read.
+- `Planner`: `active-pane` → `capture-pane --last-prompt` → optional
+  `capture-pane -l 24`. `ManualFix` uses the same sequence with 30 fallback lines.
+  `ExplicitAutofix` preserves the old **unconditional active-pane query**, then
+  walks windows → tabs → panes until the exact source GUID is found, followed by
+  marked capture / 30-line fallback. Enumeration cost depends on target position
+  and topology. Errors abort instead of being silently turned into samples.
+- No unsupported-capability request is added to the legacy baseline. The new
+  path uses **one** `get-pane-context --max-lines 24|30 --max-chars 4000`
+  subprocess (with `--target` only for explicit autofix). Its normal
+  authentication/capability negotiation remains inside that subprocess.
+- Legacy read methods still capture first and trim locally; the benchmark does
+  not retrofit bounded capture into them. Both paths use a 4000-Unicode-scalar
+  content budget, but **legacy marked output has no line cap**, while new marked
+  output also observes 24/30 lines. For oversized unmarked output, new capture
+  keeps a scalar **tail** versus legacy's scalar **prefix** of its line tail.
+  Legacy also ignores the read result's truncation flag. WTA's
+  `\n...<truncated>` prompt suffix is outside the content budget. Therefore exact
+  cross-path payload equality is **reported, not asserted**.
+- The same transport runs both paths: `.NET ProcessStartInfo.ArgumentList`,
+  no shell, UTF-8, concurrent asynchronous stdout/stderr reads, closed stdin,
+  normal authentication and a shared per-command timeout (default 20 seconds).
+  The existing harness also uses asynchronous process waits, not polling; the
+  benchmark-specific transport adds precise timing and one deadline covering
+  both process exit and pipe EOF, and fails loudly on parse/read/exit errors.
+- Each pane runs at least five warmup pairs, then at least 40 recorded pairs,
+  alternating legacy-first/new-first order. Primary `BoundaryMs` is the **sum
+  of process-start-to-exit-and-EOF durations**, excluding PowerShell parsing,
+  assertions and report writes. Secondary `CollectorMs` includes PowerShell
+  emulation overhead and is **not** a native Rust collector measurement.
+  Warmups are exported but excluded from statistics. p50/p95 use nearest rank;
+  speedup is `legacy/new`, reduction is `100*(1-new/legacy)`, including regressions.
+- Output must resolve to the requested pane with matching shell/cwd/process
+  metadata, valid Unicode/bounds, consistent mark/source metadata, and an optional
+  literal marker. Each path's payload/metadata fingerprint must stay stable.
+  Different payload hashes across paths may be expected from the bounds above.
+
+Artifacts are `samples.csv` (raw paired samples, bytes, hashes, marks, bounds),
+`requests.csv` (individual subprocess commands/timings/response bytes),
+`metadata.json` (written before measurement), and `summary.json` (written **only
+after complete validation**). Summaries include per-path request counts,
+nearest-rank p50/p95, speedups/reductions, byte metrics, payload equality,
+package version/CLSID, deployed binary hashes/versions, process identity, source
+revision/dirty status/diff hash, and benchmark source hashes. Raw terminal text
+is not saved, but pane IDs/paths and the optional marker are; keep artifacts local.
+A failed run may retain partial CSVs but has no success summary.
+
+**Scope:** this isolates old versus new **context collection on the same new
+server**, not old/new application binaries and not full prompt/LLM latency.
+Subprocess counts are not COM-call counts. Configuration labels and source
+hashes alone cannot prove a deployment came from that revision: the operator
+must build/deploy the intended code and compare packaged binary hashes.
+Debug and Release results are not interchangeable. Busy UI threads, antivirus,
+background output and changing topology can affect measurements; repeat runs.
+
+Hermetic benchmark tests (no app launches or installs):
+
+```powershell
+Invoke-Pester test\e2e\selftests\PaneContextBenchmark.Unit.Tests.ps1 -Output Detailed
+```
+
+## Reports (HTML + precise per-failure diagnostics)
+
+`Invoke-ItE2EReport.ps1` wraps Pester and, by default, writes the report to the **fixed
+in-repo path `test/e2e/artifacts/`** (override with `-OutDir`; the dir is git-ignored):
+
+```powershell
+pwsh -File test/e2e/Invoke-ItE2EReport.ps1                 # full suite -> test/e2e/artifacts/
+pwsh -File test/e2e/Invoke-ItE2EReport.ps1 -Tag Feature
+pwsh -File test/e2e/Invoke-ItE2EReport.ps1 -Path test/e2e/tests/Feature.AutofixPane.Tests.ps1
+```
+
+Outputs (all under `test/e2e/artifacts/`):
+- `report.html` — **self-contained HTML** (open in a browser): green/red pass-fail banner,
+  total/passed/failed/skipped stat cards, one **failure card** per failed test (exact error,
+  `file:line` of the failing assertion, duration, clickable artifact links + inline screenshot
+  thumbnails), and a full results table grouped by `Describe > Context`.
+- `results.xml` — **NUnit XML** for CI test reporting (Azure DevOps / GitHub).
+- `summary.md` — Markdown: one block per **failed** test with the **exact error**, **file:line**,
+  and any **artifact paths** (screenshots saved by `Assert-Ui`/`Assert-AgentPaneText`, log slices).
+- `release-report.md` — the **clean, jargon-free release checklist**, auto-generated as the final
+  step from `doc/release-check-list.md` + this run's `results.xml` (via `New-ReleaseReport.ps1`).
+  Every coverage tag (`[UT✓]`/`[E2E]`/`[MANUAL]`) and `_(UT: …)_` note is stripped, and each box is
+  driven purely by automation: **`[x]`** = a test passed, **`[ ] ⚠️ AUTOMATION FAILED`** = a test ran
+  and failed, plain **`[ ]`** = not covered this run, verify manually. Suppress with
+  `-SkipReleaseReport`; regenerate standalone from an existing `results.xml` with
+  `pwsh -File test/e2e/New-ReleaseReport.ps1`. Items listed in `test/e2e/release-exclude.psd1`
+  (by title regex, e.g. RTL) are dropped from the report to keep it focused on the sign-off set.
+
+  **Stable item IDs (`C001`, `C002`, …).** Every checkbox item in `doc/release-check-list.md`
+  carries a stable ID right after the box, and the generators carry it verbatim into
+  `release-report.md` — so you can refer to a case by number ("C136 is failing") and it means the
+  same item in both files. Assign/refresh IDs with `pwsh -File test/e2e/Set-ChecklistIds.ps1`
+  (idempotent: existing IDs are never renumbered; a newly-added item gets the next free number).
+
+  **Incremental update (no full-suite re-run needed).** `New-ReleaseReport.ps1` regenerates the
+  whole report, so a single-suite run would blank every item it didn't cover. To refresh just the
+  rows a partial run touched, use `Update-ReleaseReport.ps1`, which takes the EXISTING
+  `release-report.md` as the source of truth and overlays only this run's results: a covered item
+  that **passed** becomes `[x]`, one that **failed** becomes `[ ] ⚠️ AUTOMATION FAILED`, a covered
+  item that only **skipped** is left unchanged (a flaky skip never un-ticks a prior pass), and every
+  item **out of scope** for the run is preserved exactly. One-liner via the runner:
+  `pwsh -File test/e2e/Invoke-ItE2EReport.ps1 -Path test/e2e/tests/Feature.Delegate.Tests.ps1 -UpdateReport`
+  (runs the suite, then overlays only its items onto the existing report; falls back to a fresh
+  generate if no report exists yet). Or standalone after a run wrote `results.xml`:
+  `pwsh -File test/e2e/Update-ReleaseReport.ps1`.
+- Console echo of the same precise failures; exit code `1` on any failure (CI-friendly).
+
+Every failure is precise because each `Assert-*` throws a descriptive message — e.g.
+`Assert-Pane: pane <id> never matched /git status/ within 12s. Screenshot: <path>` or
+`Assert-AI FAILED: '<claim>' -> <reason> (confidence=0.7)` — and Pester records the exact
+`Should` line and `file:line`.
+(`selftests/ItE2E.Unit.Tests.ps1`, incl. a regression test for output truncation).
+
+## Authoring a test
+
+```powershell
+Describe 'Agent pane' -Tag 'Live' {
+    BeforeAll {
+        Import-Module test/e2e/ItE2E/ItE2E.psd1 -Force
+        $script:app = Start-Terminal -Package Store -Settings @{ acpAgent = 'copilot' }
+    }
+    AfterAll { Stop-Terminal -App $script:app }   # restores settings/state
+
+    It 'opens the agent pane from the bottom bar' {
+        Open-AgentPane -App $script:app
+        Assert-Ui -App $script:app -Selector 'AgentToggleButton'
+        Test-AgentPaneOpen -App $script:app | Should -BeTrue
+    }
+}
+```
+
+`Start-Terminal` requires an explicit package, backs up `settings.json`/`state.json`, marks the
+FRE complete, applies your settings, launches the app, brings COM online (probes the
+per-brand `WT_COM_CLSID`), and resolves the window HWND. `Stop-Terminal` closes it and
+restores the backup.
+
+> **Picking the build**: pass `-Package Dev` / `-Package Store` — see
+> [Choosing the build](#choosing-the-build-dev-vs-store). Launch is package-specific
+> (AUMID), so both builds can be installed and targeted independently. The feature/self
+> -test suites don't hardcode a build — they call `Start-Terminal -Package (Get-ItTestPackage)`,
+> which requires the `ITE2E_PACKAGE` env var (`Store`|`Dev`|`<PackageFamilyName>`).
+> Set `$env:ITE2E_PACKAGE='Dev'` or `$env:ITE2E_PACKAGE='Store'` before invoking
+> live tests. `Auto` is rejected so the harness cannot select a package implicitly.
+
+
+## How it works (key facts)
+
+- **COM discovery**: `wtcli` reaches WT through the per-brand CLSID in `WT_COM_CLSID`
+  (braced, e.g. `{A2E4F6B8-...}` for Release). The harness probes the four brand CLSIDs
+  against a *running* terminal until one connects (the server is registered with
+  `CoRegisterClassObject(CLSCTX_LOCAL_SERVER)`, so WT must already be up). The co-located
+  `wtcli.exe` in the package install dir connects fine without needing the AppExecutionAlias.
+- **FRE**: completion is the `agentFreCompleted` flag in the shared `state.json`;
+  `Invoke-FrePass` sets it instantly.
+- **Settings**: the AI keys (`acpAgent`, `autoFixEnabled`, `agentPanePosition`,
+  `aiIntegration.coordinator.enabled`, …) are *top-level* properties whose names contain
+  dots. `Set-WtSetting` patches them and waits for the on-disk write.
+- **UI selectors**: prefer XAML `AutomationProperties.AutomationId` (confirmed present:
+  `AgentToggleButton`, `SessionToggleButton`, `NewTabButton`, `NextButton`, `SaveButton`).
+  `winapp ui` also accepts generated slugs and plain text.
+- **Agent pane** is a XAML `AgentPaneContent` area — **NOT** a wtcli/protocol pane (it does
+  not appear in `list-panes` and has no protocol session_id). Detect it by the UI element
+  `AgentLabelText` (`Test-AgentPaneOpen`), open/close it via the `AgentToggleButton`.
+- **Events**: `Start-WtEventListener` runs `wtcli listen --json` and buffers events. The
+  envelope is `{ "method": "<name>", "params": {...}, "type": "event" }` — the event **name
+  is `.method`** (`vt_sequence`, `agent_event`, …), and `.type` is *always* `"event"`. Start
+  the listener *before* the triggering action, then `Wait-WtEvent`/`Assert-WtEvent`.
+- **Autofix signals**: a failed command emits `method=vt_sequence, params.sequence ~
+  "osc:133;D;<nonzero>"` (`Wait-WtCommandFailure`); autofix then submits a prompt observable
+  as `method=agent_event` whose `params.payload.initial_prompt` contains "A command failed.
+  Diagnose…" — note this rides on the `agent.session.start` sub-event, not `agent.prompt.submit`
+  (`Wait-Autofix`). This build emits no dedicated `autofix_state` event. Autofix **de-dupes
+  repeated identical failures**, so tests use a unique bogus command each time.
+
+## Limitations
+
+- **`Get-WtSessions`** runs `wta.exe`, but the *packaged* `wta.exe` cannot be launched by
+  an external process (Access denied) and an *unpackaged* copy resolves the wrong
+  (non-package-private) runtime paths, so it can't find the in-package master. This
+  feature needs to run inside a WT pane with package identity; it's gated behind `-Tag
+  Live`.
+- The **AI oracle (`Assert-AI`)** wraps an agent CLI's non-interactive print mode
+  (`copilot -p`, `claude -p`, …) **directly** — it is independent of wta and needs only an
+  authenticated agent CLI on PATH (override with `$env:ITE2E_AI_AGENT`). Gated behind
+  `-Tag AI`.
+- Multiple WT windows of the same package share one process (single-instance
+  `WindowEmperor`); the harness targets by PID + HWND.
+
+## Layout
+
+```
+test/e2e/
+  bootstrap.ps1                 install/verify deps, import module
+  ItE2E/
+    ItE2E.psd1 / ItE2E.psm1     manifest + loader
+    Private/  Core.ps1          Invoke-Native, Wait-Until, JSON, logging
+              Paths.ps1         Resolve-ItApp, CLSID probe, runnable-wta
+    Public/   Harness.ps1       Start-Terminal / Stop-Terminal / Reset-TerminalState
+              Wt.ps1            panes/tabs/input/capture/events (wtcli)
+              Settings.ps1 Fre.ps1  settings.json / state.json
+              Ui.ps1            winapp ui wrappers
+              Agent.ps1 Autofix.ps1 Sessions.ps1
+              Observe.ps1       logs / event stream / context bundle
+              Verify.ps1        Assert-* oracles
+  selftests/  *.Tests.ps1       Pester proof for every primitive
+  tests/                        your feature scenario tests go here
+```

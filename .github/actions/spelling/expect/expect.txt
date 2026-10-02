@@ -9,8 +9,10 @@ acidev
 ACIOSS
 ACL'd
 acp
+Acq
 actctx
 ACTCTXW
+activedir
 ADDALIAS
 ADDREF
 ADDSTRING
@@ -22,14 +24,17 @@ AFX
 AHelper
 ahicon
 ahz
+aic
 AImpl
 AInplace
+aiu
 ALIGNRIGHT
 allocing
 allsigned
 alpc
 ALTERNATENAME
 ALTF
+ALTGR
 ALTNUMPAD
 ALWAYSTIP
 ansicpg
@@ -77,6 +82,7 @@ autoscrolling
 Autowrap
 AVerify
 awch
+AZERTY
 azurecr
 backgrounded
 Backgrounder
@@ -181,6 +187,7 @@ clsids
 cmatrix
 cmder
 CMDEXT
+cmdrecall
 cmh
 CMOUSEBUTTONS
 Cmts
@@ -203,6 +210,7 @@ colortool
 COLORVALUE
 comctl
 commdlg
+commondir
 conapi
 conattrs
 conbufferout
@@ -437,6 +445,8 @@ defterm
 DELAYLOAD
 DELETEONRELEASE
 depersist
+depl
+deploit
 deprioritized
 devicecode
 Dext
@@ -521,6 +531,7 @@ EOK
 EPres
 EQU
 ERASEBKGND
+EReport
 ERRORONEXIT
 espt
 esrp
@@ -591,8 +602,11 @@ FORCEONFEEDBACK
 FRAMECHANGED
 fre
 Free'd
+frob
+frobnicate
 frontends
 fsanitize
+fsmonitor
 FSINFOCLASS
 ftcs
 fte
@@ -606,6 +620,7 @@ fwdecl
 fwe
 fzf
 gci
+gco
 gcx
 gdi
 gdip
@@ -672,6 +687,7 @@ GMEM
 Goldmine
 gonce
 goutput
+gpo
 GPUs
 GREENSCROLL
 Grehan
@@ -679,6 +695,7 @@ Greyscale
 gridline
 gset
 gsl
+gti
 guc
 GUIDATOM
 GValue
@@ -688,6 +705,7 @@ gwsz
 HABCDEF
 Hackathon
 HALTCOND
+handrolled
 HANGEUL
 hardlinks
 hashalg
@@ -806,6 +824,7 @@ INVALIDARG
 INVALIDATERECT
 ipch
 ipsp
+ITE
 iterm
 itermcolors
 itf
@@ -829,6 +848,7 @@ kazum
 kernelbase
 kernelbasestaging
 KEYBDINPUT
+keycap
 keychord
 keydowns
 KEYFIRST
@@ -843,6 +863,8 @@ kinda
 KIYEOK
 KKP
 KLF
+klid
+KLLF
 KLMNO
 KOK
 KPRIORITY
@@ -1077,6 +1099,7 @@ NOCONTEXTHELP
 NOCOPYBITS
 nodiscard
 NODUP
+NODEFAULT
 noexcepts
 NOFONT
 NOHIDDENTEXT
@@ -1095,6 +1118,7 @@ nonspace
 NOOWNERZORDER
 NOPAINT
 noprofile
+norc
 NOREDRAW
 NOREMOVE
 NOREPOSITION
@@ -1105,6 +1129,8 @@ NOSELECTION
 NOSENDCHANGING
 NOSIZE
 NOSNAPSHOT
+NOSYSTEM
+NOTELLSHELL
 NOTHOUSANDS
 NOTICKS
 notif
@@ -1138,9 +1164,10 @@ nullness
 nullonfailure
 nullopts
 NUMSCROLL
+numstat
 NUnit
 nupkg
-NVIDIA
+nvidia
 NVT
 OACR
 ocolor
@@ -1309,6 +1336,7 @@ prg
 processhost
 PROCESSINFOCLASS
 PRODEXT
+PROGRAMDATA
 PROPERTYID
 PROPERTYKEY
 propertyval
@@ -1320,6 +1348,7 @@ propsys
 PROPTITLE
 propvar
 propvariant
+proxyable
 psa
 PSECURITY
 pseudoconsole
@@ -1329,6 +1358,7 @@ PSHNOTIFY
 PSINGLE
 psl
 psldl
+PSMODULEPATH
 PSNRET
 psp
 PSPCB
@@ -1398,6 +1428,8 @@ reparenting
 REPH
 replatformed
 Replymessage
+repointed
+repointing
 reportfileaccesses
 repositorypath
 rerasterize
@@ -1554,13 +1586,16 @@ SLGP
 SLIST
 slmult
 sln
+slnf
 slnx
 slpit
+SLU
 SManifest
 SMARTQUOTE
 SMTO
 snapcx
 snapcy
+SND
 snk
 SOLIDBOX
 Solutiondir
@@ -1622,6 +1657,7 @@ SYSLIB
 SYSLINK
 SYSMENU
 sysparams
+SYSTEMDRIVE
 SYSTEMHAND
 SYSTEMMENU
 SYSTEMTIME
@@ -1665,6 +1701,7 @@ textattribute
 TEXTATTRIBUTEID
 textboxes
 textbuffer
+textconv
 TEXTINCLUDE
 textinfo
 TEXTMETRIC
@@ -1756,6 +1793,7 @@ UPKEY
 upss
 uregex
 URegular
+urxvt
 usebackq
 USECALLBACK
 USECOLOR
@@ -1854,6 +1892,7 @@ Widthx
 Wiggum
 wil
 WINAPI
+winapp
 winbasep
 wincon
 winconp
@@ -1910,6 +1949,7 @@ Wndproc
 wordiswrapped
 workarea
 worktree
+worktreeconfig
 WOWARM
 WOWx
 wparam
@@ -1935,6 +1975,8 @@ wsz
 wta
 wtai
 wtd
+wtdeployit
+wtdeployt
 WTEXT
 WTo
 wtof
@@ -1964,6 +2006,7 @@ XFG
 XFORM
 XIn
 xorg
+xqzwvbnmlkjh
 xstyler
 XTPOPSGR
 XTPUSHSGR
@@ -2036,3 +2079,12 @@ Hinnant
 LONGDATE
 MRT
 Uninstalls
+agentclientprotocol
+AHP
+boxfnonce
+INJ
+jsonrpcmsg
+reorderable
+sacp
+Takeaways
+workstream

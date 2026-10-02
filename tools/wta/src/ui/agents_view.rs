@@ -1,6 +1,6 @@
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style, Stylize},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{List, ListItem, ListState, Paragraph},
     Frame,
@@ -9,20 +9,23 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use unicode_width::UnicodeWidthStr;
 
 use crate::agent_sessions::{
-    AgentSession, AgentSessionRegistry, AgentStatus, CliSource, OriginFilter, SessionOrigin,
+    AgentSession, AgentSessionRegistry, AgentStatus, CliSource, OriginFilter, SessionLocation,
+    SessionOrigin,
 };
-use crate::app::HistoryLoadState;
 use crate::session_registry::SessionInfo;
+use crate::theme;
 use crate::ui::shimmer;
 
-// Figma palette — keep these in one place so the row renderer and any
-// future status indicators stay in sync with the design tokens.
-const ACCENT_CYAN: Color = Color::Rgb(0x60, 0xcd, 0xff); // Selected-row title / cursor
-const ACCENT_GREEN: Color = Color::Rgb(0x6c, 0xcb, 0x5f); // Active status badge
-const ACCENT_YELLOW: Color = Color::Rgb(0xfa, 0xe2, 0x46); // Waiting for input
-const ACCENT_RED: Color = Color::Rgb(0xff, 0x6b, 0x6b); // Error
+// Status accents use named ANSI colors (not fixed RGB from Figma) so they map
+// through the active color scheme and stay readable on light schemes too — a
+// hardcoded bright yellow/cyan washed out on a light background (#234).
+const ACCENT_GREEN: Color = Color::Green; // Active status badge
+const ACCENT_YELLOW: Color = Color::Yellow; // Waiting for input
+const ACCENT_RED: Color = Color::Red; // Error
+                                      // Idle / timestamp: a fixed mid-gray reads as "muted" on both light and dark
+                                      // backgrounds (a true middle gray, unlike ANSI 7/8 which flip per scheme).
 const SOFT_WHITE: Color = Color::Rgb(0x8b, 0x8b, 0x8b); // Idle
-const MUTED_WHITE: Color = Color::Rgb(0x8b, 0x8b, 0x8b); // 54% white — timestamp
+const MUTED_WHITE: Color = Color::Rgb(0x8b, 0x8b, 0x8b); // timestamp
 
 pub fn render(
     f: &mut Frame,
@@ -30,25 +33,29 @@ pub fn render(
     reg: &AgentSessionRegistry,
     snapshot: Option<&[SessionInfo]>,
     list_state: &mut ListState,
-    history_load_state: HistoryLoadState,
     activity_frame: usize,
     cli_filter: Option<&CliSource>,
+    // Execution source of the agent this pane drives. Host Copilot and
+    // Copilot in a WSL distro share a `CliSource`, so the CLI filter alone
+    // leaves every Copilot pane rendering one merged list. Must match whatever
+    // `App::agents_rows_for_tab` applies; caller threads
+    // `App::current_location_filter`.
+    source_filter: &SessionLocation,
     // MVP origin filter — `ShellOnly` by default, see
     // `app.rs::MVP_SESSIONS_ORIGIN_FILTER`. Must match whatever filter
     // `App::agents_rows_for_tab` applies so the rendered rows line
     // up with the cursor / Enter dispatch model. Caller threads the
     // stored `app.sessions_origin_filter`.
     origin_filter: OriginFilter,
-    // True iff the session management view is waiting on its first `session/list`
-    // snapshot from master (snapshot is currently empty AND a refetch
-    // request is in flight). Without this signal we have no way to
-    // distinguish "view just opened, master hasn't responded yet" from
-    // "view loaded, there really are zero sessions" — `open_agents_view`
-    // primes `snapshot = Some(Vec::new())` so the historical
-    // `!snapshot.is_some()` heuristic for the loading shimmer is always
-    // false after PR #73. Caller (ui::layout) computes this from
-    // `tab.agents_view.refetch_in_flight && snapshot.is_empty()`.
-    awaiting_first_snapshot: bool,
+    // True while the loading shimmer should replace the list: either waiting on
+    // the first `session/list` snapshot from master (empty placeholder + a
+    // refetch in flight) OR an F5 rescan is in flight, so a refresh is visible
+    // even when the list already has rows. Caller (ui::layout) computes it from
+    // `refetch_in_flight && (snapshot.is_empty() || rescan_in_flight)`.
+    show_loading: bool,
+    search_query: &str,
+    search_focused: bool,
+    pane_focused: bool,
 ) {
     // No in-TUI header: the "Agent sessions" title lives in the C++ agent
     // bar above this pane (AgentPaneContent::SetSessionsView), so we render
@@ -76,7 +83,7 @@ pub fn render(
     // `inner.x`) so it reads as chrome that lives *outside* the vertical
     // bar, matching the Figma where the bar terminates at the bottom of
     // the list and the hint sits below it flush with the left edge.
-    let (list_area, hint_area) = if inner.height >= 3 {
+    let (content_area, hint_area) = if inner.height >= 3 {
         let hint = Rect {
             x: area.x,
             y: area.y + area.height - 1,
@@ -104,38 +111,62 @@ pub fn render(
         (inner, None)
     };
 
+    let search_visible = search_focused || !search_query.is_empty();
+    let (search_area, list_area) = if search_visible && content_area.height > 0 {
+        let search = Rect {
+            height: 1,
+            ..content_area
+        };
+        let list = Rect {
+            y: content_area.y.saturating_add(1),
+            height: content_area.height.saturating_sub(1),
+            ..content_area
+        };
+        (Some(search), list)
+    } else {
+        (None, content_area)
+    };
+    if let Some(search_area) = search_area {
+        render_search(f, search_area, search_query, search_focused, pane_focused);
+    }
+
+    let folded_query = search_query.to_lowercase();
     let using_snapshot = snapshot.is_some();
     let filter_start = std::time::Instant::now();
-    let (sorted, pre_filter_total): (Vec<AgentSession>, usize) = if let Some(snapshot) = snapshot {
-        let mut rows: Vec<_> = snapshot
-            .iter()
-            .map(crate::app::session_info_to_agent_session)
-            .collect();
-        rows.sort_by(|a, b| b.last_activity_at.cmp(&a.last_activity_at));
-        let total = rows.len();
-        if let Some(want) = cli_filter {
-            rows.retain(|s| {
-                &s.cli_source == want
-                    || matches!(&s.cli_source, CliSource::Unknown(v) if v.is_empty())
-            });
-        }
-        // MVP origin filter. Stays in sync with the same retain inside
-        // `App::agents_rows_for_tab` (which feeds the cursor / Enter
-        // dispatch); both call sites read `app.sessions_origin_filter`.
-        // `session_info_to_agent_session` collapses None origin to
-        // SessionOrigin::Unknown so `matches(&s.origin)` is correct
-        // for the snapshot path too.
-        rows.retain(|s| origin_filter.matches(&s.origin));
-        (rows, total)
-    } else {
-        let total = reg.iter_sorted().len();
-        let rows: Vec<AgentSession> = reg
-            .iter_sorted_with_filters(cli_filter, origin_filter)
-            .into_iter()
-            .cloned()
-            .collect();
-        (rows, total)
-    };
+    let (mut sorted, pre_filter_total): (Vec<AgentSession>, usize) =
+        if let Some(snapshot) = snapshot {
+            let mut rows: Vec<_> = snapshot
+                .iter()
+                .map(crate::app::session_info_to_agent_session)
+                .collect();
+            rows.sort_by(|a, b| b.last_activity_at.cmp(&a.last_activity_at));
+            let total = rows.len();
+            if let Some(want) = cli_filter {
+                rows.retain(|s| {
+                    &s.cli_source == want
+                        || matches!(&s.cli_source, CliSource::Unknown(v) if v.is_empty())
+                });
+            }
+            // MVP origin filter. Stays in sync with the same retain inside
+            // `App::agents_rows_for_tab` (which feeds the cursor / Enter
+            // dispatch); both call sites read `app.sessions_origin_filter`.
+            // `session_info_to_agent_session` collapses None origin to
+            // SessionOrigin::Unknown so `matches(&s.origin)` is correct
+            // for the snapshot path too.
+            rows.retain(|s| origin_filter.matches(&s.origin));
+            rows.retain(|s| matches_source(s, source_filter));
+            (rows, total)
+        } else {
+            let total = reg.iter_sorted().len();
+            let rows: Vec<AgentSession> = reg
+                .iter_sorted_with_filters(cli_filter, origin_filter)
+                .into_iter()
+                .cloned()
+                .filter(|s| matches_source(s, source_filter))
+                .collect();
+            (rows, total)
+        };
+    sorted.retain(|session| matches_folded_query(session, &folded_query));
     let filter_elapsed_us = filter_start.elapsed().as_micros() as u64;
     // These three fire on every render frame while the F2 view is open (the TUI
     // redraws continuously), so they're trace-only — at info/debug a single
@@ -146,6 +177,7 @@ pub fn render(
         kept       = sorted.len(),
         cli_filter = ?cli_filter,
         origin     = ?origin_filter,
+        search_active = search_visible,
         elapsed_us = filter_elapsed_us,
         source     = if using_snapshot { "snapshot" } else { "registry" },
         "f2 origin/cli filter applied"
@@ -154,6 +186,7 @@ pub fn render(
         target: "agents_view_filter",
         filter = ?cli_filter,
         origin = ?origin_filter,
+        search_active = search_visible,
         visible = sorted.len(),
         total = pre_filter_total,
         "rendering agent sessions list"
@@ -163,6 +196,7 @@ pub fn render(
         total = sorted.len(),
         filter = ?cli_filter,
         origin = ?origin_filter,
+        search_active = search_visible,
         // Session titles are agent-generated from conversation content — log
         // only key + status here, not the title.
         first_three = ?sorted.iter().take(3).map(|s| (
@@ -171,30 +205,17 @@ pub fn render(
         )).collect::<Vec<_>>(),
         area_w = area.width,
         area_h = area.height,
-        load_state = ?history_load_state,
         "rendering agents view"
     );
 
-    // While the lazy history scan is in flight, replace the whole list
-    // with a single shimmer-styled loading row. Showing live rows alongside
-    // a dim "loading…" hint led users to think the list was complete (only
-    // the 1 live session) and dismiss the view before the scan finished.
-    //
-    // Two distinct "we don't have any rows to show yet" sources trigger
-    // the shimmer:
-    //   * Legacy `!using_snapshot` path: registry-driven render with the
-    //     on-disk history scan still in progress (pre-PR-#73 behaviour,
-    //     kept for completeness — `using_snapshot` is now always true
-    //     when the view is open).
-    //   * Snapshot path: session management view was just opened, master hasn't yet replied
-    //     to our `session/list` refetch, and the placeholder snapshot
-    //     is still the empty Vec primed by `open_agents_view_for_tab`.
-    //     Without this branch the user sees a blank list (no shimmer,
-    //     no rows) and can't tell loading from "really empty".
-    let snapshot_loading = awaiting_first_snapshot && sorted.is_empty();
-    let legacy_loading = !using_snapshot && history_load_state == HistoryLoadState::Loading;
-    if snapshot_loading || legacy_loading {
-        render_left_bar(f, area.x, list_area, None);
+    // While loading — the first `session/list` snapshot, or an F5 rescan —
+    // replace the whole list with a single shimmer-styled loading row. Showing
+    // live rows alongside a dim "loading…" hint led users to think the list was
+    // complete and dismiss the view before the snapshot arrived; replacing the
+    // list also gives F5 an unmistakable "refreshing now" signal even when rows
+    // are already present.
+    if show_loading {
+        render_left_bar(f, area.x, list_area, None, pane_focused);
         let mut spans: Vec<Span<'static>> = vec![Span::raw("  ")];
         let loading_label = t!("agents.loading").into_owned();
         spans.extend(shimmer::shimmer_spans(&loading_label, activity_frame));
@@ -211,7 +232,15 @@ pub fn render(
     let rows: Vec<ListItem> = sorted
         .iter()
         .enumerate()
-        .map(|(i, s)| row_for(s, Some(i) == selected, row_width))
+        .map(|(i, s)| {
+            row_for(
+                s,
+                Some(i) == selected,
+                pane_focused,
+                row_width,
+                &folded_query,
+            )
+        })
         .collect();
 
     // No `highlight_style` — selection is conveyed by the `>` prefix and
@@ -228,11 +257,38 @@ pub fn render(
     let selected_visible_row = selected
         .and_then(|s| s.checked_sub(offset))
         .filter(|v| (*v as u16) < list_area.height);
-    render_left_bar(f, area.x, list_area, selected_visible_row);
+    render_left_bar(f, area.x, list_area, selected_visible_row, pane_focused);
 
     if let Some(hint_area) = hint_area {
         render_footer_hint(f, hint_area);
     }
+}
+
+fn render_search(f: &mut Frame, area: Rect, query: &str, focused: bool, pane_focused: bool) {
+    if area.width == 0 {
+        return;
+    }
+    let selected_style = if pane_focused {
+        theme::SELECTED
+    } else {
+        theme::SELECTED_INACTIVE
+    };
+    let label_style = if focused {
+        selected_style.add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(MUTED_WHITE)
+    };
+    let mut spans = vec![
+        Span::styled("/ ", label_style),
+        Span::raw(trunc(query, area.width.saturating_sub(3) as usize)),
+    ];
+    if focused {
+        spans.push(Span::styled("▏", selected_style));
+    }
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).alignment(crate::rtl::text_alignment()),
+        area,
+    );
 }
 
 /// Draw the leftmost vertical separator. Spans only `list_area`'s row
@@ -240,14 +296,24 @@ pub fn render(
 /// `selected_row`, when set, is the list-relative row index whose bar
 /// segment paints cyan instead of muted, mirroring the selection cursor
 /// in the row itself.
-fn render_left_bar(f: &mut Frame, bar_x: u16, list_area: Rect, selected_row: Option<usize>) {
+fn render_left_bar(
+    f: &mut Frame,
+    bar_x: u16,
+    list_area: Rect,
+    selected_row: Option<usize>,
+    pane_focused: bool,
+) {
     if list_area.height == 0 {
         return;
     }
     let bar_lines: Vec<Line<'static>> = (0..list_area.height)
         .map(|i| {
             let style = if Some(i as usize) == selected_row {
-                Style::default().fg(ACCENT_CYAN)
+                if pane_focused {
+                    theme::SELECTED
+                } else {
+                    theme::SELECTED_INACTIVE
+                }
             } else {
                 Style::default().fg(MUTED_WHITE)
             };
@@ -283,7 +349,13 @@ fn render_footer_hint(f: &mut Frame, area: Rect) {
     );
 }
 
-fn row_for(s: &AgentSession, selected: bool, row_width: usize) -> ListItem<'static> {
+fn row_for(
+    s: &AgentSession,
+    selected: bool,
+    pane_focused: bool,
+    row_width: usize,
+    folded_query: &str,
+) -> ListItem<'static> {
     let origin_prefix = origin_prefix_for(s);
     let prefix_w = origin_prefix
         .as_deref()
@@ -306,7 +378,11 @@ fn row_for(s: &AgentSession, selected: bool, row_width: usize) -> ListItem<'stat
     // an unselected Working session still gets a cyan "Active" badge but
     // its title stays the default foreground.
     let title_style = if selected {
-        Style::default().fg(ACCENT_CYAN)
+        if pane_focused {
+            theme::SELECTED
+        } else {
+            theme::SELECTED_INACTIVE
+        }
     } else {
         Style::default()
     };
@@ -314,12 +390,12 @@ fn row_for(s: &AgentSession, selected: bool, row_width: usize) -> ListItem<'stat
     // Leftmost column: `>` cursor for the selected row, blank otherwise.
     // Two cells (caret + space) so titles line up regardless of selection.
     let caret = if selected {
-        Span::styled(
-            "> ",
-            Style::default()
-                .fg(ACCENT_CYAN)
-                .add_modifier(Modifier::BOLD),
-        )
+        let caret_style = if pane_focused {
+            title_style.add_modifier(Modifier::BOLD)
+        } else {
+            title_style
+        };
+        Span::styled("> ", caret_style)
     } else {
         Span::raw("  ")
     };
@@ -385,7 +461,7 @@ fn row_for(s: &AgentSession, selected: bool, row_width: usize) -> ListItem<'stat
         // rows fall through to the terminal's default foreground.
         spans.push(Span::styled(prefix, title_style));
     }
-    spans.push(Span::styled(title_text, title_style));
+    spans.extend(highlight_matches(&title_text, folded_query, title_style));
     if keep_badge && !badge.is_empty() {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(badge, badge_style));
@@ -401,6 +477,74 @@ fn row_for(s: &AgentSession, selected: bool, row_width: usize) -> ListItem<'stat
     spans.push(Span::styled(age, Style::default().fg(MUTED_WHITE)));
 
     ListItem::new(Line::from(spans))
+}
+
+/// Whether a row's artefacts live where this pane's agent runs.
+///
+/// Host Copilot, Copilot in WSL Debian, and Copilot in WSL Ubuntu all report
+/// `CliSource::Copilot`, so filtering by CLI alone leaves a Debian pane listing
+/// host and Ubuntu sessions it cannot resume — those session files sit on
+/// another filesystem, reachable only by that distro's own CLI. Match the
+/// execution source exactly.
+pub(crate) fn matches_source(session: &AgentSession, pane_location: &SessionLocation) -> bool {
+    &session.location == pane_location
+}
+
+pub(crate) fn matches_folded_query(session: &AgentSession, folded_query: &str) -> bool {
+    if folded_query.is_empty() {
+        return true;
+    }
+    session.title.to_lowercase().contains(folded_query)
+}
+
+fn highlight_matches(text: &str, folded_query: &str, base_style: Style) -> Vec<Span<'static>> {
+    let ranges = case_insensitive_match_ranges(text, folded_query);
+    if ranges.is_empty() {
+        return vec![Span::styled(text.to_string(), base_style)];
+    }
+
+    let highlight_style = base_style
+        .fg(ACCENT_YELLOW)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    let mut spans = Vec::with_capacity(ranges.len() * 2 + 1);
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        if cursor < start {
+            spans.push(Span::styled(text[cursor..start].to_string(), base_style));
+        }
+        spans.push(Span::styled(text[start..end].to_string(), highlight_style));
+        cursor = end;
+    }
+    if cursor < text.len() {
+        spans.push(Span::styled(text[cursor..].to_string(), base_style));
+    }
+    spans
+}
+
+fn case_insensitive_match_ranges(text: &str, folded_query: &str) -> Vec<(usize, usize)> {
+    if folded_query.is_empty() {
+        return Vec::new();
+    }
+
+    let mut normalized = String::new();
+    let mut original_ranges = Vec::new();
+    for (start, character) in text.char_indices() {
+        let end = start + character.len_utf8();
+        let folded = character.to_lowercase().to_string();
+        original_ranges.extend(std::iter::repeat_n((start, end), folded.len()));
+        normalized.push_str(&folded);
+    }
+
+    normalized
+        .match_indices(folded_query)
+        .filter_map(|(start, matched)| {
+            let end = start + matched.len();
+            Some((
+                original_ranges.get(start)?.0,
+                original_ranges.get(end - 1)?.1,
+            ))
+        })
+        .collect()
 }
 
 /// Clean session title for display. Falls back to the working-directory
@@ -462,23 +606,39 @@ fn badge_style(s: &AgentSession) -> Style {
     }
 }
 
-/// Show the CLI provider (`claude`, `codex`, `copilot`, `gemini`) only on the
-/// active row or the keyboard-selected row — matches the Figma where the
-/// agent icon appears only on the currently-engaged session and avoids
-/// cluttering the historical list.
+/// Show the CLI provider (`claude`, `codex`, `copilot`, `gemini`, `opencode`) and,
+/// for in-distro rows, the WSL distro that runs it — only on the active row or
+/// the keyboard-selected row, matching the Figma where the agent icon appears
+/// only on the currently-engaged session and avoids cluttering the historical
+/// list.
+///
+/// The distro rides this suffix ("· copilot · Ubuntu") rather than a leading
+/// `[WSL-Ubuntu]` tag: `matches_source` already narrows the list to the viewing
+/// pane's own execution source, so every visible row shares one location and the
+/// distro reads as identity, not as disambiguation.
 fn cli_suffix_for(s: &AgentSession, selected: bool) -> String {
     let surface = selected || matches!(s.status, AgentStatus::Working | AgentStatus::Attention);
     if !surface {
         return String::new();
     }
-    let label = match s.cli_source {
-        CliSource::Claude => "claude",
-        CliSource::Codex => "codex",
-        CliSource::Copilot => "copilot",
-        CliSource::Gemini => "gemini",
-        CliSource::Unknown(_) => return String::new(),
+    let cli = match s.cli_source {
+        CliSource::Claude => Some("claude"),
+        CliSource::Codex => Some("codex"),
+        CliSource::Copilot => Some("copilot"),
+        CliSource::Gemini => Some("gemini"),
+        CliSource::OpenCode => Some("opencode"),
+        CliSource::Unknown(_) => None,
     };
-    format!("· {}", label)
+    let distro = match &s.location {
+        SessionLocation::Wsl { distro } => Some(distro.as_str()),
+        SessionLocation::Host | SessionLocation::Unknown => None,
+    };
+    [cli, distro]
+        .into_iter()
+        .flatten()
+        .map(|part| format!("· {part}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Surface a tiny "originated from the Intelligent Terminal agent pane"
@@ -659,6 +819,27 @@ mod tests {
         rust_i18n::set_locale("en-US");
     }
 
+    fn sample_session() -> AgentSession {
+        AgentSession {
+            key: "sample".into(),
+            cli_source: CliSource::Copilot,
+            pane_session_id: None,
+            window_id: None,
+            tab_id: None,
+            title: "sample".into(),
+            cwd: std::path::PathBuf::from("."),
+            started_at: SystemTime::UNIX_EPOCH,
+            last_activity_at: SystemTime::UNIX_EPOCH,
+            status: AgentStatus::Historical,
+            last_error: None,
+            current_tool: None,
+            attention_reason: None,
+            log_path: None,
+            origin: SessionOrigin::Unknown,
+            location: crate::agent_sessions::SessionLocation::Host,
+        }
+    }
+
     #[test]
     fn relative_age_just_now_under_a_minute() {
         let _g = crate::test_support::lock_locale();
@@ -694,6 +875,76 @@ mod tests {
         let s = relative_age(t);
         assert!(!s.is_empty(), "expected calendar date, got empty");
         assert!(!s.ends_with("ago"), "expected calendar date, got {:?}", s);
+    }
+
+    /// Host Copilot and Copilot inside a WSL distro report the same
+    /// `CliSource`, so the CLI filter alone cannot separate them — every
+    /// Copilot pane would render one merged list of sessions from every
+    /// source, including rows whose files live on another filesystem and which
+    /// that pane's CLI cannot resume.
+    #[test]
+    fn source_filter_keeps_only_rows_from_the_panes_own_execution_source() {
+        let debian = SessionLocation::Wsl {
+            distro: "Debian".into(),
+        };
+        let ubuntu = SessionLocation::Wsl {
+            distro: "Ubuntu".into(),
+        };
+
+        let mut row = sample_session();
+
+        // A host pane sees host rows only.
+        row.location = SessionLocation::Host;
+        assert!(matches_source(&row, &SessionLocation::Host));
+        assert!(!matches_source(&row, &debian));
+
+        // A Debian pane sees Debian rows, not host or a sibling distro's.
+        row.location = debian.clone();
+        assert!(matches_source(&row, &debian));
+        assert!(!matches_source(&row, &SessionLocation::Host));
+        assert!(!matches_source(&row, &ubuntu));
+    }
+
+    #[test]
+    fn folded_search_matches_title_only_case_insensitively() {
+        let mut session = sample_session();
+        session.title = "PowerShell".into();
+        session.cwd = std::path::PathBuf::from(r"C:\Windows");
+        assert!(matches_folded_query(&session, &"po".to_lowercase()));
+        assert!(matches_folded_query(&session, &"POWER".to_lowercase()));
+
+        session.title = "review changes".into();
+        session.cwd = std::path::PathBuf::from(r"C:\repos\Portal");
+        assert!(!matches_folded_query(&session, &"PORTAL".to_lowercase()));
+        assert!(!matches_folded_query(&session, &"bash".to_lowercase()));
+    }
+
+    #[test]
+    fn search_highlights_each_match_without_breaking_unicode() {
+        let folded_query = "PO".to_lowercase();
+        let spans = highlight_matches("PowerShell empower", &folded_query, Style::default());
+        let highlighted = spans
+            .iter()
+            .filter(|span| span.style.fg == Some(ACCENT_YELLOW))
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(highlighted, vec!["Po", "po"]);
+        assert!(spans
+            .iter()
+            .filter(|span| span.style.fg == Some(ACCENT_YELLOW))
+            .all(|span| span.style.add_modifier.contains(Modifier::UNDERLINED)));
+
+        let folded_query = "İ".to_lowercase();
+        assert_eq!(folded_query, "i\u{307}");
+        let unicode = highlight_matches("İ!", &folded_query, Style::default());
+        assert_eq!(
+            unicode
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            "İ!"
+        );
+        assert_eq!(unicode[0].content.as_ref(), "İ");
     }
 
     /// Locale coverage smoke-test: walk a representative set of locales
@@ -868,23 +1119,109 @@ mod tests {
     #[test]
     fn cli_suffix_renders_codex_label_on_selected_row() {
         let s = AgentSession {
-            key:              "k".to_string(),
-            cli_source:       CliSource::Codex,
-            pane_session_id:  None,
-            window_id:        None,
-            tab_id:           None,
-            title:            "codex — test".to_string(),
-            cwd:              std::path::PathBuf::from("."),
-            started_at:       SystemTime::now(),
+            key: "k".to_string(),
+            cli_source: CliSource::Codex,
+            pane_session_id: None,
+            window_id: None,
+            tab_id: None,
+            title: "codex — test".to_string(),
+            cwd: std::path::PathBuf::from("."),
+            started_at: SystemTime::now(),
             last_activity_at: SystemTime::now(),
-            status:           AgentStatus::Idle,
-            last_error:       None,
-            current_tool:     None,
+            status: AgentStatus::Idle,
+            last_error: None,
+            current_tool: None,
             attention_reason: None,
-            log_path:         None,
-            origin:           SessionOrigin::default(),
+            log_path: None,
+            origin: SessionOrigin::default(),
+            location: crate::agent_sessions::SessionLocation::Host,
         };
-        assert_eq!(cli_suffix_for(&s, true),  "· codex");
+        assert_eq!(cli_suffix_for(&s, true), "· codex");
         assert_eq!(cli_suffix_for(&s, false), String::new());
+    }
+
+    #[test]
+    fn cli_suffix_appends_the_wsl_distro() {
+        let s = AgentSession {
+            key: "abc".to_string(),
+            cli_source: CliSource::Copilot,
+            pane_session_id: None,
+            window_id: None,
+            tab_id: None,
+            title: "hi".to_string(),
+            cwd: std::path::PathBuf::from("/home/u"),
+            started_at: std::time::SystemTime::UNIX_EPOCH,
+            last_activity_at: std::time::SystemTime::UNIX_EPOCH,
+            status: AgentStatus::Historical,
+            last_error: None,
+            current_tool: None,
+            attention_reason: None,
+            log_path: None,
+            origin: SessionOrigin::Unknown,
+            location: crate::agent_sessions::SessionLocation::Wsl {
+                distro: "Ubuntu".to_string(),
+            },
+        };
+        assert_eq!(cli_suffix_for(&s, true), "· copilot · Ubuntu");
+        // The distro follows the provider's surfacing rule, so an unselected
+        // idle row stays clean.
+        assert_eq!(cli_suffix_for(&s, false), String::new());
+        // No provider to name still leaves the distro worth showing.
+        let unknown = AgentSession {
+            cli_source: CliSource::Unknown(String::new()),
+            ..s.clone()
+        };
+        assert_eq!(cli_suffix_for(&unknown, true), "· Ubuntu");
+        // WSL rows no longer carry a leading tag.
+        assert_eq!(origin_prefix_for(&s), None);
+    }
+
+    /// Release checklist §4 "Session states": the inline activity badge shown next to a session
+    /// row must reflect the session's status. This is the deterministic, render-layer counterpart
+    /// to the manual/live verification (a live shell copilot session that finished its turn renders
+    /// the "Idle" badge) — the picker's live-badge path can't be driven reliably end-to-end because
+    /// it needs a live shell session whose pane contends with the finicky SessionToggleButton, so
+    /// the badge TEXT is locked down here instead.
+    ///
+    /// Contract (status_badge):
+    ///   Working  -> "Active"            (running/working state)
+    ///   Attention-> "Waiting for input" (waiting-for-input state)
+    ///   Idle     -> "Idle"              (live, ready-for-next-prompt state)
+    ///   Error    -> "Error"
+    ///   Ended / Historical -> ""        (terminal/on-disk rows carry NO badge, so an Ended row is
+    ///                                     visually distinct from any live/idle row — this is why an
+    ///                                     Ended row cannot be "falsely live").
+    #[test]
+    fn status_badge_renders_expected_text_per_state() {
+        let _g = crate::test_support::lock_locale();
+        set_test_locale();
+        let mk = |status: AgentStatus| AgentSession {
+            key: "k".to_string(),
+            cli_source: CliSource::Copilot,
+            pane_session_id: None,
+            window_id: None,
+            tab_id: None,
+            title: "t".to_string(),
+            cwd: std::path::PathBuf::from("."),
+            started_at: std::time::SystemTime::UNIX_EPOCH,
+            last_activity_at: std::time::SystemTime::UNIX_EPOCH,
+            status,
+            last_error: None,
+            current_tool: None,
+            attention_reason: None,
+            log_path: None,
+            origin: SessionOrigin::default(),
+            location: crate::agent_sessions::SessionLocation::Host,
+        };
+        assert_eq!(status_badge(&mk(AgentStatus::Working)), "Active");
+        assert_eq!(
+            status_badge(&mk(AgentStatus::Attention)),
+            "Waiting for input"
+        );
+        assert_eq!(status_badge(&mk(AgentStatus::Idle)), "Idle");
+        assert_eq!(status_badge(&mk(AgentStatus::Error)), "Error");
+        // Terminal / on-disk rows render an empty badge — no live activity to show.
+        assert_eq!(status_badge(&mk(AgentStatus::Ended)), "");
+        assert_eq!(status_badge(&mk(AgentStatus::Historical)), "");
     }
 }

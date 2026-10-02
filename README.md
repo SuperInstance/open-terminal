@@ -8,29 +8,15 @@
 
 <p align="center"><strong>The first terminal that doesn't wait for you to ask.</strong></p>
 
-<p align="center">
-  Your terminal already knows your workflow's mathematics.<br>
-  We wired up the gauges.
-</p>
+> **Fork notice:** This is [SuperInstance](https://github.com/SuperInstance)'s fork of [Microsoft's Intelligent Terminal](https://github.com/microsoft/intelligent-terminal). We preserve the original and add mathematical awareness (ternary agents, math-tools, griot history) at documented extension points. Zero cost when you don't need it.
 
----
 
-> **This is a fork of [Microsoft's Intelligent Terminal](https://github.com/microsoft/intelligent-terminal)** — an experimental Windows Terminal with native ACP agent integration. We preserve every line of the original. Then we add mathematical awareness. Zero cost when you don't need it. Profound when you do.
-
----
+# Welcome to the Intelligent Terminal repo
 
 <details>
   <summary><strong>Table of Contents</strong></summary>
 
 - [What is Intelligent Terminal?](#what-is-intelligent-terminal)
-- [SuperInstance Enhancements](#superinstance-enhancements)
-  - [The Idea](#the-idea)
-  - [Math-Aware Command Analysis](#math-aware-command-analysis-math-tools)
-  - [Griot Command History](#griot-command-history-griot-history)
-  - [Zero-Cost Promise](#zero-cost-promise)
-  - [Architecture](#architecture)
-  - [Enabling Features](#enabling-features)
-  - [Coming Soon](#coming-soon)
 - [Installing and running Intelligent Terminal](#installing-and-running-intelligent-terminal)
   - [Microsoft Store](#microsoft-store-recommended)
   - [WinGet](#winget)
@@ -63,7 +49,7 @@ Intelligent Terminal is an experimental fork of [Windows Terminal](https://githu
 
 Intelligent Terminal works with any [Agent Client Protocol (ACP)-compatible](https://agentclientprotocol.com/get-started/agents) agent CLI. All you need is to install your preferred agent CLI on your PC. If you don't have a preferred agent, we'll get you setup with [GitHub Copilot CLI](https://github.com/features/copilot/cli/).
 
-Intelligent Terminal takes all the features you love in Windows Terminal such as: tabs, profiles, themes, settings, shells, and keyboard shortcuts, which all work the way you expect.
+Intelligent Terminal takes all the features you love in Windows Terminal such as:  tabs, profiles, themes, settings, shells, and keyboard shortcuts, which all work the way you expect.
 
 Read the [announcement blog post](https://devblogs.microsoft.com/commandline/announcing-intelligent-terminal-version-0-1/) for more details.
 
@@ -280,10 +266,18 @@ decay_rate = 0.1
 
 ---
 
+---
+
+### SuperInstance Privacy
+
+All SuperInstance modules are **pure-local computation**. No network calls, no external services, no API calls. The math — Hodge decomposition, spectral graph theory, ergodic Markov chains, exponential decay — runs locally on your machine. Your command history never leaves your terminal. The verification entropy tracker, error decomposition, and griot persistence models are all computed in-process and discarded on exit.
+
+---
+
 ## Installing and running Intelligent Terminal
 
 > [!NOTE]
-> Intelligent Terminal requires Windows 11 22H2 or later (22621.6060+). You also need a supported agent CLI and subscription. [GitHub Copilot](https://github.com/features/copilot/cli/) is the default.
+> Intelligent Terminal requires Windows 10 2004 (19041) or later. You also need a supported agent CLI and subscription. [GitHub Copilot](https://github.com/features/copilot/cli/) is the default.
 
 ### Microsoft Store (recommended)
 
@@ -312,9 +306,9 @@ winget install --id Microsoft.IntelligentTerminal -e
 
 ## Get Started
 
-1. On first launch, choose your agent. Intelligent Terminal auto-detects several [ACP-compatible](https://agentclientprotocol.com/get-started/agents) agent CLIs on your machine (Copilot/Claude/Codex/Gemini). If none are found, it defaults to GitHub Copilot CLI and installs it for you via WinGet.
-3. If you aren't already authenticated, the agent pane walks you through sign-in.
-4. Start asking questions and using the agent pane for assistance. The agent has context on your shell output, no copy-pasting needed.
+1. On first launch, choose your agent. Intelligent Terminal auto-detects several [ACP-compatible](https://agentclientprotocol.com/get-started/agents) agent CLIs on your machine (Copilot/Claude/Codex/Gemini/OpenCode). If none are found, it defaults to GitHub Copilot CLI and installs it for you via WinGet.
+2. If you aren't already authenticated, the agent pane walks you through sign-in. For GitHub Copilot Enterprise, press <kbd>E</kbd> at the sign-in prompt and enter your enterprise host (for example, `your-org.ghe.com`); the last host you used is remembered.
+3. Start asking questions and using the agent pane for assistance. The agent has context on your shell output, no copy-pasting needed. The agent pane does not run commands in your shell without your explicit approval: you choose whether to run its suggested command, copy it into your shell to run yourself, or dismiss it.
 
 > [!TIP]
 > If you see "running scripts is disabled on this system" or an `UnauthorizedAccess` error in PowerShell, your execution policy is blocking your profile and Intelligent Terminal can't initialize shell integration. Run:
@@ -337,6 +331,7 @@ All shortcuts are customizable through Intelligent Terminal settings.
 | <kbd>Ctrl+Shift+/</kbd> | Open agent management |
 | <kbd>Alt+Shift+/</kbd> | Open Command Palette in prompt mode |
 | <kbd>Alt+Shift+B</kbd> | Open an interactive delegate-agent tab with no startup prompt |
+| <kbd>Alt+V</kbd> | Paste a clipboard image into the agent pane |
 
 ---
 
@@ -346,11 +341,17 @@ Everything is configurable through Intelligent Terminal settings, under "Agent" 
 
 | Setting | Options |
 |---------|---------|
-| Agent and model | GitHub Copilot (default), or any ACP-compatible agent CLI, including custom or local agents. Configurable for both the agent pane and command palette. |
+| Agent and model | GitHub Copilot (default), or any ACP-compatible agent CLI, including custom or local agents. Configurable for both the agent pane and command palette. Each agent pane can also override its model on the fly with `/model`; changing the global setting here overrides every pane. |
+| Custom providers (BYOK) | Bring your own provider credentials and model through GitHub Copilot or OpenCode using an OpenAI-compatible Chat Completions endpoint. Add a provider under Agent settings with a Base URL, Model ID, and optional API key, then select it from `/model`. API keys are stored in Windows Credential Manager; keyless local endpoints such as Ollama remain supported. |
 | Pane placement | Top, Bottom (default), Left, Right |
 | Error detection | Allows Intelligent Terminal to automatically detect command failures |
 | Error suggestions | Allows Intelligent Terminal to automatically send detected errors to the agent for fix suggestions |
 | Agent session tracking (hooks) | Allows Intelligent Terminal to track active agent sessions and their status in the session management UI |
+| Token usage display | Show or hide token usage and cost in the agent status bar |
+
+You can also pin a specific agent to a profile. Open a profile in Settings (for example, "PowerShell" or "Ubuntu") and set the agent you want its agent pane to use. For a WSL profile, the picker also lists agents installed inside that distro, so an Ubuntu profile can run a Linux-side agent. Profiles you don't configure keep using the global agent.
+
+When **Settings > Agents > Sessions** is off, session management shows a subtle reminder below its title to turn it on for the best experience. Existing hooks are not removed and may continue to report activity; the setting controls their installation and updates. The reminder disappears when Sessions is enabled and is not shown when organization policy prevents enabling it.
 
 ---
 
@@ -362,7 +363,7 @@ Everything is configurable through Intelligent Terminal settings, under "Agent" 
   <img src="./images/intelligent-terminal-status-bar.png" alt="Screenshot of the agent status bar at the bottom of the terminal window">
 </p>
 
-The agent status bar sits at the bottom of the window and gives you quick access to everything agent-related. On the left: the agent pane toggle (hotkey: <kbd>Ctrl+Shift+.</kbd>) and the error detection icon (hotkey: <kbd>Ctrl+Alt+.</kbd>), which lights up when a fixable error is detected. On the right: the agent management icon (hotkey: <kbd>Ctrl+Shift+/</kbd>) that opens your session management panel. It's a persistent, minimal control surface so you're never more than one click away from your agents.
+The agent status bar sits at the bottom of the window and gives you quick access to everything agent-related. On the left: the agent pane toggle (hotkey: <kbd>Ctrl+Shift+.</kbd>) and the error detection icon (hotkey: <kbd>Ctrl+Alt+.</kbd>), which lights up when a fixable error is detected. On the right: the agent management icon (hotkey: <kbd>Ctrl+Shift+/</kbd>) that opens your session management panel. It's a persistent, minimal control surface so you're never more than one click away from your agents. The status bar can also display your current token usage and cost as you work; toggle this on or off in Agent settings.
 
 ### Agent Pane
 
@@ -370,13 +371,43 @@ The agent status bar sits at the bottom of the window and gives you quick access
   <img src="./images/intelligent-terminal-agent-pane.png" alt="Screenshot of the agent pane with a development conversation">
 </p>
 
-A context-aware, docked pane with your agent CLI of choice. The pane has context on your shell output across all your shells. Toggle with <kbd>Ctrl+Shift+.</kbd>, switch focus with <kbd>Ctrl+Shift+I</kbd>. If the agent needs to do multiple or complex tasks, it spins up background tasks in new tabs so your active shell stays focused.
+A context-aware, docked pane with your agent CLI of choice. The pane has context on your shell output across all your shells (PowerShell, Bash/WSL). Toggle with <kbd>Ctrl+Shift+.</kbd>, switch focus with <kbd>Ctrl+Shift+I</kbd>. If the agent needs to do multiple or complex tasks, it spins up background tasks in new tabs so your active shell stays focused. When the agent suggests a shell command, the pane gives you the option to run or copy it rather than running it automatically. Paste a clipboard image straight into the chat with <kbd>Alt+V</kbd> to show the agent a screenshot, diagram, or mockup (acting on the image depends on your agent's image support).
 
 <p align="center">
   <img src="./images/intelligent-terminal-agent-focus.png" alt="Screenshot of the agent pane with focus, showing multiple panes">
 </p>
 
 When you have multiple panes active, a small "Agent" indicator will appear on the pane that your agent has "focus" on.
+
+Inside the pane you can scroll and drag to select with the mouse, double-click a word or triple-click a line, and press <kbd>Ctrl+C</kbd> to copy. Press <kbd>Up</kbd> and <kbd>Down</kbd> in the input to recall recent prompts.
+
+#### Slash Commands
+
+Inside the agent pane, type `/` to see available commands. Type `/help` at any time to show the list.
+
+| Command | Description |
+|---------|-------------|
+| `/agent [id]` | Pick the agent source for this tab. In a WSL pane, the picker includes agents installed on Windows and in that pane's WSL distro; it never offers other distros. |
+| `/clear` | Clear the chat scrollback (keeps the current session) |
+| `/config` | Configure the current agent session using the options your agent exposes. With GitHub Copilot, for example, you can set the mode (agent, plan, or autopilot), model, reasoning effort, and whether it asks for approval before using tools |
+| `/fix [hint]` | Diagnose the active terminal and suggest a fix; add an optional hint to steer it (e.g. `/fix the path looks wrong`) |
+| `/help` | Show the command list |
+| `/model [id]` | Pick the model for this pane; bare `/model` opens a picker of your configured BYOK models, `/model <id>` switches directly |
+| `/move [position]` | Move this tab's agent pane without changing the global setting or other tabs; `/move left\|right\|up\|down` (aliases `l`/`r`/`u`/`d`) |
+| `/new` | Start a fresh agent session (drops history) |
+| `/restart` | Restart the agent with a clean session |
+| `/sessions` | Open agent management (same as <kbd>Ctrl+Shift+/</kbd>) |
+| `/stop` | Cancel the in-flight prompt |
+
+#### Custom Providers (BYOK)
+
+Run your agent against your own provider or a model on your machine. BYOK is supported through GitHub Copilot and OpenCode using an OpenAI-compatible Chat Completions endpoint. Under Agent settings, add a provider with a Base URL, Model ID, and optional API key, then pick it from the `/model` picker (configured models show as `modelId (BYOK)`). API keys are stored in Windows Credential Manager; a local Ollama model still works with no key:
+
+```text
+Base URL:  http://localhost:11434/v1
+Model ID:  <your local model>
+API key:   <optional>
+```
 
 ### Agent Management
 
@@ -386,13 +417,15 @@ When you have multiple panes active, a small "Agent" indicator will appear on th
 
 View all active agents, their status, and past sessions. Pick up a workflow where you left off or check on a long-running task. Click the agent management icon in the status bar or press <kbd>Ctrl+Shift+/</kbd> to open it.
 
+While a tracked built-in agent session is live, its terminal pane uses the agent's icon. Vertical pane rows show their own icons; tab headers in both layouts follow the focused terminal pane. Focusing the AI helper keeps its associated terminal pane as the source. When the session ends, or the provider is custom or unknown, the profile icon is used instead. This works whether or not Agent status is selected as visible tab metadata.
+
 ### Error Detection
 
 <p align="center">
   <img src="./images/intelligent-terminal-error-detection.png" alt="Screenshot of automatic error detection with a suggested fix">
 </p>
 
-When a command fails, an indicator appears in the agent status bar. Click it or press <kbd>Ctrl+Alt+.</kbd> to open the agent pane with the error context already loaded. The agent can explain what happened and suggest or run a fix. Configure your settings to auto-detect errors only, or to also auto-suggest fixes.
+When a command fails, an indicator appears in the agent status bar. Click it or press <kbd>Ctrl+Alt+.</kbd> to open the agent pane with the error context already loaded. The agent can explain what happened and suggest or run a fix. Configure your settings to auto-detect errors only, or to also auto-suggest fixes. You can also trigger a fix at any time from the agent pane with the `/fix` slash command.
 
 ### Command Palette
 
@@ -434,10 +467,6 @@ All of this is held in memory for the active session only and discarded when the
 
 Intelligent Terminal only collects usage data and sends it to Microsoft to help improve our products and services. Read our [privacy statement](https://go.microsoft.com/fwlink/?LinkID=824704) to learn more. See [PRIVACY.md](./PRIVACY.md) for details and instructions on how to disable telemetry.
 
-### SuperInstance Privacy
-
-All SuperInstance modules are **pure-local computation**. No network calls, no external services, no API calls. The math — Hodge decomposition, spectral graph theory, ergodic Markov chains, exponential decay — runs locally on your machine. Your command history never leaves your terminal. The verification entropy tracker, error decomposition, and griot persistence models are all computed in-process and discarded on exit.
-
 ### Data Collection
 
 The software may collect information about you and your use of the software and send it to Microsoft. Microsoft may use this information to provide services and improve our products and services. You may turn off the telemetry as described in the repository. There are also some features in the software that may enable you and Microsoft to collect data from users of your applications. If you use these features, you must comply with applicable law, including providing appropriate notices to users of your applications together with a copy of Microsoft's privacy statement. Our privacy statement is located at https://go.microsoft.com/fwlink/?LinkID=824704. You can learn more about data collection and use in the help documentation and our privacy statement. Your use of the software operates as your consent to these practices.
@@ -448,27 +477,25 @@ The software may collect information about you and your use of the software and 
 
 Building Intelligent Terminal is the same as building Windows Terminal. See the [Developer Guidance](https://github.com/microsoft/terminal#developer-guidance) section of the Windows Terminal README for prerequisites, build instructions, and debugging steps.
 
-To build with SuperInstance enhancements:
-
-```bash
-# Standard build (no enhancements)
-cargo build
-
-# With math-aware analysis
-cargo build --features math-tools
-
-# With griot command history
-cargo build --features griot-history
-
-# Everything
-cargo build --features math-tools,griot-history
-```
-
 ---
 
 ## Feedback
 
-Intelligent Terminal is in an experimental stage. If you have a feature request or find a bug, [submit an issue](https://github.com/microsoft/intelligent-terminal/issues) on the GitHub repository. When filing a bug, the **Report a bug (collect logs)** command in the Command Palette (<kbd>Ctrl+Shift+P</kbd>) bundles your diagnostic logs into a timestamped ZIP on your Desktop — attach it to the issue so we have full context.
+Intelligent Terminal is in an experimental stage. If you have a feature request or find a bug, [submit an issue](https://github.com/microsoft/intelligent-terminal/issues) on the GitHub repository.
+
+### Collecting Logs
+
+To help us investigate bugs, please collect and attach diagnostic logs when filing an issue:
+
+1. Open Command Palette with <kbd>Ctrl+Shift+P</kbd>
+2. Search for **Report a bug (collect logs)**
+
+<p align="center">
+  <img src="./images/intelligent-terminal-collect-logs.png" alt="Screenshot of Command Palette showing 'Report a bug (collect logs)' command">
+</p>
+
+3. A ZIP file containing your error logs will be generated and opened in File Explorer
+4. Attach the ZIP to your issue so we can investigate with full context
 
 Intelligent Terminal ships as a separate app and installs next to your existing Windows Terminal. If you don't want agents in your terminal, nothing changes for you. With this model, we can learn, experiment, and iterate with you, the community, on what this evolution might look like without breaking your existing Windows Terminal flows.
 
@@ -479,6 +506,9 @@ Intelligent Terminal ships as a separate app and installs next to your existing 
 We are excited to work alongside you, our amazing community, to build and enhance Intelligent Terminal!
 
 **Before you start work on a feature/fix**, please read & follow the [Windows Terminal Contributor's Guide](https://github.com/microsoft/terminal/blob/main/CONTRIBUTING.md). The contribution process is the same.
+
+For local dev/build of this repo, see:
+[quick-start-local-dev](doc/quick-start-local-dev.md)
 
 ---
 

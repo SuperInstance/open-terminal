@@ -1,16 +1,17 @@
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
-use crate::app::{App, SetupOption};
+use crate::app::{App, SetupFailureKind, SetupOption, SetupPhase};
 
-const SPINNER: &[char] = &[
-    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}',
-    '\u{2827}', '\u{2807}', '\u{280F}',
-];
+const PROGRESS_SPINNER: &[char] = &['\u{25DC}', '\u{25DD}', '\u{25DE}', '\u{25DF}'];
 
-// Figma: rgba(255,255,255,0.6) ≈ #999999
-const DIM_TEXT: Style = Style::new().fg(Color::Rgb(153, 153, 153));
-const SELECTED_COLOR: Color = Color::Rgb(96, 205, 255);
+// Muted secondary text. Dimmed default fg (not a fixed gray) so it tracks the
+// color scheme and stays readable on light schemes (#234). Figma reference was
+// rgba(255,255,255,0.6) ≈ #999999, which only worked on a dark background.
+const DIM_TEXT: Style = Style::new().fg(Color::Reset).add_modifier(Modifier::DIM);
+// Named ANSI (not fixed RGB) so the selection accent follows the color scheme
+// and stays readable on light schemes (#234).
+const SELECTED_COLOR: Color = Color::Cyan;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let setup = match &app.setup {
@@ -29,119 +30,109 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .split(area);
     let area = padded[1];
 
+    let spinner_char = PROGRESS_SPINNER[app.activity_frame as usize % PROGRESS_SPINNER.len()];
     let mut lines: Vec<Line> = Vec::new();
 
-    // Title — bold white with bullet
-    lines.push(Line::from(vec![
-        Span::styled(
-            "\u{25CF} ",
-            Style::new().fg(Color::White).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            &setup.title,
-            Style::new().fg(Color::White).add_modifier(Modifier::BOLD),
-        ),
-    ]));
-
-    // Subtitle — dim
-    lines.push(Line::from(Span::styled(
-        format!("  {}", &setup.subtitle),
-        DIM_TEXT,
-    )));
-
-    // Blank line
-    lines.push(Line::from(""));
-
-    // Description for FRE
-    if setup.reason == crate::app::SetupReason::FirstRun
-        || setup.reason == crate::app::SetupReason::SwitchAgent
-    {
-        lines.push(Line::from(Span::styled(
-            format!("  {}", t!("setup.description.fre_line1")),
-            DIM_TEXT,
-        )));
-        lines.push(Line::from(Span::styled(
-            format!("  {}", t!("setup.description.fre_line2")),
-            DIM_TEXT,
-        )));
-        lines.push(Line::from(""));
-    }
-
-    // Info messages (e.g. "Copied to clipboard") — shown before options
-    if !setup.install_in_progress && setup.install_error.is_none() && !setup.install_log.is_empty() {
-        for (i, log_line) in setup.install_log.iter().enumerate() {
-            let prefix = if i == 0 { "  \u{2714} " } else { "    " };
-            let style = if i == 0 { Style::new().fg(Color::Green) } else { DIM_TEXT };
+    match &setup.phase {
+        SetupPhase::Installing => {
             lines.push(Line::from(vec![
-                Span::styled(prefix, style),
-                Span::styled(log_line.clone(), style),
+                Span::styled(
+                    t!("setup.status.installing_copilot_cli").into_owned(),
+                    Style::new().fg(Color::Reset),
+                ),
+                Span::raw("  "),
+                Span::styled(spinner_char.to_string(), Style::new().fg(SELECTED_COLOR)),
             ]));
         }
-        lines.push(Line::from(""));
+        SetupPhase::Reconnecting => {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    t!(
+                        "setup.status.connecting_agent",
+                        agent = &setup.preflight.display_name
+                    )
+                    .into_owned(),
+                    Style::new().fg(Color::Reset),
+                ),
+                Span::raw("  "),
+                Span::styled(spinner_char.to_string(), Style::new().fg(SELECTED_COLOR)),
+            ]));
+        }
+        SetupPhase::Ready | SetupPhase::Failed { .. } => {
+            // Title — bold, scheme default foreground, with bullet
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "\u{25CF} ",
+                    Style::new().fg(Color::Reset).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    setup.title.clone(),
+                    Style::new().fg(Color::Reset).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(
+                format!("  {}", &setup.subtitle),
+                DIM_TEXT,
+            )));
+            lines.push(Line::from(""));
+        }
     }
 
-    // Options list
-    let spinner_char = SPINNER[app.activity_frame as usize % SPINNER.len()];
+    if setup.is_busy() {
+        let paragraph = Paragraph::new(lines)
+            .alignment(crate::rtl::text_alignment())
+            .wrap(ratatui::widgets::Wrap { trim: false });
+        frame.render_widget(paragraph, area);
+        return;
+    }
 
     for (i, opt) in setup.options.iter().enumerate() {
         let is_selected = i == setup.selected_index;
 
         let (label, status_text) = match opt {
-            SetupOption::SelectAgent { agent } => {
-                let is_installing = setup.install_in_progress
-                    && agent.can_auto_install()
-                    && !agent.cli_found;
-                let status = if is_installing {
-                    format!("  {} {}", spinner_char, t!("setup.status.installing"))
-                } else {
-                    format!("  ({})", agent.status_label())
-                };
-                (agent.display_name.clone(), status)
+            SetupOption::ChooseAgentSource => {
+                (t!("agent_picker.title").into_owned(), String::new())
             }
-            SetupOption::Install { display_name, .. } => {
-                let status = if setup.install_in_progress {
-                    format!("  {} {}", spinner_char, t!("setup.status.installing"))
-                } else {
-                    format!("  {}", t!("setup.option.install_hint"))
-                };
-                (t!("setup.option.install", agent = display_name.as_str()).into_owned(), status)
-            }
-            SetupOption::SignIn { display_name, .. } => {
-                (t!("setup.option.signin", agent = display_name.as_str()).into_owned(), String::new())
-            }
-            SetupOption::SwitchAgent { agent } => (
-                t!("setup.option.switch_to", agent = agent.display_name.as_str()).into_owned(),
-                format!("  ({})", agent.status_label()),
+            SetupOption::Install { display_name, .. } => (
+                t!("setup.option.install", agent = display_name.as_str()).into_owned(),
+                format!("  {}", t!("setup.option.install_hint")),
+            ),
+            SetupOption::SignIn { display_name, .. } => (
+                t!("setup.option.signin", agent = display_name.as_str()).into_owned(),
+                String::new(),
+            ),
+            SetupOption::Recheck => (
+                t!("setup.option.retry_detection").into_owned(),
+                String::new(),
             ),
             SetupOption::Retry => {
                 let label = match setup.reason {
-                    crate::app::SetupReason::AgentMissing => t!("setup.option.retry_detection").into_owned(),
-                    crate::app::SetupReason::AgentError => t!("setup.option.retry_auth").into_owned(),
-                    _ => t!("setup.option.retry_connection").into_owned(),
+                    crate::app::SetupReason::AgentMissing => {
+                        t!("setup.option.retry_detection").into_owned()
+                    }
+                    crate::app::SetupReason::AgentError => {
+                        t!("setup.option.retry_auth").into_owned()
+                    }
                 };
                 (label, String::new())
             }
+            SetupOption::RetryConnection => (
+                t!("setup.option.retry_connection").into_owned(),
+                String::new(),
+            ),
         };
 
-        let is_installing_select = matches!(opt, SetupOption::SelectAgent { ref agent } if
-            setup.install_in_progress && agent.can_auto_install() && !agent.cli_found);
-        let is_installing_opt = is_installing_select
-            || (matches!(opt, SetupOption::Install { .. }) && setup.install_in_progress);
-        let status_style = if is_installing_opt {
-            Style::new().fg(Color::Yellow)
-        } else if is_selected {
+        let status_style = if is_selected {
             Style::new().fg(SELECTED_COLOR)
         } else {
-            Style::new().fg(Color::White)
+            Style::new().fg(Color::Reset)
         };
 
         if is_selected {
             lines.push(Line::from(vec![
                 Span::styled(
                     "  > ",
-                    Style::new()
-                        .fg(SELECTED_COLOR)
-                        .add_modifier(Modifier::BOLD),
+                    Style::new().fg(SELECTED_COLOR).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(label, Style::new().fg(SELECTED_COLOR)),
                 Span::styled(status_text, status_style),
@@ -149,57 +140,23 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             lines.push(Line::from(vec![
                 Span::raw("    "),
-                Span::styled(label, Style::new().fg(Color::White)),
+                Span::styled(label, Style::new().fg(Color::Reset)),
                 Span::styled(status_text, status_style),
             ]));
         }
     }
 
-    // Install progress or info messages (shown below options)
-    if setup.install_in_progress {
+    if let SetupPhase::Failed { kind, message } = &setup.phase {
         lines.push(Line::from(""));
+        let prefix = match kind {
+            SetupFailureKind::Install => t!("setup.status.install_failed").into_owned(),
+            SetupFailureKind::Detection | SetupFailureKind::Connection => String::new(),
+        };
         lines.push(Line::from(vec![
             Span::styled("  ", DIM_TEXT),
-            Span::styled(
-                format!("{}", spinner_char),
-                Style::new().fg(Color::Yellow),
-            ),
-            Span::styled(
-                t!("setup.status.installing_winget").into_owned(),
-                Style::new().fg(Color::White),
-            ),
+            Span::styled(prefix, Style::new().fg(Color::Red)),
+            Span::styled(message.clone(), Style::new().fg(Color::Red)),
         ]));
-        for log_line in setup.install_log.iter() {
-            lines.push(Line::from(vec![
-                Span::styled("    ", DIM_TEXT),
-                Span::styled(log_line.clone(), DIM_TEXT),
-            ]));
-        }
-    }
-
-
-    // Install error
-    if let Some(ref err) = setup.install_error {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("  ", DIM_TEXT),
-            Span::styled(t!("setup.status.install_failed").into_owned(), Style::new().fg(Color::Red)),
-            Span::styled(err.clone(), Style::new().fg(Color::Red)),
-        ]));
-        for log_line in setup
-            .install_log
-            .iter()
-            .rev()
-            .take(3)
-            .collect::<Vec<_>>()
-            .iter()
-            .rev()
-        {
-            lines.push(Line::from(vec![
-                Span::styled("    ", DIM_TEXT),
-                Span::styled((*log_line).clone(), DIM_TEXT),
-            ]));
-        }
     }
 
     let paragraph = Paragraph::new(lines)

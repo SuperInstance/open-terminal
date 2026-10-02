@@ -1,2 +1,7 @@
+# Pin Rust version for CI reproducibility.
+# The ms-prod channel is resolved by MSRustup (RustInstaller ADO task).
+# Standard rustup treats this as a custom toolchain and may not have it
+# installed. Documented local builds run from the repository root, outside
+# this directory override, and must remain compatible with this CI version.
 [toolchain]
-channel = "stable"
+channel = "ms-prod-1.93"

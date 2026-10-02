@@ -573,6 +573,14 @@
     <value>Allow OSC 52 (Manipulate Selection Data) to write to the clipboard</value>
     <comment>{Locked="OSC 52"}{Locked="Manipulate Selection Data"}Header for a control to toggle support for applications to change the contents of the Windows system clipboard.</comment>
   </data>
+  <data name="Profile_AllowOscNotifications.Header" xml:space="preserve">
+    <value>Allow OSC 777 (Desktop Notification) to show toast notifications</value>
+    <comment>{Locked="OSC 777"}{Locked="Desktop Notification"}Header for a control to toggle support for applications to display desktop toast notifications via the OSC 777 escape sequence.</comment>
+  </data>
+  <data name="Profile_AllowOscNotifications.HelpText" xml:space="preserve">
+    <value>When enabled, applications can send the OSC 777 escape sequence to trigger a desktop notification with a custom title and body.</value>
+    <comment>{Locked="OSC 777"}Help text for the OSC 777 desktop notification toggle.</comment>
+  </data>
   <data name="Globals_AllowHeadless.Header" xml:space="preserve">
     <value>Allow Intelligent Terminal to run in the background</value>
     <comment>Header for a control to toggle support for Intelligent Terminal to run in the background.</comment>
@@ -612,6 +620,22 @@
   <data name="Globals_TabWidthModeTitleLength.Content" xml:space="preserve">
     <value>Title length</value>
     <comment>An option to choose from for the "tab width mode" setting. When selected, each tab adjusts its width to the content within the tab.</comment>
+  </data>
+  <data name="Globals_TabLayout.Header" xml:space="preserve">
+    <value>Tab Mode</value>
+    <comment>Header for a control to choose whether tabs are laid out horizontally across the top of the window or vertically down the left side.</comment>
+  </data>
+  <data name="Globals_TabLayout.HelpText" xml:space="preserve">
+    <value>Toggle between the new sidebar or classic horizontal tabs view</value>
+    <comment>A description for what the "tab layout" setting does. Presented near "Globals_TabLayout.Header".</comment>
+  </data>
+  <data name="Globals_TabLayoutHorizontal.Content" xml:space="preserve">
+    <value>Horizontal</value>
+    <comment>An option to choose from for the "tab layout" setting. When selected, tabs run across the top of the window.</comment>
+  </data>
+  <data name="Globals_TabLayoutVertical.Content" xml:space="preserve">
+    <value>Sidebar</value>
+    <comment>An option to choose from for the "tab layout" setting. When selected, tabs run down the left side of the window in a resizable sidebar. Use the same translation as FreOverlay_TabModeSidebar in TerminalApp.</comment>
   </data>
   <data name="Globals_Theme.Header" xml:space="preserve">
     <value>Application Theme</value>
@@ -668,6 +692,14 @@
   <data name="Nav_Launch.Content" xml:space="preserve">
     <value>Startup</value>
     <comment>Header for the "startup" menu item. This navigates to a page that lets you see and modify settings related to the app's launch experience (i.e. screen position, mode, etc.)</comment>
+  </data>
+  <data name="Nav_PaneOpenedAnnouncement" xml:space="preserve">
+    <value>Navigation pane opened</value>
+    <comment>Screen reader announcement made when the user activates the toggle button that opens the settings navigation pane.</comment>
+  </data>
+  <data name="Nav_PaneClosedAnnouncement" xml:space="preserve">
+    <value>Navigation pane closed</value>
+    <comment>Screen reader announcement made when the user activates the toggle button that closes the settings navigation pane.</comment>
   </data>
   <data name="Nav_OpenJSON.Content" xml:space="preserve">
     <value>Open JSON file</value>
@@ -737,40 +769,55 @@ In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), n
     <comment>Supplementary description for the model setting.</comment>
   </data>
   <data name="AIAgents_DelegateAgent.Header" xml:space="preserve">
-    <value>Agent</value>
-    <comment>Header for the setting that specifies which agent handles command palette / on-demand requests.
-In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
+    <value>Agent CLI</value>
+    <comment>{Locked="CLI"} Header for the agent CLI selector in Settings &gt; Agents &gt; Command palette. Here "agent" means an AI intelligent agent (e.g. Copilot, Claude, Gemini), not a proxy or human agent. CLI means command-line interface.</comment>
   </data>
   <data name="AIAgents_DelegateAgent.HelpText" xml:space="preserve">
-    <value>Choose the agent used for quick actions in the command palette.</value>
-    <comment>Supplementary description for the command palette agent setting. 
-In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
+    <value>Create a new tab with your preferred agent CLI, optionally including a prompt and context from the active pane.
+Alt+Shift+/ enter a prompt; Alt+Shift+B launch without an initial prompt.</value>
+    <comment>{Locked="CLI","Alt+Shift+/","Alt+Shift+B"} Agent CLI help in Settings &gt; Agents. Keep exactly one line break between the description and the shortcut reference. The UI renders the hotkeys with the same keycap style as Settings &gt; Actions. Start the description after each shortcut with lowercase where the language uses case. Context comes from the active pane; launching without an initial prompt is still interactive. Separate each hotkey and its description with a space, not a colon.</comment>
   </data>
-  <data name="AIAgents_AutoErrorDetectionTitle.Text" xml:space="preserve">
-    <value>Automatic error detection</value>
-    <comment>Title for the master toggle (Expander header) that lets the terminal observe the shell and detect failed commands. The Automatic error suggestion setting is nested under this one.</comment>
+  <data name="AIAgents_AutoErrorHandlingTitle.Text" xml:space="preserve">
+    <value>Error detection</value>
+    <comment>Title for the Error detection dropdown in the AI agents settings page.</comment>
   </data>
-  <data name="AIAgents_AutoErrorDetectionCaption.Text" xml:space="preserve">
-    <value>Give Intelligent Terminal permission to access your shell and automatically detect errors. Available in PowerShell and Windows PowerShell.</value>
-    <comment>{Locked="PowerShell","Windows PowerShell"} "Intelligent Terminal" is the product name. Caption under the automatic-error-detection title.</comment>
+  <data name="AIAgents_AutoErrorHandlingDescription.Text" xml:space="preserve">
+    <value>Automatically detect failed commands in the shell, and optionally send them to your agent for automatic fixes.</value>
+    <comment>Umbrella description for the three-state Error detection setting in the AI agents settings page. The Detect errors option is local-only; only Detect and fix errors sends failures to the AI agent. Use the approved product copy verbatim. Here "agent" refers to an AI intelligent agent, not a proxy or human agent.</comment>
   </data>
-  <data name="AIAgents_AutoErrorSuggestionTitle.Text" xml:space="preserve">
-    <value>Automatic error suggestion</value>
-    <comment>Title for the nested toggle that lets the agent automatically suggest fixes for detected errors. Depends on (and is nested under) automatic error detection.
-In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
+  <data name="AIAgents_AutoErrorHandling_Off" xml:space="preserve">
+    <value>Off</value>
+    <comment>The third option in the Error detection dropdown. It disables automatic terminal error detection and suggestions.</comment>
   </data>
-  <data name="AIAgents_AutoErrorSuggestionCaption.Text" xml:space="preserve">
-    <value>Give Intelligent Terminal permission to send errors to your agent to automatically suggest fixes.</value>
-    <comment>{Locked=qps-ploc,qps-ploca,qps-plocm} "Intelligent Terminal" is the product name. Caption under the automatic-error-suggestion title.
-In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
+  <data name="AIAgents_AutoErrorHandling_DetectErrorsAutomatically" xml:space="preserve">
+    <value>Detect errors</value>
+    <comment>The first option in the Error detection dropdown. It enables automatic terminal error detection without sending failures to an AI agent. Here "agent" means an AI intelligent agent, not a proxy or human agent.</comment>
   </data>
+  <data name="AIAgents_AutoErrorHandling_DetectErrorsAndSendToAgentForFixesAutomatically" xml:space="preserve">
+    <value>Detect and fix errors</value>
+    <comment>The second option in the Error detection dropdown. It enables automatic terminal error detection and sends failures to an AI agent for suggested fixes. Here "agent" means an AI intelligent agent, not a proxy or human agent.</comment>
+  </data>
+  <data name="AIAgents_AutoErrorHandlingComboBox.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Error detection</value>
+    <comment>Automation name for the Error detection dropdown in the AI agents settings page.</comment>
+  </data>
+  <data name="AIAgents_SessionManagement.Header" xml:space="preserve">
+    <value>Sessions</value>
+    <comment>Title for the setting that controls agent session tracking.</comment>
+  </data>
+  <data name="AIAgents_SessionManagement.HelpText" xml:space="preserve">
+    <value>Track which agents are running and which need your attention.</value>
+    <comment>{Locked=qps-ploc,qps-ploca,qps-plocm} Description for the Sessions setting. In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
+  </data>
+  <data name="AIAgents_ShowTokenUsageAndCost.Header" xml:space="preserve"><value>Token usage</value><comment>Header for a setting that shows available context-window usage and session cost in the terminal bottom bar. Session cost is reported for the active AI session. Keep 'session cost' generic and do not add a specific unit. Either value may be unavailable.</comment></data>
+  <data name="AIAgents_ShowTokenUsageAndCost.HelpText" xml:space="preserve"><value>Show remaining context and session cost when available</value><comment>Supplementary description for the usage visibility setting. Session cost is reported for the active AI session. Keep 'session cost' generic and do not add a specific unit. Either value may be unavailable.</comment></data>
   <data name="AIAgents_PanePosition.Header" xml:space="preserve">
     <value>Pane position</value>
     <comment>Header for the setting that controls where the agent pane appears relative to the active pane. 
 In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
   </data>
   <data name="AIAgents_PanePosition.HelpText" xml:space="preserve">
-    <value>Where the agent pane opens relative to your terminal.</value>
+    <value>Where your agent lives</value>
     <comment>Supplementary description for the pane position setting. 
 In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
   </data>
@@ -790,26 +837,13 @@ In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), n
     <value>Left</value>
     <comment>Value shown in the agent pane position dropdown (selects which side of the terminal the agent pane opens on). Translation should match the existing FreOverlay_PanePositionLeft string used in the first-run experience.</comment>
   </data>
-  <data name="AIAgents_HooksInstall.Header" xml:space="preserve">
-    <value>Agent session tracking (hooks)</value>
-    <comment>{Locked="hooks","Hook","Hooks"} Header for the expandable Agent Hooks section in the Agent pane group. Wording matches the design ask: this UX exists so the agent pane can track agent sessions through installed hooks.
-In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), not a human agent or representative.</comment>
+  <data name="AIAgents_YoloMode.Header" xml:space="preserve">
+    <value>Automatic approval</value>
+    <comment>Header for the Settings toggle that enables automatic approval for the AI agent running in the agent pane.</comment>
   </data>
-  <data name="AIAgents_HooksInstall.HelpText" xml:space="preserve">
-    <value>Track sessions across agents. Required for agent session management.</value>
-    <comment>Help text shown under the expandable section header.</comment>
-  </data>
-  <data name="AIAgents_HooksInstallRowLabel.Text" xml:space="preserve">
-    <value>Install agent hook script</value>
-    <comment>{Locked="hook","Hook"} Label for the first row inside the Agent session tracking expander — describes what the adjacent "Install hooks" button does.</comment>
-  </data>
-  <data name="AIAgents_HooksInstallButton.Content" xml:space="preserve">
-    <value>Install hooks</value>
-    <comment>{Locked="hooks","Hooks"} Button label inside the Agent session tracking expander. Triggers installation of the wt-agent-hooks plugin for every detected agent.</comment>
-  </data>
-  <data name="AIAgents_HooksRemoveButton.Content" xml:space="preserve">
-    <value>Remove</value>
-    <comment>Button label next to each agent row inside the Agent session tracking expander. Uninstalls the wt-agent-hooks plugin/extension for that agent.</comment>
+  <data name="AIAgents_YoloMode.HelpText" xml:space="preserve">
+    <value>Your agent in the agent pane runs with full permissions provided by the agent CLI</value>
+    <comment>{Locked="CLI"} Description shown under the automatic approval toggle. Agent means an AI intelligent agent in the agent pane, not a proxy or human representative. Full permissions are provided by the agent CLI.</comment>
   </data>
   <data name="Profile_OpacitySlider.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
     <value>Background opacity</value>
@@ -1338,6 +1372,30 @@ In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), n
   <data name="Profile_StartingDirectoryUseParentCheckbox.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
     <value>If enabled, this profile will spawn in the directory from which Terminal was launched.</value>
     <comment>A description for what the supplementary "use parent process directory" setting does. Presented near "Profile_StartingDirectoryUseParentCheckbox".</comment>
+  </data>
+  <data name="Profile_AgentPaneBackend.Header" xml:space="preserve">
+    <value>Agent pane agent</value>
+    <comment>Header for choosing which AI agent backend is used by this profile.</comment>
+  </data>
+  <data name="Profile_AgentPaneBackend.HelpText" xml:space="preserve">
+    <value>Choose the agent used in the agent pane that supports ACP. For this profile, this selection takes precedence over the global Agent pane selection.</value>
+    <comment>{Locked="ACP"} Description for the per-profile AI agent setting.</comment>
+  </data>
+  <data name="Profile_CommandPaletteAgent.Header" xml:space="preserve">
+    <value>Command palette agent</value>
+    <comment>Header for choosing which AI agent handles command palette delegation for this profile.</comment>
+  </data>
+  <data name="Profile_CommandPaletteAgent.HelpText" xml:space="preserve">
+    <value>Choose the agent used for command palette delegation in this profile. This selection takes precedence over the global delegate agent setting.</value>
+    <comment>Description for the per-profile command palette agent setting. Here “agent” means an AI agent, not a proxy or human agent.</comment>
+  </data>
+  <data name="Profile_AgentPaneBackend_AgentFormat" xml:space="preserve">
+    <value>{0} · {1}</value>
+    <comment>{Locked="{0}","{1}"} Agent display name replaces {0}; Windows or a WSL distro name replaces {1}.</comment>
+  </data>
+  <data name="Profile_AgentPaneBackend_UnavailableSuffix" xml:space="preserve">
+    <value> (not available)</value>
+    <comment>Suffix for a saved per-profile agent backend that is no longer installed.</comment>
   </data>
   <data name="Profile_SuppressApplicationTitle.Header" xml:space="preserve">
     <value>Suppress title changes</value>
@@ -2520,8 +2578,8 @@ In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), n
     <comment>Accessible name for a control allowing the user to select the icon from a list of built in icons.</comment>
   </data>
   <data name="Nav_NewTabMenu.Content" xml:space="preserve">
-    <value>New Tab Menu</value>
-    <comment>Header for the "new tab menu" menu item. This navigates to a page that lets you see and modify settings related to the app's new tab menu (i.e. profile ordering, nested folders, dividers, etc.)</comment>
+    <value>Dropdown Menu</value>
+    <comment>Header for the "dropdown menu" menu item (formerly "new tab menu"). This navigates to a page that lets you see and modify settings related to the app's dropdown menu (i.e. profile ordering, nested folders, dividers, etc.)</comment>
   </data>
   <data name="NewTabMenuEntry_Separator.Text" xml:space="preserve">
     <value>&lt;Separator&gt;</value>
@@ -2925,48 +2983,105 @@ In this context, "agent" refers to an AI agent (e.g. Copilot, Claude, Gemini), n
     <value>This setting is managed by your organization.</value>
     <comment>Text displayed when a setting is controlled by Group Policy (GPO). Standard Windows policy notice wording.</comment>
   </data>
-  <data name="AIAgents_HooksInstallingSummary" xml:space="preserve">
-    <value>Installing hooks...</value>
-    <comment>Status summary shown while installing agent session tracking hooks. {Locked="hooks"}</comment>
+  <data name="AIAgents_CustomModels.Header" xml:space="preserve">
+    <value>Custom endpoint or local model</value>
+    <comment>Section header for user-configured remote endpoints or locally hosted models.</comment>
   </data>
-  <data name="AIAgents_HooksRemovingCopilotSummary" xml:space="preserve">
-    <value>Removing Copilot hooks...</value>
-    <comment>Status summary shown while removing agent session tracking hooks for Copilot. {Locked="Copilot","hooks"}</comment>
+  <data name="AIAgents_CustomModels.HelpText" xml:space="preserve">
+    <value>Point an agent at your own OpenAI-compatible endpoint. </value>
+    <comment>{Locked="OpenAI"} Caption under the custom endpoint section title. Include any locale-appropriate spacing before the inline AIAgents_CustomModelsLearnMore hyperlink at the end of this value.</comment>
   </data>
-  <data name="AIAgents_HooksRemovingClaudeSummary" xml:space="preserve">
-    <value>Removing Claude hooks...</value>
-    <comment>Status summary shown while removing agent session tracking hooks for Claude. {Locked="Claude","hooks"}</comment>
+  <data name="AIAgents_CustomModelsLearnMore" xml:space="preserve">
+    <value>Learn more</value>
+    <comment>Inline hyperlink text that follows AIAgents_CustomModels.HelpText and opens documentation about custom providers.</comment>
   </data>
-  <data name="AIAgents_HooksRemovingGeminiSummary" xml:space="preserve">
-    <value>Removing Gemini hooks...</value>
-    <comment>Status summary shown while removing agent session tracking hooks for Gemini. {Locked="Gemini","hooks"}</comment>
+  <data name="AIAgents_CustomProviderUnsupportedForAgent" xml:space="preserve">
+    <value>{0} does not support custom OpenAI-compatible Chat Completions providers. Saved providers remain available when you switch to GitHub Copilot or OpenCode.</value>
+    <comment>{Locked="OpenAI","Chat Completions","GitHub Copilot","OpenCode"} {0} is replaced with the current AI agent display name. Explains that saved providers remain available for supported agents.</comment>
   </data>
-  <data name="AIAgents_HooksRemovingCodexSummary" xml:space="preserve">
-    <value>Removing Codex hooks...</value>
-    <comment>Status summary shown while removing agent session tracking hooks for Codex. {Locked="Codex","hooks"}</comment>
+  <data name="AIAgents_CustomProviderApiKeyMissing.Text" xml:space="preserve">
+    <value>API key missing. Remove and add this provider again.</value>
+    <comment>Inline error below a cloud BYOK provider when its saved Windows Credential Manager API key is missing. {Locked="API","BYOK"}</comment>
   </data>
-  <data name="AIAgents_CodexTrustHint.Text" xml:space="preserve">
-    <value>After installing, run /hooks in Codex and approve to trust the new event handlers.</value>
-    <comment>One-line reminder shown under the Codex CLI row in the Agent Hooks section. Codex requires per-command trust before hook handlers run; users must execute /hooks inside Codex and approve. {Locked="/hooks","Codex"}</comment>
+  <data name="AIAgents_CustomProviderCredentialRemovalFailed" xml:space="preserve">
+    <value>Couldn't remove the saved API key from Windows Credential Manager. Remove the Generic Credential named "{0}" manually, then try again.</value>
+    <comment>Error shown when Windows Credential Manager fails to delete a saved BYOK provider key. {0} is replaced with the exact Generic Credential target so the user can remove it manually. {Locked="API","BYOK","{0}"}</comment>
   </data>
-  <data name="AIAgents_HooksLocateWtaFailedSummary" xml:space="preserve">
-    <value>Failed: could not locate wta.exe</value>
-    <comment>Failure summary shown when the Settings UI cannot find the WTA helper executable. {Locked="wta.exe"}</comment>
+  <data name="AIAgents_CustomProviderRemove.Content" xml:space="preserve">
+    <value>Remove</value>
+    <comment>Button that removes a custom model provider.</comment>
   </data>
-  <data name="AIAgents_HooksRemovedSummary" xml:space="preserve">
-    <value>Hooks removed. Restart any open agents to drop the previous hooks.</value>
-    <comment>Success summary shown after removing agent session tracking hooks. {Locked="Hooks","hooks"}</comment>
+  <data name="AIAgents_CustomProviderAddHeader.Text" xml:space="preserve">
+    <value>Add custom endpoint</value>
+    <comment>Heading above the form for adding a custom provider endpoint.</comment>
   </data>
-  <data name="AIAgents_HooksInstalledSummary" xml:space="preserve">
-    <value>Hooks installed. Restart any open agents to pick up the new hooks.</value>
-    <comment>Success summary shown after installing agent session tracking hooks. {Locked="Hooks","hooks"}</comment>
+  <data name="AIAgents_CustomProviderBaseUrl.Header" xml:space="preserve">
+    <value>Base URL</value>
+    <comment>Header for the custom provider endpoint input. {Locked="URL"}</comment>
   </data>
-  <data name="AIAgents_HooksRemovalFailedSummary" xml:space="preserve">
-    <value>Hook removal failed. Check %LOCALAPPDATA%\IntelligentTerminal\logs\ for details.</value>
-    <comment>Failure summary shown when removing agent session tracking hooks fails. {Locked="Hook","%LOCALAPPDATA%","IntelligentTerminal","logs"}</comment>
+  <data name="AIAgents_CustomProviderBaseUrl.PlaceholderText" xml:space="preserve">
+    <value>https://api.example.com/v1</value>
+    <comment>{Locked="https://api.example.com/v1"} Example of a valid OpenAI-compatible API root shown inside the custom provider endpoint input.</comment>
   </data>
-  <data name="AIAgents_HooksInstallationFailedSummary" xml:space="preserve">
-    <value>Hooks installation failed. Check %LOCALAPPDATA%\IntelligentTerminal\logs\wta-install-hooks.log for details.</value>
-    <comment>Failure summary shown when installing agent session tracking hooks fails. {Locked="Hooks","%LOCALAPPDATA%","IntelligentTerminal","logs","wta-install-hooks.log"}</comment>
+  <data name="AIAgents_CustomProviderBaseUrlHint.Text" xml:space="preserve">
+    <value>Include the OpenAI-compatible root, for example https://api.openai.com/v1 or https://api.together.xyz/v1.</value>
+    <comment>{Locked="OpenAI","https://api.openai.com/v1","https://api.together.xyz/v1"} Hint below the custom provider endpoint input.</comment>
+  </data>
+  <data name="AIAgents_CustomModelId.Header" xml:space="preserve">
+    <value>Model ID</value>
+    <comment>Header for the custom provider model identifier input. {Locked="ID"}</comment>
+  </data>
+  <data name="AIAgents_CustomModelId.PlaceholderText" xml:space="preserve">
+    <value>gpt-4o</value>
+    <comment>{Locked="gpt-4o"} Example of a valid provider model identifier shown inside the custom model ID input.</comment>
+  </data>
+  <data name="AIAgents_CustomModelIdHint.Text" xml:space="preserve">
+    <value>The model name your endpoint expects, exactly as the provider writes it.</value>
+    <comment>Hint below the custom model ID input.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderApiKey.Header" xml:space="preserve">
+    <value>API key (optional)</value>
+    <comment>Header for the optional custom provider credential input. {Locked="API"}</comment>
+  </data>
+  <data name="AIAgents_CustomProviderApiKey.PlaceholderText" xml:space="preserve">
+    <value>sk-...</value>
+    <comment>{Locked="sk-..."} Example API key format shown inside the optional custom provider credential input.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderApiKeyHint.Text" xml:space="preserve">
+    <value>Leave blank if your endpoint does not need auth. Stored in Windows Credential Manager.</value>
+    <comment>{Locked="API"} Hint below the optional custom provider credential input. Use the established localized product name for Windows Credential Manager.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderAdd.Content" xml:space="preserve">
+    <value>Add endpoint</value>
+    <comment>Button in the final custom provider row that reveals the fields for adding another endpoint.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderSave.Content" xml:space="preserve">
+    <value>Add and Select</value>
+    <comment>Button that adds a custom provider model and selects it as the current model.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderSaveHint.Text" xml:space="preserve">
+    <value>This will add the model and select it as the current model</value>
+    <comment>Supporting text beside the button that adds and selects a custom provider model.</comment>
+  </data>
+  <data name="AIAgents_CustomProviderCancel.Content" xml:space="preserve">
+    <value>Cancel</value>
+    <comment>Button that cancels adding a provider and restores the Add endpoint row.</comment>
+  </data>
+  <data name="AIAgents_BYOKModelDisplayName" xml:space="preserve">
+    <value>{} (BYOK)</value>
+    <comment>{Locked="{}","BYOK"} {} is replaced with the provider-specific model identifier.</comment>
+  </data>
+  <data name="AIAgents_OpenAICompatibleModelDescription" xml:space="preserve">
+    <value>{} | {} | OpenAI-compatible</value>
+    <comment>{Locked="{}","OpenAI"} The first {} is replaced with the provider name; the second is replaced with its location.</comment>
+  </data>
+  <data name="AIAgents_YoloGeminiInfo.Message" xml:space="preserve"><value>Automatic approval with Gemini is restricted to trusted workspaces</value><comment>{Locked="Gemini"} Single-line InfoBar message shown on the AI Agents settings page when automatic approval is on and the selected default provider is Gemini. Gemini restricts automatic approval to trusted workspaces.</comment></data>
+  <data name="AIAgents_CustomAgentRemove.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Remove</value>
+    <comment>Accessible name for the X button that removes a custom agent from the agent list.</comment>
+  </data>
+  <data name="AIAgents_CustomAgentRemove.[using:Windows.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>Remove</value>
+    <comment>Tooltip for the X button that removes a custom agent from the agent list.</comment>
   </data>
 </root>

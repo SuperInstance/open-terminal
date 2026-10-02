@@ -8,6 +8,7 @@
                   xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
                   xmlns:local="using:TerminalApp"
                   xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+                  xmlns:mtu="using:Microsoft.Terminal.UI"
                   xmlns:mux="using:Microsoft.UI.Xaml.Controls"
                   Background="{ThemeResource TabViewBackground}"
                   mc:Ignorable="d">
@@ -24,6 +25,14 @@
         tab row.
     -->
 
+    <!--
+        PROTOTYPE — see investigation-vertical-tabs.md. TabView (horizontal) and
+        TabStrip (vertical) coexist; only one is visible at a time, driven by
+        TabRowControl.IsVerticalLayout. Wrapping in a Grid preserves TabView's
+        VerticalAlignment="Bottom" behavior.
+    -->
+    <Grid>
+
     <mux:TabView x:Name="TabView"
                  VerticalAlignment="Bottom"
                  HorizontalContentAlignment="Stretch"
@@ -35,18 +44,51 @@
                  TabWidthMode="Equal">
 
         <mux:TabView.TabStripHeader>
-            <!--  EA18 is the "Shield" glyph  -->
-            <FontIcon x:Uid="ElevationShield"
-                      Margin="9,4,0,4"
-                      FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                      FontSize="16"
-                      Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}"
-                      Glyph="&#xEA18;"
-                      Visibility="{x:Bind ShowElevationShield, Mode=OneWay}" />
+            <StackPanel x:Name="HorizontalChromeHeader"
+                        Orientation="Horizontal">
+                <!--  EA18 is the "Shield" glyph  -->
+                <FontIcon x:Name="ElevationShieldIcon"
+                          x:Uid="ElevationShield"
+                          Margin="9,4,0,4"
+                          FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                          FontSize="16"
+                          Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}"
+                          Glyph="&#xEA18;"
+                          Visibility="{x:Bind ShowElevationShield, Mode=OneWay}" />
+
+                <!--  Keep this button collapsed regardless of showWorkspacesButton until the workspace feature is generally available.  -->
+                <Button x:Name="WorkspaceDropdown"
+                        x:Uid="WorkspaceDropdown"
+                        Margin="4,0,0,4"
+                        Padding="8,0,0,0"
+                        VerticalAlignment="Stretch"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Visibility="Collapsed">
+                    <Button.Content>
+                        <StackPanel Orientation="Horizontal"
+                                    Spacing="8">
+                            <!--  EE40 is the "TaskViewSettings" glyph  -->
+                            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                      FontSize="12"
+                                      Glyph="&#xEE40;" />
+                            <TextBlock x:Name="WorkspaceNameText"
+                                       Padding="0,0,8,0"
+                                       VerticalAlignment="Center"
+                                       FontSize="12"
+                                       Text="{x:Bind WorkspaceName, Mode=OneWay}"
+                                       Visibility="{x:Bind mtu:Converters.StringNotEmptyToVisibility(WorkspaceName), Mode=OneWay}" />
+                        </StackPanel>
+                    </Button.Content>
+                    <Button.Flyout>
+                        <MenuFlyout x:Name="WorkspaceFlyout" />
+                    </Button.Flyout>
+                </Button>
+            </StackPanel>
         </mux:TabView.TabStripHeader>
 
         <mux:TabView.TabStripFooter>
-            <Grid>
+            <Grid x:Name="HorizontalChromeFooter">
                 <!--  Remove this border after WinUI 2.8  -->
                 <Border Height="1"
                         VerticalAlignment="Bottom"
@@ -136,5 +178,17 @@
         </mux:TabView.TabStripFooter>
 
     </mux:TabView>
+
+    <!--
+        PROTOTYPE — visibility flipped by TabRowControl.IsVerticalLayout. The
+        complete vertical chrome uses the titlebar when available, with
+        TabStrip.TopChromeContent as its no-titlebar fallback.
+    -->
+    <local:TabStrip x:Name="TabStrip"
+                    HorizontalAlignment="Stretch"
+                    VerticalAlignment="Stretch"
+                    Visibility="Collapsed" />
+
+    </Grid>
 
 </ContentPresenter>

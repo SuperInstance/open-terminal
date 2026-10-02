@@ -20,6 +20,8 @@
     "showTabsInTitlebar": true,
     "showTerminalTitleInTitlebar": true,
     "tabWidthMode": "equal",
+    "tabLayout": "horizontal",
+    "tabLayoutVerticalWidth": 220,
     "tabSwitcherMode": "inOrder",
     "showAdminShield": true,
 
@@ -43,9 +45,13 @@
             "name": "Agent Pane",
             "hidden": true,
             "padding": "8, 8, 8, 0",
-            "background": "#0c0c0c",
             "scrollbarState": "hidden",
-            "closeOnExit": "always",
+            // `graceful`, not `always`: a helper that exits cleanly takes its
+            // pane with it, but one that was killed leaves the pane behind
+            // exactly like every other profile. That is what lets a saved
+            // layout still describe the agent pane when wta died first — a
+            // system shutdown kills wta while Terminal's own save is queued.
+            "closeOnExit": "graceful",
             "suppressApplicationTitle": true
         },
         {
@@ -530,6 +536,7 @@
         { "command": "closeWindow", "id": "Terminal.CloseWindow" },
         { "command": "toggleFullscreen", "id": "Terminal.ToggleFullscreen" },
         { "command": "toggleFocusMode", "id": "Terminal.ToggleFocusMode" },
+        { "command": "toggleSidebar", "id": "Terminal.ToggleSidebar" },
         { "command": "toggleAlwaysOnTop", "id": "Terminal.ToggleAlwaysOnTop" },
         { "command": "openNewTabDropdown", "id": "Terminal.OpenNewTabDropdown" },
         { "command": { "action": "openSettings", "target": "settingsUI" }, "id": "Terminal.OpenSettingsUI" },
@@ -563,6 +570,8 @@
         { "command": "triggerAutofix", "id": "Terminal.TriggerAutofix" },
         { "command": "openBackgroundAgent", "id": "Terminal.OpenBackgroundAgent" },
         { "command": "bugReport", "id": "Terminal.BugReport" },
+        { "command": "workspaces", "id": "Terminal.Workspaces" },
+
         // Tab Management
         // "command": "closeTab" is unbound by default.
         //   The closeTab command closes a tab without confirmation, even if it has multiple panes.
@@ -757,6 +766,7 @@
         { "keys": "ctrl+shift+period", "id": "Terminal.OpenAgentPane" },
         { "keys": "ctrl+shift+i", "id": "Terminal.FocusAgentPane" },
         { "keys": "ctrl+shift+/", "id": "Terminal.OpenAgentSessions" },
+        { "keys": "ctrl+shift+s", "id": "Terminal.ToggleSidebar" },
         { "keys": "ctrl+alt+period", "id": "Terminal.TriggerAutofix" },
 
         // Tab Management

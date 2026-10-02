@@ -1,22 +1,38 @@
+pub(crate) mod action_panel;
+mod agent_popup;
+pub mod agents_view;
 mod auth;
 pub(crate) mod card;
 pub(crate) mod chat;
+pub(crate) mod command_format;
 mod command_popup;
+mod config_popup;
 mod debug_panel;
 mod input;
 mod layout;
+mod line_diff;
+mod model_popup;
 mod permission;
+mod popup;
 mod recommendations;
-pub mod agents_view;
 pub mod setup;
 pub mod shimmer;
+mod tool_presentation;
+mod user_input;
 
+// SuperInstance ensign additions (math-tools feature). Additive: upstream does
+// not define these modules, so they are re-applied on top of upstream's exports.
 #[cfg(feature = "math-tools")]
 pub mod entropy_bar;
-
-pub use shimmer::CYCLE_FRAMES as ACTIVITY_CYCLE_FRAMES;
-pub use command_popup::PopupState;
-pub use layout::render;
-
 #[cfg(feature = "math-tools")]
 pub mod agent_disagreement;
+
+pub use agent_popup::AgentPopupState;
+pub use command_popup::{CommandCandidate, PopupCandidates, PopupState};
+pub use config_popup::ConfigPopupState;
+#[cfg(test)]
+pub(crate) use input::input_height;
+pub(crate) use input::{adjacent_input_cursor, input_cursor_at};
+pub use layout::render;
+pub use model_popup::ModelPopupState;
+pub use shimmer::CYCLE_FRAMES as ACTIVITY_CYCLE_FRAMES;

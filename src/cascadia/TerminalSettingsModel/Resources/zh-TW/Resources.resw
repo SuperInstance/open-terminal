@@ -518,6 +518,13 @@
   <data name="ResetWindowNameCommandKey" xml:space="preserve">
     <value>重設視窗名稱</value>
   </data>
+  <data name="OpenWorkspaceCommandKey" xml:space="preserve">
+    <value>開啟工作區「{0}」</value>
+    <comment>{0} will be replaced with the workspace name</comment>
+  </data>
+  <data name="OpenWorkspaceDefaultCommandKey" xml:space="preserve">
+    <value>開啟工作區</value>
+  </data>
   <data name="OpenWindowRenamerCommandKey" xml:space="preserve">
     <value>重新命名視窗...</value>
   </data>
@@ -702,7 +709,7 @@
     <comment>When enabled, input will go to all panes in this tab simultaneously</comment>
   </data>
   <data name="RestartConnectionKey" xml:space="preserve">
-    <value>重新啟動連線</value>
+    <value>重新啟動工作模式</value>
   </data>
   <data name="OpenScratchpadKey" xml:space="preserve">
     <value>開啟聽寫面板</value>
@@ -739,6 +746,9 @@
   </data>
   <data name="OpenCWDCommandKey" xml:space="preserve">
     <value>開啟目前的工作目錄</value>
+  </data>
+  <data name="WorkspacesCommandKey" xml:space="preserve">
+    <value>工作區...</value>
   </data>
   <data name="CloseTab" xml:space="preserve">
     <value>關閉索引標籤</value>
@@ -978,6 +988,7 @@
   </data>
   <data name="ShowProtocolInfoCommandKey" xml:space="preserve"><value>顯示 Terminal Protocol 資訊</value><comment>{Locked="Terminal Protocol"}</comment></data>
   <data name="TogglePaneVisibilityCommandKey" xml:space="preserve"><value>切換窗格可見性</value></data>
+  <data name="ToggleSidebarCommandKey" xml:space="preserve"><value>切換側邊欄</value><comment>A command that shows or collapses the vertical tabs sidebar.</comment></data>
   <data name="OpenAgentPaneCommandKey" xml:space="preserve"><value>切換 AI 代理</value></data>
   <data name="FocusAgentPaneCommandKey" xml:space="preserve"><value>將焦點移至 AI 代理窗格</value></data>
   <data name="OpenAgentSessionsCommandKey" xml:space="preserve"><value>開啟 AI 代理工作階段清單</value></data>

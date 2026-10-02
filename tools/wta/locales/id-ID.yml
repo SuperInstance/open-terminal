@@ -1,9 +1,7 @@
 # Setup screen titles
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.title.first_run: "Selamat datang di Terminal Cerdas!"
 setup.title.agent_missing: "Agen AI tidak ditemukan"
 setup.title.agent_error: "Koneksi agen AI gagal"
-setup.title.switch_agent: "Ganti agen AI"
 setup.title.not_available: "Agen AI tidak tersedia"
 setup.title.sign_in: "Perlu masuk"
 
@@ -12,21 +10,24 @@ setup.subtitle.copilot_missing: "Agen AI \"%{agent}\" Anda belum diinstal. Ikuti
 setup.subtitle.agent_missing: "Agen AI \"%{agent}\" Anda belum diinstal. Silakan instal ulang secara manual, lalu coba lagi. Untuk mengganti agen AI, buka Terminal Cerdas Settings > Agent."
 setup.subtitle.copilot_auth: "Agen AI \"%{agent}\" Anda memerlukan autentikasi. Ikuti langkah-langkah di bawah untuk masuk. Untuk mengganti agen AI, buka Terminal Cerdas Settings > Agent."
 setup.subtitle.agent_auth: "Agen AI \"%{agent}\" Anda memerlukan autentikasi. Silakan masuk melalui agen AI, lalu pilih \"Saya sudah masuk\" di bawah. Untuk mengganti agen AI, buka Terminal Cerdas Settings > Agent."
+setup.subtitle.connection_failed: "Kami tidak dapat memulai %{agent}."
 
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.description.fre_line1: "Pilih CLI agen AI default yang ingin Anda gunakan di Terminal Cerdas. Anda dapat"
-setup.description.fre_line2: "membuka Settings untuk mengonfigurasi dan menyiapkan ruang kerja Anda."
 
 setup.option.install: "Instal %{agent}"
 setup.option.install_hint: "(Akan diinstal secara otomatis)"
 setup.option.signin: "Masuk ke %{agent}"
 setup.option.retry_detection: "Coba lagi"
 setup.option.retry_auth: "Saya sudah masuk — coba sambungkan kembali"
-setup.option.retry_connection: "Coba sambungkan kembali"
-setup.option.switch_to: "Beralih ke %{agent}"
+setup.option.retry_connection: "Coba sambungkan lagi"
 setup.status.installing: "Menginstal..."
+setup.status.installing_copilot_cli: "Menginstal GitHub Copilot CLI"
+setup.status.connecting_agent: "Menghubungkan ke %{agent}"
 setup.status.install_failed: "Instalasi gagal: "
 setup.status.installing_winget: " Menginstal melalui winget..."
+setup.error.install_start_failed: "Penginstal tidak dapat dimulai. Pilih \"Coba lagi\" untuk mencoba kembali."
+setup.error.install_timed_out: "Waktu penginstalan habis. Pilih \"Coba lagi\" sebelum memulai penginstalan lain."
+setup.error.install_detection_timed_out: "Penginstalan selesai, tetapi Copilot belum terlihat. Pilih \"Coba lagi\" untuk memeriksa kembali."
 
 # ── Auth flow (src/ui/auth.rs) ──────────────────────────────────────────────
 # {Locked="CLI"} - acronym, common usage across Microsoft localizations
@@ -35,17 +36,19 @@ auth.agent_selected_with_status: "CLI agen AI %{name} — "
 auth.checking_authentication: "  %{spinner} Memeriksa autentikasi..."
 auth.waiting_for_authorization: "  %{spinner} Menunggu otorisasi..."
 auth.code_copied_hint: "  Kode disalin ke papan klip — tempel di browser Anda."
-auth.sign_in_prompt: "Masuk untuk menggunakan agen AI Anda:"
+auth.device_code_prompt: "Kunjungi %{url} dan masukkan kode: %{code}"  # Copilot device-flow sign-in progress; %{url} is the verification URL, %{code} is the device code
 auth.card_connect: "  Sambungkan %{name} untuk mengaktifkan fitur agen AI"
-auth.button_sign_in_github: "[ Masuk dengan GitHub ]"  # {Locked="GitHub"}
-auth.button_sign_in_with: "[ Masuk dengan %{name} ]"
-auth.hint_footer: "  Tekan Enter untuk masuk, Esc untuk kembali"  # {Locked="Enter","Esc"}
+auth.enterprise_prompt: "  Enter untuk masuk · E untuk GitHub Enterprise · Esc untuk kembali"  # {Locked="Enter","E","Esc"}
+auth.enterprise_domain_label: "  Domain Enterprise: "
+auth.enterprise_hint_footer: "  Enter untuk masuk · Esc untuk menggunakan github.com"  # {Locked="Enter","Esc","github.com"}
+auth.login_failed_help_enterprise: "  Tekan Enter untuk mencoba lagi, atau Esc untuk menggunakan github.com. Penyebab umum: domain salah ketik atau tidak dapat dijangkau, kode kedaluwarsa, atau akun Anda tidak memiliki akses Copilot di host tersebut."  # {Locked="Enter","Esc","github.com","Copilot"}
+auth.login_failed_help_default: "  Tekan Enter untuk mencoba lagi, atau Esc untuk kembali."  # {Locked="Enter","Esc"}
 
 # ── Chat view (src/ui/chat.rs) ──────────────────────────────────────────────
 chat.activity_thinking: "Berpikir…"
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
 chat.welcome_title: "Selamat datang di Terminal Cerdas!"
-chat.welcome_disclaimer: "Terminal Cerdas menggunakan AI. Periksa kesalahan."
+chat.welcome_disclaimer: "Terminal Cerdas menggunakan AI."
 chat.plan_header: "Rencana:"
 chat.plan_marker_completed: "[x]"  # {Locked}
 chat.plan_marker_in_progress: "[>]"  # {Locked}
@@ -53,11 +56,24 @@ chat.plan_marker_pending: "[ ]"  # {Locked}
 chat.autofix_prompt_label: "Kegagalan perintah terbaru terdiagnosis otomatis"
 chat.turn_canceled: "(dibatalkan)"
 chat.turn_executed: "→ dijalankan: %{title}"
+# Label kategori alat persisten yang ditampilkan setelah penanda status dan sebelum subjek.
+chat.tool_kind.run: "Jalankan"
+chat.tool_kind.insert: "Sisipkan"
+chat.tool_kind.read: "Baca"
+chat.tool_kind.search: "Cari"
+chat.tool_kind.edit: "Edit"
+chat.tool_kind.delete: "Hapus"
+chat.tool_kind.move: "Pindahkan"
+chat.tool_kind.fetch: "Ambil"
+chat.tool_kind.think: "Pikirkan"
+chat.tool_kind.mode: "Mode"
+chat.tool_kind.other: "Alat"
 
 # ── Input placeholders (src/ui/input.rs) ────────────────────────────────────
 input.placeholder.connected: "Tanyakan apa saja, / untuk perintah.."  # {Locked="/"}
 input.placeholder.connecting: "menyambungkan..."
 input.placeholder.disconnected: "terputus"
+input.image_attachments: "📎 Gambar: %{items}"  # {Locked="📎","%{items}"}
 
 # ── Command popup (src/ui/command_popup.rs) ─────────────────────────────────
 # {Locked="/"} - slash-command prefix, must remain ASCII
@@ -93,9 +109,7 @@ permission.compact.prefix: "[!] "  # {Locked}
 permission.compact.hint: "[Y/N untuk menjawab · ubah ukuran untuk kartu penuh]"  # {Locked="Y/N"}
 
 # ── Agent status (src/agent_check.rs) ───────────────────────────────────────
-agent.status.not_installed_auto: "Belum diinstal — pilih untuk menginstal secara otomatis"
 agent.status.not_found: "Tidak ditemukan"
-agent.status.detected: "Terdeteksi"
 # {Locked="winget","GitHub.Copilot","GitHub","Copilot"} - tool names and command, must run verbatim
 agent.install.running_winget: "Menjalankan: winget install GitHub.Copilot"
 agent.install.launch_failed: "Gagal meluncurkan winget: %{error}"
@@ -106,8 +120,8 @@ agent.custom.auth_hint: "Pastikan %{name} sudah diinstal dan ada di PATH Anda." 
 
 # ── Agents view (src/ui/agents_view.rs) ─────────────────────────────────────
 agents.loading: "Memuat..."
-# {Locked="Enter","Esc","↑","↓"} - key combinations, do not translate
-agents.footer_hint: "(↑ ↓ untuk navigasi • Enter untuk membuka sesi • Esc untuk keluar)"
+# {Locked="Enter","Esc","F5","↑","↓","/"} - key combinations, do not translate
+agents.footer_hint: "(↑ ↓ untuk navigasi • Enter untuk membuka sesi • Esc untuk keluar • F5 untuk menyegarkan • / untuk mencari)"
 agents.status.active: "Aktif"
 agents.status.waiting_for_input: "Menunggu input"
 agents.status.error: "Kesalahan"
@@ -117,26 +131,47 @@ agents.status.idle: "Menganggur"
 layout.welcome_hint: "  (Ctrl+Shift+. untuk menampilkan/menyembunyikan panel agen AI • Ctrl+Shift+/ untuk menampilkan/menyembunyikan sesi agen AI)"  # {Locked="Ctrl+Shift+.","Ctrl+Shift+/"}
 
 # ── Connection state ────────────────────────────────────────────────────────
-connection.starting: "Memulai agen AI..."
+# Preparing the AI agent connection, including preflight and reuse of a cached agent.
+connection.starting: "Menyiapkan koneksi agen AI..."
 connection.reconnecting: "Menyambungkan kembali..."
+# Retiring old AI agent sessions for /restart, before the next connection phases.
+connection.restarting: "Memulai ulang agen AI..."
+# Connecting the pane to WTA's local coordinator process, not to an AI model.
+connection.coordinator: "Menyambungkan ke koordinator lokal..."
+# Initializing the helper/coordinator connection, including local preparation and AI agent initialization.
+connection.initializing: "Menginisialisasi koneksi agen AI..."
+# Refreshing the user's authentication with the AI agent after login; not verifying the agent's identity.
+connection.authenticating: "Mengautentikasi pengguna dengan agen AI..."
+# Reading the coordinator's registry snapshot, including existing history; not fetching history from the AI agent.
+connection.syncing_sessions: "Membaca daftar sesi..."
+# Creating the AI agent session, including local registration; internal agent progress is unknown.
+connection.creating_session: "Membuat sesi agen AI..."
+# Applying the requested AI model before the connection is ready. Preserve %{model}.
+connection.selecting_model: "Mengatur model sesi: %{model}..."  # {Locked="%{model}"}
+# Activity row while connecting to restore a conversation. Keep the actual stage first so narrow panes show it; session_id is shortened to eight characters.
+connection.resuming_stage: "%{stage} (melanjutkan %{session_id})"  # {Locked="%{stage}","%{session_id}"}
 connection.connecting_activity: "Menyambungkan ke agen AI…"
 connection.lost: "Koneksi ke agen AI terputus. Ketik /restart untuk menyambungkan kembali."  # {Locked="/restart"}
 
 # ── System messages (src/app.rs) ────────────────────────────────────────────
+system.close_pane_hint: "Tekan Ctrl+C lagi untuk menutup panel"  # {Locked="Ctrl+C"}
+system.selection_copied: "Disalin"  # Brief hint shown after selected terminal text is copied
 system.cancelled: "Dibatalkan."
 system.no_prompt_in_flight: "Tidak ada prompt yang sedang berjalan."
 system.authentication_failed: "Autentikasi gagal"
-system.command_copied_retry: "Perintah disalin — jalankan di terminal lain, lalu tekan Enter untuk mencoba lagi"  # {Locked="Enter"}
 system.stopped_max_tokens: "Respons terpotong setelah mencapai batas keluaran model."
 system.stopped_max_turn_requests: "Agen berhenti setelah mencapai batas permintaannya untuk giliran ini."
 system.stopped_refusal: "Agen menolak untuk melanjutkan permintaan ini."
 system.agent_busy: "Agen sedang sibuk di tab ini — tunggu hingga prompt saat ini selesai."
+system.image_clipboard_empty: "Tidak ada gambar di clipboard untuk ditempel."
+system.image_not_supported: "Agen ini tidak mendukung input gambar."
+system.image_pasted: "Gambar dilampirkan (%{label}). Tekan Enter untuk mengirim."  # {Locked="%{label}","Enter"}
 system.resuming_session: "Melanjutkan sesi %{session_id}..."
 system.unknown_command: "Perintah tidak dikenal \"%{command}\" — dikirim sebagai prompt. Ketik /help untuk daftar."  # {Locked="/help"}
 system.busy_use_stop: "Tunggu hingga prompt saat ini selesai, atau jalankan /stop terlebih dahulu."  # {Locked="/stop"}
 system.cannot_focus_session: "Tidak dapat memfokuskan sesi %{session_id}: sesi tampak aktif, tetapi GUID panel belum terikat. Coba lagi sebentar lagi."
-system.cannot_resume_no_load_session: "Tidak dapat melanjutkan di panel agen: %{agent} tidak mengiklankan kapabilitas ACP `loadSession`. Tekan Enter (tanpa Shift) untuk melanjutkan di panel terminal baru sebagai gantinya."  # {Locked="ACP","loadSession","Enter","Shift"}
-system.cannot_resume_no_resume_flag: "Tidak dapat melanjutkan sesi %{agent}: agen ini tidak memiliki flag bergaya `--resume`. Tekan Shift+Enter untuk mencoba melanjutkan di dalam panel agen melalui ACP sebagai gantinya."  # {Locked="--resume","Shift","Enter","ACP"}
+system.cannot_resume_no_load_session: "Tidak dapat melanjutkan di panel agen: %{agent} tidak mengiklankan kapabilitas ACP `loadSession`."  # {Locked="ACP","loadSession"}
+system.cannot_resume_no_resume_flag: "Tidak dapat melanjutkan sesi %{agent}: agen ini tidak memiliki flag bergaya `--resume`."  # {Locked="--resume"}
 system.cannot_resume_unknown_agent: "Tidak dapat melanjutkan sesi %{session_id}: agen sumbernya tidak dikenal oleh build ini."
 system.cannot_resume_phantom_via_flag: "Tidak dapat melanjutkan sesi %{agent} %{session_id}: sesi ini dimulai tetapi tidak pernah mengumpulkan percakapan apa pun, sehingga %{agent} sendiri akan menolak pelanjutan. Menghapus baris."
 system.cannot_resume_phantom_via_load: "Tidak dapat melanjutkan sesi %{agent} %{session_id}: sesi ini dimulai tetapi tidak pernah mengumpulkan percakapan apa pun, sehingga %{agent} akan menolak pemuatan. Menghapus baris."
@@ -178,7 +213,7 @@ hooks.marketplace_path_stale: "⚠ jalur marketplace sudah usang"
 hooks.installed_but_disabled: "⚠ terinstal tetapi dinonaktifkan"
 hooks.not_installed: "✗ belum terinstal"
 hooks.uninstall_skipped: "dilewati (CLI tidak ada di PATH)"
-hooks.install_attempted: "Instalasi wt-agent-hooks dicoba (idempotent). Jalankan `wta hooks status` untuk memeriksa hasil. Log: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
+hooks.install_succeeded: "✓ wt-agent-hooks terinstal untuk %{clis}"
 
 # ── Relative time and date formatting ─────────────────────────────────────
 time.just_now: "baru saja"
@@ -189,5 +224,46 @@ time.hours_other: "%{count} jam yang lalu"
 time.day_singular: "%{count} hari yang lalu"
 time.days_other: "%{count} hari yang lalu"
 
+# ── Slash-command summaries (src/commands.rs) ─────────────────────────────
+# Command names (/help, /clear, etc.) stay English; descriptions translate.
+# {Locked="ACP","Ctrl+Shift+/"} - protocol name and shortcut, do not translate
+commands.help.summary: "Tampilkan daftar perintah ini"
+commands.clear.summary: "Hapus scrollback obrolan (mempertahankan sesi)"
+commands.new.summary: "Mulai sesi ACP baru (menghapus riwayat)"  # {Locked="ACP"}
+commands.fix.summary: "Diagnosis terminal aktif dan sarankan perbaikan (/fix <hint>)"  # {Locked="/fix","<hint>"}
+commands.restart.summary: "Mulai ulang agen"
+commands.stop.summary: "Batalkan prompt yang sedang berjalan"
+commands.sessions.summary: "Buka pemilih sesi historis (Ctrl+Shift+/)"  # {Locked="Ctrl+Shift+/"}
+commands.agent.summary: "Pilih agent untuk tab ini (/agent <id> untuk beralih langsung)"  # {Locked="/agent","<id>"}
+
 # ── Eksekusi rekomendasi (src/coordinator.rs) ───────────────────────────
 system.choice_execution_failed: "Pilihan %{choice} gagal: %{error}"
+
+# ── Agent picker (src/ui/agent_popup.rs) ────────────────────────────────────
+# {Locked="↑","↓","Enter","Esc"} - key names, do not translate
+agent_picker.title: "Pilih agent (↑ ↓ • Enter • Esc)"  # Agent means an AI coding agent
+# Shown when no policy-allowed AI agent CLI is installed on the machine.
+system.no_agents: "Tidak ada CLI agen yang tersedia ditemukan di mesin ini."  # {Locked="CLI"}
+# {agent} is the unrecognized text the user typed after /agent.
+system.agent_unknown: "Agent tidak dikenal atau tidak tersedia %{agent} — ketik /agent untuk melihat daftar yang tersedia."  # {Locked="/agent"}
+# Shown only when /agent is used outside a Windows Terminal-owned agent pane.
+system.agent_switch_unavailable: "Peralihan agen tidak tersedia di luar tab Windows Terminal."
+
+# ── Model picker (/model) ───────────────────────────────────────────────────
+commands.model.summary: "Pilih model untuk panel ini (/model <id> untuk beralih langsung)"  # {Locked="/model","<id>"}
+commands.config.summary: "Konfigurasikan sesi agent ini"  # Agent means an AI coding agent; shown for the /config command. {Locked="/config"}
+commands.move.summary: "Pindahkan panel agen tab ini (/move <position>)"  # {Locked="/move","<position>"}
+model_picker.title: "Pilih model (↑ ↓ • Enter • Esc)"  # {Locked="↑","↓","Enter","Esc"}
+system.no_models: "Agen yang terhubung tidak mengiklankan model apa pun yang dapat dipilih."
+system.model_set: "Model untuk panel ini diatur ke %{model}."  # {Locked="%{model}"}
+
+# ── Session configuration picker (src/ui/config_popup.rs) ───────────────────
+# {Locked="↑","↓","Enter","Esc","ACP"} - key names and protocol name
+config_picker.title: "Konfigurasi sesi (↑ ↓ • Enter • Esc)"
+# Shown when /config is used but the AI agent exposed no ACP select options.
+system.no_config_options: "Agent yang terhubung tidak mengiklankan opsi sesi apa pun yang dapat dikonfigurasi."
+# {option} is an Agent-provided option name; {error} is the ACP error.
+system.config_update_failed: "Gagal memperbarui %{option}: %{error}"
+system.yolo_disable_pending: "penyedia agen AI belum mengonfirmasi status sesi tanpa hak istimewa yang diperlukan"  # Shown after the localized failure prefix while prompts remain blocked until the AI agent provider confirms that its privileged session mode is off. Provider means an AI agent provider, not a network provider.
+system.provider_command_blocked_by_policy: "%{command}: Persetujuan otomatis dinonaktifkan oleh kebijakan organisasi Anda."  # {Locked="%{command}"} Shown when AllowAutomaticApproval blocks a provider-advertised privileged command.
+system.model_unknown: "Model tidak dikenal %{model} — ketik /model untuk melihat daftar yang tersedia."  # {Locked="%{model}","/model"}

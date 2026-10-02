@@ -2,63 +2,79 @@
 //!
 //! Basic functions (atomic, single-responsibility):
 //!   - `find_exe`          — find agent executable on PATH (registry-fresh)
-//!   - `has_credential`    — fast credential check (cmdkey / config files)
-//!   - `run_auth_command`  — run auth_check_command from registry
 //!   - `build_login_cmd`   — build login command with full path
 //!   - `install`           — install agent via winget (async, streaming logs)
 //!   - `refresh_path`      — re-read PATH from Windows registry
 //!
 //! Composite functions (combine basics):
-//!   - `check_agent`       — find_exe + has_credential → AgentStatus
-//!   - `check_all_agents`  — check_agent for all known agents
-//!   - `ensure_installed`  — find_exe → install if missing → refresh_path → find_exe
+//!   - `check_agent`       — find_exe → AgentStatus
 
-use crate::agent_registry::{self, AgentProfile, KNOWN_AGENTS};
+use crate::agent_registry;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+
+const WSL_AGENT_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const WSL_AGENT_PROBE_ATTEMPTS: usize = 3;
+const CLAUDE_CODE_EXECUTABLE: &str = "CLAUDE_CODE_EXECUTABLE";
+const CODEX_PATH: &str = "CODEX_PATH";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 // ─── Data types ─────────────────────────────────────────────────────────────
 
-/// Status of a single agent, combining CLI detection + credential check.
+/// Status of a single agent, combining CLI detection and setup hints.
 #[derive(Debug, Clone)]
 pub struct AgentStatus {
     pub id: String,
     pub display_name: String,
     pub cli_found: bool,
     pub cli_path: Option<String>,
-    pub has_credential: bool,
     pub install_hint: String,
     pub auth_hint: String,
+    pub auto_installable: bool,
 }
 
 impl AgentStatus {
-    /// User-facing status string for agent list.
-    pub fn status_label(&self) -> String {
-        if !self.cli_found {
-            if self.id == "copilot" {
-                t!("agent.status.not_installed_auto").into_owned()
-            } else {
-                t!("agent.status.not_found").into_owned()
-            }
-        } else {
-            t!("agent.status.detected").into_owned()
-        }
-    }
-
     /// Whether this agent can be auto-installed (e.g. via winget).
     pub fn can_auto_install(&self) -> bool {
-        self.id == "copilot"
+        self.auto_installable
     }
 }
 
 // ─── Basic functions ────────────────────────────────────────────────────────
 
-/// Find the agent executable using a fresh PATH read from the Windows registry.
-/// Returns the full path if found, None otherwise.
+/// Find the executable used by an agent. Claude's ACP adapter needs the native
+/// binary rather than the npm shim used to launch the interactive CLI.
 pub fn find_exe(agent_id: &str) -> Option<String> {
     let profile = agent_registry::lookup_profile_by_id(agent_id);
+    // SuperInstance: spawn_path() reads the Windows registry and is
+    // Windows-only; off Windows fall back to the inherited process PATH.
+    // (Upstream resolution order preserved on Windows.)
     #[cfg(windows)]
-    let path_var = fresh_path();
+    let path_var = spawn_path()
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("PATH"))
+        .unwrap_or_default();
     #[cfg(not(windows))]
-    let path_var = std::env::var("PATH").unwrap_or_default();
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+
+    if profile.id == agent_registry::CLAUDE_AGENT_ID {
+        return find_claude_executable_in_path(
+            &path_var,
+            std::env::var_os(CLAUDE_CODE_EXECUTABLE).as_deref(),
+            claude_sdk_platform_package(std::env::consts::ARCH),
+            Path::is_file,
+        )
+        .map(|path| path.to_string_lossy().into_owned());
+    }
+    if profile.id == agent_registry::CODEX_AGENT_ID {
+        if let Some(path) =
+            find_configured_executable(std::env::var_os(CODEX_PATH).as_deref(), Path::is_file)
+        {
+            return Some(path.to_string_lossy().into_owned());
+        }
+    }
+
     let resolved = agent_registry::resolve_bare_agent_name(agent_id);
 
     // Try resolved name first (e.g. "copilot.exe")
@@ -88,116 +104,318 @@ pub fn find_exe(agent_id: &str) -> Option<String> {
     None
 }
 
-/// Fast synchronous credential check. Returns true if a credential is
-/// likely present. Used to decide: connect directly vs show auth screen.
-///
-/// Strategy:
-///   1. If `auth_check_command` is defined → run it (exit 0 = true)
-///   2. Else → agent-specific fast check (cmdkey / config files)
-pub fn has_credential(agent_id: &str) -> bool {
-    let profile = agent_registry::lookup_profile_by_id(agent_id);
-
-    // Strategy 1: auth_check_command
-    if let Some(result) = run_auth_command(profile.auth_check_command) {
-        return result;
+fn find_claude_executable_in_path(
+    path_var: &OsStr,
+    configured_executable: Option<&OsStr>,
+    sdk_platform_package: Option<&str>,
+    is_file: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    if let Some(path) = find_configured_native_executable(configured_executable, &is_file) {
+        return Some(path);
     }
 
-    // Strategy 2: agent-specific fast check
-    let home = std::env::var("USERPROFILE").unwrap_or_default();
-    let home = std::path::PathBuf::from(&home);
+    for directory in std::env::split_paths(path_var) {
+        let mut candidates = vec![
+            directory.join("claude.exe"),
+            directory.join(r"node_modules\@anthropic-ai\claude-code\bin\claude.exe"),
+        ];
+        if let Some(package) = sdk_platform_package {
+            candidates.push(
+                directory
+                    .join("node_modules")
+                    .join("@anthropic-ai")
+                    .join(package)
+                    .join("claude.exe"),
+            );
+            candidates.push(
+                directory
+                    .join("node_modules")
+                    .join("@anthropic-ai")
+                    .join("claude-code")
+                    .join("node_modules")
+                    .join("@anthropic-ai")
+                    .join(package)
+                    .join("claude.exe"),
+            );
+        }
+        if let Some(path) = candidates.into_iter().find(|path| is_file(path)) {
+            return Some(path);
+        }
+    }
+    None
+}
 
-    match agent_id {
-        "copilot" => {
-            std::process::Command::new("cmd")
-                .args(["/C", "cmdkey /list | findstr /i copilot-cli"])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .output()
-                .map(|o| !o.stdout.is_empty())
-                .unwrap_or(false)
-        }
-        "claude" => {
-            let path = home.join(".claude").join(".credentials.json");
-            let exists = path.exists();
-            tracing::debug!(target: "agent_check", path = %path.display(), exists, "claude credential check");
-            exists
-        }
-        "codex" => {
-            std::env::var("OPENAI_API_KEY").is_ok() || home.join(".codex").exists()
-        }
-        "gemini" => {
-            // Check GEMINI_API_KEY or GOOGLE_API_KEY env var, or OAuth token in ~/.gemini/
-            std::env::var("GEMINI_API_KEY").is_ok()
-                || std::env::var("GOOGLE_API_KEY").is_ok()
-                || home.join(".gemini").exists()
-        }
-        _ => false,
+fn claude_sdk_platform_package(arch: &str) -> Option<&'static str> {
+    match arch {
+        "x86_64" => Some("claude-agent-sdk-win32-x64"),
+        "aarch64" => Some("claude-agent-sdk-win32-arm64"),
+        _ => None,
     }
 }
 
-/// Run an auth_check_command from the agent registry.
-/// Returns Some(true) if authenticated, Some(false) if not, None if command is empty.
-pub fn run_auth_command(command: &str) -> Option<bool> {
-    if command.is_empty() {
+fn find_configured_native_executable(
+    configured_executable: Option<&OsStr>,
+    is_file: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let path = PathBuf::from(configured_executable?);
+    let is_exe = path
+        .extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"));
+    (is_exe && is_file(&path)).then_some(path)
+}
+
+fn find_configured_executable(
+    configured_executable: Option<&OsStr>,
+    is_file: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let path = PathBuf::from(configured_executable?);
+    is_file(&path).then_some(path)
+}
+
+/// Resolve a native Linux executable inside one WSL distro.
+///
+/// A login shell is required for npm-global, snap, and `~/.local/bin`
+/// installations. Windows executables leaked through WSL's appended Windows
+/// PATH are rejected so a source is never advertised when it cannot run with
+/// Linux dependencies.
+pub async fn find_wsl_exe(distro: &str, executable: &str) -> Option<String> {
+    if distro.trim().is_empty() || executable.trim().is_empty() {
         return None;
     }
 
-    let parts: Vec<&str> = command.split_whitespace().collect();
-    let (program, args) = match parts.split_first() {
-        Some((prog, args)) => (*prog, args),
-        None => return None,
-    };
+    let mut output = None;
+    for attempt in 1..=WSL_AGENT_PROBE_ATTEMPTS {
+        let mut cmd = tokio::process::Command::new("wsl.exe");
+        cmd.arg("-d")
+            .arg(distro)
+            .arg("--")
+            .arg("bash")
+            .arg("-lc")
+            .arg(wsl_agent_probe_script(executable))
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true);
+        // The probe runs from the interactive wta-helper. If wsl.exe attaches
+        // to that ConPTY it changes the console input mode on exit, after which
+        // crossterm receives arrow CSI sequences as literal '[' / 'B'
+        // characters and the entire agent-pane input appears frozen.
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
 
-    let result = std::process::Command::new(program)
-        .args(args)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
-    match result {
-        Ok(status) => Some(status.success()),
-        Err(_) => Some(false),
+        match tokio::time::timeout(WSL_AGENT_PROBE_TIMEOUT, cmd.output()).await {
+            Ok(Ok(result)) => {
+                output = Some(result);
+                break;
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    target: "agent_source",
+                    distro,
+                    executable,
+                    attempt,
+                    %error,
+                    "WSL agent availability probe failed to spawn"
+                );
+                return None;
+            }
+            Err(_) if attempt < WSL_AGENT_PROBE_ATTEMPTS => {
+                tracing::warn!(
+                    target: "agent_source",
+                    distro,
+                    executable,
+                    attempt,
+                    max_attempts = WSL_AGENT_PROBE_ATTEMPTS,
+                    "WSL agent availability probe timed out; retrying"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    target: "agent_source",
+                    distro,
+                    executable,
+                    attempt,
+                    max_attempts = WSL_AGENT_PROBE_ATTEMPTS,
+                    "WSL agent availability probe timed out after retries"
+                );
+                return None;
+            }
+        }
     }
+    let output = output?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let resolved = stdout
+        .lines()
+        .skip_while(|line| *line != "__WTA_PROBE_BEGIN__")
+        .skip(1)
+        .take_while(|line| *line != "__WTA_PROBE_END__")
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    let available = is_native_wsl_resolution(&resolved);
+    tracing::info!(
+        target: "agent_source",
+        distro,
+        executable,
+        resolved_path = %resolved,
+        available,
+        "WSL agent availability probe"
+    );
+    available.then_some(resolved)
+}
+
+/// Whether a known ACP agent can start inside `distro`.
+pub async fn wsl_agent_available(distro: &str, agent_id: &str) -> bool {
+    if find_wsl_exe(distro, agent_id).await.is_none() {
+        return false;
+    }
+
+    let profile = agent_registry::lookup_profile_by_id(agent_id);
+    if profile.acp_launch_command.starts_with("npx ") {
+        return find_wsl_exe(distro, "npx").await.is_some();
+    }
+    true
+}
+
+pub(crate) fn wsl_agent_probe_script(executable: &str) -> String {
+    format!(
+        "printf '__WTA_PROBE_BEGIN__\\n'; command -v {} 2>/dev/null; \
+         printf '__WTA_PROBE_END__\\n'",
+        crate::coordinator::sh_quote(executable)
+    )
+}
+
+fn is_native_wsl_resolution(resolved: &str) -> bool {
+    !resolved.is_empty() && !resolved.starts_with("/mnt/")
 }
 
 /// Build the login command for an agent, resolving the full executable path.
-pub fn build_login_cmd(agent_id: &str) -> String {
-    let exe_path = find_exe(agent_id)
-        .unwrap_or_else(|| agent_id.to_string());
+///
+/// For Copilot, an optional GitHub Enterprise host (e.g. `"mycompany.ghe.com"`)
+/// is appended as `--host https://<domain>` so users on a GHE / `ghe.com`
+/// tenant can sign in (mirroring the CLI's own `copilot login --host …`).
+/// Other agents ignore `enterprise_host`.
+pub fn build_login_cmd(agent_id: &str, enterprise_host: Option<&str>) -> String {
+    let exe_path = find_exe(agent_id).unwrap_or_else(|| agent_id.to_string());
 
     // Agent-specific login subcommand
     let subcommand = match agent_id {
         "codex" => "auth",
-        "gemini" => "auth login",
+        "gemini" | "opencode" => "auth login",
         _ => "login",
     };
 
-    if exe_path.contains(' ') {
-        format!("\"{}\" {}", exe_path, subcommand)
+    // Only Copilot supports a custom enterprise host on the login command.
+    let host_arg = if agent_id == "copilot" {
+        enterprise_host
+            .and_then(normalize_enterprise_host)
+            .map(|h| format!(" --host https://{}", h))
+            .unwrap_or_default()
     } else {
-        format!("{} {}", exe_path, subcommand)
+        String::new()
+    };
+
+    if exe_path.contains(' ') {
+        format!("\"{}\" {}{}", exe_path, subcommand, host_arg)
+    } else {
+        format!("{} {}{}", exe_path, subcommand, host_arg)
     }
+}
+
+/// Normalize a user-entered GitHub Enterprise domain into a bare host suitable
+/// for `--host https://<host>`. Strips any scheme (case-insensitively) and any
+/// path/query/fragment, keeping only `host[:port]`. An empty value or plain
+/// `github.com` means "no enterprise host" (returns `None`).
+pub fn normalize_enterprise_host(raw: &str) -> Option<String> {
+    let mut host = raw.trim();
+    // Strip an optional scheme, case-insensitively (so `HTTPS://…` works too).
+    for scheme in ["https://", "http://"] {
+        if host.len() >= scheme.len() && host[..scheme.len()].eq_ignore_ascii_case(scheme) {
+            host = &host[scheme.len()..];
+            break;
+        }
+    }
+    // Keep only the authority (`host[:port]`); drop any path/query/fragment so a
+    // pasted full URL like `corp.ghe.com/foo` doesn't leak into the command or
+    // the device-verification URL.
+    let host = host.split(['/', '?', '#']).next().unwrap_or("").trim();
+    if host.is_empty() || host.eq_ignore_ascii_case("github.com") {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
+/// Path to the small JSON file that persists Copilot auth preferences (the
+/// last-used GitHub Enterprise host). Lives in the package-private state root
+/// alongside the WT app's own settings.
+fn copilot_auth_config_path() -> Option<std::path::PathBuf> {
+    crate::runtime_paths::intelligent_terminal_root().map(|r| r.join("copilot-auth.json"))
+}
+
+/// Load the persisted Copilot GitHub Enterprise host, if any.
+pub fn load_copilot_enterprise_host() -> Option<String> {
+    let path = copilot_auth_config_path()?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let host = parsed
+        .get("enterpriseHost")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    tracing::debug!(target: "agent_check", host = ?host, "loaded copilot enterprise host");
+    host
+}
+
+/// Persist (or clear) the Copilot GitHub Enterprise host for next time.
+pub fn save_copilot_enterprise_host(host: &str) {
+    let Some(path) = copilot_auth_config_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let body = serde_json::json!({ "enterpriseHost": host });
+    if let Ok(text) = serde_json::to_string_pretty(&body) {
+        let _ = std::fs::write(&path, text);
+    }
+    tracing::debug!(target: "agent_check", host = %host, "saved copilot enterprise host");
 }
 
 /// Install an agent via winget. Streams output lines through `on_line` callback.
 /// On success, refreshes the process PATH so subsequent `find_exe` calls find
 /// the new binary.
-pub async fn install(agent_id: &str, on_line: impl FnMut(String) + Send + 'static) -> Result<(), String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentInstallOutcome {
+    Installed,
+    AlreadyAvailable,
+    Failed(String),
+    TimedOut,
+    DetectionTimedOut,
+}
+
+pub async fn install(
+    agent_id: &str,
+    on_line: impl FnMut(String) + Send + 'static,
+) -> AgentInstallOutcome {
     match agent_id {
         "copilot" => install_copilot(on_line).await,
-        _ => Err(t!("agent.install.unsupported", agent = agent_id).into_owned()),
+        _ => AgentInstallOutcome::Failed(
+            t!("agent.install.unsupported", agent = agent_id).into_owned(),
+        ),
     }
 }
 
 /// Refresh the current process's PATH from the Windows registry.
 /// Call after installing software so `find_exe` picks up the new binary.
 pub fn refresh_path() {
+    // SuperInstance: registry PATH refresh is Windows-only; no-op elsewhere.
     #[cfg(windows)]
-    {
-        let path = fresh_path();
-        if !path.is_empty() {
-            std::env::set_var("PATH", &path);
-        }
+    if let Some(path) = spawn_path() {
+        std::env::set_var("PATH", &path);
+    }
     }
 }
 
@@ -205,8 +423,8 @@ pub fn refresh_path() {
 ///
 /// Windows Terminal (and therefore the `wta-master` / `wta` children it
 /// spawns) captures its environment block at process start. When an agent
-/// CLI is installed *after* WT is already running — e.g. the FRE
-/// winget-installs `copilot` mid-session — our inherited PATH stays stale,
+/// CLI is installed *after* WT is already running — e.g. the Agent pane
+/// installs `copilot` mid-session — our inherited PATH stays stale,
 /// so `CreateProcess` (or `cmd /c <cli>`) can't resolve the bare CLI name
 /// and the spawn fails with "is not recognized", which surfaces as an
 /// immediate ACP-initialize failure. Rebuild PATH from the registry
@@ -243,55 +461,134 @@ fn merge_paths(fresh: &str, current: &str) -> String {
 
 // ─── Composite functions ────────────────────────────────────────────────────
 
-/// Check a single agent: find executable + check credential.
+/// Check a single agent: find executable and surface setup hints.
 pub fn check_agent(agent_id: &str) -> AgentStatus {
     let profile = agent_registry::lookup_profile_by_id(agent_id);
-    let cli_path = find_exe(agent_id);
-    let cli_found = cli_path.is_some();
-    let cred = if cli_found { has_credential(agent_id) } else { false };
+    let availability = check_host_agent_availability(agent_id, host_npx_available());
 
     AgentStatus {
         id: agent_id.to_string(),
         display_name: profile.display_name.to_string(),
-        cli_found,
-        cli_path,
-        has_credential: cred,
+        cli_found: availability.launch_ready,
+        cli_path: availability.cli_path,
         install_hint: profile.install_hint.to_string(),
         auth_hint: profile.auth_hint.to_string(),
+        auto_installable: agent_id == "copilot",
     }
 }
 
-/// Check all known agents.
-pub fn check_all_agents() -> Vec<AgentStatus> {
-    KNOWN_AGENTS.iter().map(|p| check_agent(p.id)).collect()
-}
-
-/// Ensure an agent is installed: find → install if missing → refresh PATH → find again.
-pub async fn ensure_installed(
-    agent_id: &str,
-    on_line: impl FnMut(String) + Send + 'static,
-) -> Result<Option<String>, String> {
-    if let Some(path) = find_exe(agent_id) {
-        return Ok(Some(path));
-    }
-
-    install(agent_id, on_line).await?;
+pub fn recheck_agent(agent_id: &str) -> AgentStatus {
     refresh_path();
+    let status = check_agent(agent_id);
+    if status.cli_found {
+        clear_install_uncertainty(agent_id);
+    }
+    status
+}
 
-    Ok(find_exe(agent_id))
+pub fn is_install_uncertain(agent_id: &str) -> bool {
+    const UNCERTAINTY_WINDOW: std::time::Duration = std::time::Duration::from_secs(2 * 60);
+
+    let Some(path) = install_uncertainty_path(agent_id) else {
+        return false;
+    };
+    let Ok(metadata) = std::fs::metadata(&path) else {
+        return false;
+    };
+    let still_active = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_none_or(|age| age < UNCERTAINTY_WINDOW);
+    if !still_active {
+        clear_install_uncertainty(agent_id);
+    }
+    still_active
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostAgentAvailability {
+    pub cli_path: Option<String>,
+    pub native_cli_found: bool,
+    pub launch_ready: bool,
+    pub requires_npx: bool,
+}
+
+pub fn host_npx_available() -> bool {
+    find_exe("npx").is_some()
+}
+
+pub fn check_host_agent_availability(agent_id: &str, npx_found: bool) -> HostAgentAvailability {
+    let profile = agent_registry::lookup_profile_by_id(agent_id);
+    let cli_path = find_exe(agent_id);
+    let native_cli_found = cli_path.is_some();
+    let requires_npx = profile.acp_launch_command.starts_with("npx ");
+    let launch_ready = host_requirements_available(profile, native_cli_found, || npx_found);
+
+    HostAgentAvailability {
+        cli_path,
+        native_cli_found,
+        launch_ready,
+        requires_npx,
+    }
+}
+
+fn host_requirements_available(
+    profile: &agent_registry::AgentProfile,
+    cli_found: bool,
+    find_npx: impl FnOnce() -> bool,
+) -> bool {
+    cli_found && (!profile.acp_launch_command.starts_with("npx ") || find_npx())
+}
+
+pub async fn check_agent_in_source(
+    agent_id: &str,
+    source: &crate::agent_source::AgentSource,
+) -> AgentStatus {
+    match source {
+        crate::agent_source::AgentSource::Host => check_agent(agent_id),
+        crate::agent_source::AgentSource::Wsl { distro } => {
+            let profile = agent_registry::lookup_profile_by_id(agent_id);
+            let cli_path = find_wsl_exe(distro, agent_id).await;
+            AgentStatus {
+                id: agent_id.to_string(),
+                display_name: format!("{} — {} (WSL)", profile.display_name, distro),
+                cli_found: cli_path.is_some()
+                    && (!profile.acp_launch_command.starts_with("npx ")
+                        || find_wsl_exe(distro, "npx").await.is_some()),
+                cli_path,
+                install_hint: profile.install_hint.to_string(),
+                auth_hint: profile.auth_hint.to_string(),
+                auto_installable: false,
+            }
+        }
+    }
 }
 
 // ─── Internal helpers ───────────────────────────────────────────────────────
 
 /// Install GitHub Copilot via winget with streaming output.
-async fn install_copilot(mut on_line: impl FnMut(String) + Send + 'static) -> Result<(), String> {
-    use tokio::io::{AsyncBufReadExt, BufReader};
+async fn install_copilot(mut on_line: impl FnMut(String) + Send + 'static) -> AgentInstallOutcome {
     use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    const INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+    const DETECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+    let _install_guard = match acquire_copilot_install_mutex().await {
+        Ok(guard) => guard,
+        Err(error) => return AgentInstallOutcome::Failed(error),
+    };
+
+    if recheck_agent("copilot").cli_found {
+        return AgentInstallOutcome::AlreadyAvailable;
+    }
 
     let mut cmd = tokio::process::Command::new("winget");
     cmd.args([
         "install",
-        "--id", "GitHub.Copilot",
+        "--id",
+        "GitHub.Copilot",
         "--exact",
         "--silent",
         "--accept-package-agreements",
@@ -310,21 +607,32 @@ async fn install_copilot(mut on_line: impl FnMut(String) + Send + 'static) -> Re
 
     on_line(t!("agent.install.running_winget").into_owned());
 
+    if let Err(error) = mark_install_uncertain("copilot") {
+        tracing::warn!(target: "agent_check", %error, "failed to persist install uncertainty");
+    }
+
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return Err(t!("agent.install.launch_failed", error = e.to_string()).into_owned()),
+        Err(e) => {
+            clear_install_uncertainty("copilot");
+            return AgentInstallOutcome::Failed(
+                t!("agent.install.launch_failed", error = e.to_string()).into_owned(),
+            );
+        }
     };
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (line_tx, mut line_rx) = tokio::sync::mpsc::channel::<String>(64);
 
     if let Some(stdout) = stdout {
         let tx = line_tx.clone();
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                let _ = tx.send(line);
+                if tx.send(line.chars().take(4096).collect()).await.is_err() {
+                    break;
+                }
             }
         });
     }
@@ -333,7 +641,9 @@ async fn install_copilot(mut on_line: impl FnMut(String) + Send + 'static) -> Re
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                let _ = tx.send(line);
+                if tx.send(line.chars().take(4096).collect()).await.is_err() {
+                    break;
+                }
             }
         });
     }
@@ -348,19 +658,118 @@ async fn install_copilot(mut on_line: impl FnMut(String) + Send + 'static) -> Re
         }
     });
 
-    let status = match child.wait().await {
-        Ok(s) => s,
-        Err(e) => return Err(t!("agent.install.winget_exited", error = e.to_string()).into_owned()),
+    let status = match tokio::time::timeout(INSTALL_TIMEOUT, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => {
+            clear_install_uncertainty("copilot");
+            return AgentInstallOutcome::Failed(
+                t!("agent.install.winget_exited", error = error.to_string()).into_owned(),
+            );
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), forward).await;
+            return AgentInstallOutcome::TimedOut;
+        }
     };
 
-    let _ = forward.await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), forward).await;
 
-    if status.success() {
-        refresh_path();
-        Ok(())
-    } else {
+    if !status.success() {
+        clear_install_uncertainty("copilot");
         let code = status.code().unwrap_or(-1);
-        Err(t!("agent.install.winget_failed_code", code = code.to_string()).into_owned())
+        return AgentInstallOutcome::Failed(
+            t!("agent.install.winget_failed_code", code = code.to_string()).into_owned(),
+        );
+    }
+
+    let detection_deadline = tokio::time::Instant::now() + DETECTION_TIMEOUT;
+    loop {
+        refresh_path();
+        if check_agent("copilot").cli_found {
+            clear_install_uncertainty("copilot");
+            return AgentInstallOutcome::Installed;
+        }
+        if tokio::time::Instant::now() >= detection_deadline {
+            return AgentInstallOutcome::DetectionTimedOut;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+struct CopilotInstallMutex(windows_sys::Win32::Foundation::HANDLE);
+
+impl Drop for CopilotInstallMutex {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::System::Threading::ReleaseMutex(self.0);
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+async fn acquire_copilot_install_mutex() -> Result<CopilotInstallMutex, String> {
+    use windows_sys::Win32::Foundation::{
+        WAIT_ABANDONED, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
+    use windows_sys::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+
+    const INSTALL_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    let name: Vec<u16> = "Local\\Microsoft.WindowsTerminal.Wta.CopilotInstall\0"
+        .encode_utf16()
+        .collect();
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    if handle.is_null() {
+        return Err("failed to create the Copilot installation lock".to_string());
+    }
+
+    let deadline = tokio::time::Instant::now() + INSTALL_LOCK_TIMEOUT;
+    loop {
+        let wait = unsafe { WaitForSingleObject(handle, 0) };
+        if wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED {
+            return Ok(CopilotInstallMutex(handle));
+        }
+        if wait == WAIT_FAILED {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(handle);
+            }
+            return Err("failed while waiting for the Copilot installation lock".to_string());
+        }
+        if wait != WAIT_TIMEOUT || tokio::time::Instant::now() >= deadline {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(handle);
+            }
+            return Err("timed out waiting for another Copilot installation".to_string());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+fn install_uncertainty_path(agent_id: &str) -> Option<std::path::PathBuf> {
+    crate::runtime_paths::intelligent_terminal_root()
+        .map(|root| root.join(format!("{agent_id}-install-uncertain")))
+}
+
+fn mark_install_uncertain(agent_id: &str) -> std::io::Result<()> {
+    let Some(path) = install_uncertainty_path(agent_id) else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, b"installation outcome requires recheck")
+}
+
+fn clear_install_uncertainty(agent_id: &str) {
+    if let Some(path) = install_uncertainty_path(agent_id) {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(target: "agent_check", %error, "failed to clear install uncertainty")
+            }
+        }
     }
 }
 
@@ -370,29 +779,38 @@ async fn install_copilot(mut on_line: impl FnMut(String) + Send + 'static) -> Re
 fn fresh_path() -> String {
     use std::os::windows::ffi::OsStringExt;
 
-    fn read_reg_path(hkey: windows_sys::Win32::System::Registry::HKEY, subkey: &str) -> Option<String> {
+    fn read_reg_path(
+        hkey: windows_sys::Win32::System::Registry::HKEY,
+        subkey: &str,
+    ) -> Option<String> {
         use windows_sys::Win32::System::Registry::*;
 
         let subkey_wide: Vec<u16> = subkey.encode_utf16().chain(std::iter::once(0)).collect();
         let value_name: Vec<u16> = "Path".encode_utf16().chain(std::iter::once(0)).collect();
 
         let mut hk: HKEY = std::ptr::null_mut();
-        let ret = unsafe {
-            RegOpenKeyExW(hkey, subkey_wide.as_ptr(), 0, KEY_READ, &mut hk)
-        };
-        if ret != 0 { return None; }
+        let ret = unsafe { RegOpenKeyExW(hkey, subkey_wide.as_ptr(), 0, KEY_READ, &mut hk) };
+        if ret != 0 {
+            return None;
+        }
 
         let mut buf_size: u32 = 8192;
         let mut buffer: Vec<u16> = vec![0u16; buf_size as usize / 2];
         let mut kind: u32 = 0;
         let ret = unsafe {
             RegQueryValueExW(
-                hk, value_name.as_ptr(), std::ptr::null(),
-                &mut kind, buffer.as_mut_ptr() as *mut u8, &mut buf_size,
+                hk,
+                value_name.as_ptr(),
+                std::ptr::null(),
+                &mut kind,
+                buffer.as_mut_ptr() as *mut u8,
+                &mut buf_size,
             )
         };
         unsafe { RegCloseKey(hk) };
-        if ret != 0 { return None; }
+        if ret != 0 {
+            return None;
+        }
 
         let len = (buf_size as usize / 2).saturating_sub(1);
         let raw = std::ffi::OsString::from_wide(&buffer[..len]);
@@ -430,18 +848,26 @@ fn expand_env_vars(s: &str) -> Option<String> {
     let wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
     let needed = unsafe {
         windows_sys::Win32::System::Environment::ExpandEnvironmentStringsW(
-            wide.as_ptr(), std::ptr::null_mut(), 0,
+            wide.as_ptr(),
+            std::ptr::null_mut(),
+            0,
         )
     };
-    if needed == 0 { return Some(s.to_string()); }
+    if needed == 0 {
+        return Some(s.to_string());
+    }
 
     let mut out: Vec<u16> = vec![0u16; needed as usize];
     let written = unsafe {
         windows_sys::Win32::System::Environment::ExpandEnvironmentStringsW(
-            wide.as_ptr(), out.as_mut_ptr(), needed,
+            wide.as_ptr(),
+            out.as_mut_ptr(),
+            needed,
         )
     };
-    if written == 0 { return Some(s.to_string()); }
+    if written == 0 {
+        return Some(s.to_string());
+    }
 
     let len = (written as usize).saturating_sub(1);
     let os_str = std::ffi::OsString::from_wide(&out[..len]);
@@ -451,6 +877,92 @@ fn expand_env_vars(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_resolution_prefers_configured_native_executable() {
+        let configured = Path::new(r"C:\Claude\claude.exe");
+        let resolved = find_claude_executable_in_path(
+            OsStr::new(r"C:\npm"),
+            Some(configured.as_os_str()),
+            Some("claude-agent-sdk-win32-x64"),
+            |path| path == configured,
+        );
+        assert_eq!(resolved.as_deref(), Some(configured));
+    }
+
+    #[test]
+    fn claude_resolution_finds_native_binary_next_to_npm_shim_directory() {
+        let expected = Path::new(r"C:\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe");
+        let resolved = find_claude_executable_in_path(
+            OsStr::new(r"C:\npm"),
+            None,
+            Some("claude-agent-sdk-win32-x64"),
+            |path| path == expected,
+        );
+        assert_eq!(resolved.as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn claude_resolution_finds_direct_global_sdk_binary() {
+        let expected =
+            Path::new(r"C:\npm\node_modules\@anthropic-ai\claude-agent-sdk-win32-x64\claude.exe");
+        let resolved = find_claude_executable_in_path(
+            OsStr::new(r"C:\npm"),
+            None,
+            Some("claude-agent-sdk-win32-x64"),
+            |path| path == expected,
+        );
+        assert_eq!(resolved.as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn claude_resolution_rejects_shim_only_installation() {
+        let resolved = find_claude_executable_in_path(
+            OsStr::new(r"C:\npm"),
+            Some(OsStr::new(r"C:\npm\claude.cmd")),
+            Some("claude-agent-sdk-win32-x64"),
+            |path| path == Path::new(r"C:\npm\claude.cmd"),
+        );
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn claude_sdk_package_matches_windows_architecture() {
+        assert_eq!(
+            claude_sdk_platform_package("x86_64"),
+            Some("claude-agent-sdk-win32-x64")
+        );
+        assert_eq!(
+            claude_sdk_platform_package("aarch64"),
+            Some("claude-agent-sdk-win32-arm64")
+        );
+        assert_eq!(claude_sdk_platform_package("x86"), None);
+    }
+
+    #[test]
+    fn configured_adapter_path_must_exist() {
+        let configured = Path::new(r"C:\Codex\codex.exe");
+        assert_eq!(
+            find_configured_executable(Some(configured.as_os_str()), |path| path == configured)
+                .as_deref(),
+            Some(configured)
+        );
+        assert_eq!(
+            find_configured_executable(Some(OsStr::new(r"C:\Missing\codex.exe")), |_| false),
+            None
+        );
+    }
+
+    #[test]
+    fn host_adapter_requires_both_native_cli_and_npx() {
+        let claude = agent_registry::lookup_profile_by_id("claude");
+        assert!(host_requirements_available(claude, true, || true));
+        assert!(!host_requirements_available(claude, true, || false));
+        assert!(!host_requirements_available(claude, false, || true));
+
+        let copilot = agent_registry::lookup_profile_by_id("copilot");
+        assert!(host_requirements_available(copilot, true, || false));
+    }
 
     #[test]
     fn merge_paths_prefers_fresh_and_removes_duplicates_case_insensitively() {
@@ -477,4 +989,123 @@ mod tests {
         assert_eq!(merged, r"C:\Reg;C:\OnlyAtRuntime");
     }
 
+    #[test]
+    fn normalize_enterprise_host_strips_scheme_and_rejects_default() {
+        assert_eq!(
+            normalize_enterprise_host("mycompany.ghe.com"),
+            Some("mycompany.ghe.com".to_string())
+        );
+        assert_eq!(
+            normalize_enterprise_host("  mycompany.ghe.com  "),
+            Some("mycompany.ghe.com".to_string())
+        );
+        assert_eq!(
+            normalize_enterprise_host("https://mycompany.ghe.com/"),
+            Some("mycompany.ghe.com".to_string())
+        );
+        assert_eq!(
+            normalize_enterprise_host("http://mycompany.ghe.com"),
+            Some("mycompany.ghe.com".to_string())
+        );
+        // Empty, whitespace, or plain github.com mean "no enterprise host".
+        assert_eq!(normalize_enterprise_host(""), None);
+        assert_eq!(normalize_enterprise_host("   "), None);
+        assert_eq!(normalize_enterprise_host("github.com"), None);
+        assert_eq!(normalize_enterprise_host("GitHub.com"), None);
+    }
+
+    /// Hardening (review fix ③): an uppercase scheme must still be stripped, a
+    /// pasted full URL must keep only `host[:port]` (dropping any path/query),
+    /// and a `github.com` with scheme/path is still the default (None).
+    #[test]
+    fn normalize_enterprise_host_strips_uppercase_scheme_and_path() {
+        assert_eq!(
+            normalize_enterprise_host("HTTPS://corp.ghe.com"),
+            Some("corp.ghe.com".to_string())
+        );
+        assert_eq!(
+            normalize_enterprise_host("https://corp.ghe.com/some/path"),
+            Some("corp.ghe.com".to_string())
+        );
+        assert_eq!(
+            normalize_enterprise_host("corp.ghe.com/foo"),
+            Some("corp.ghe.com".to_string())
+        );
+        // A port is part of the authority and must be preserved.
+        assert_eq!(
+            normalize_enterprise_host("corp.ghe.com:8443"),
+            Some("corp.ghe.com:8443".to_string())
+        );
+        assert_eq!(
+            normalize_enterprise_host("https://corp.ghe.com:8443/x?y#z"),
+            Some("corp.ghe.com:8443".to_string())
+        );
+        // github.com with a scheme/path is still the default (no enterprise).
+        assert_eq!(normalize_enterprise_host("github.com/foo"), None);
+        assert_eq!(normalize_enterprise_host("HTTP://GitHub.com"), None);
+    }
+
+    #[test]
+    fn build_login_cmd_copilot_appends_enterprise_host() {
+        // exe path may resolve to a full path on dev machines, so assert on
+        // the suffix / substring rather than an exact string.
+        let base = build_login_cmd("copilot", None);
+        assert!(
+            base.trim_end().ends_with("login"),
+            "default copilot: {base}"
+        );
+        assert!(
+            !base.contains("--host"),
+            "default must not add --host: {base}"
+        );
+
+        let ghe = build_login_cmd("copilot", Some("mycompany.ghe.com"));
+        assert!(
+            ghe.contains("login --host https://mycompany.ghe.com"),
+            "GHE login: {ghe}"
+        );
+
+        // A scheme-prefixed domain is normalized (no double scheme).
+        let ghe2 = build_login_cmd("copilot", Some("https://corp.ghe.com/"));
+        assert!(
+            ghe2.contains("login --host https://corp.ghe.com"),
+            "normalized GHE login: {ghe2}"
+        );
+        assert!(
+            !ghe2.contains("https://https://"),
+            "no double scheme: {ghe2}"
+        );
+
+        // Plain github.com is the default — no --host.
+        let gh = build_login_cmd("copilot", Some("github.com"));
+        assert!(
+            !gh.contains("--host"),
+            "github.com must not add --host: {gh}"
+        );
+    }
+
+    #[test]
+    fn build_login_cmd_non_copilot_ignores_host() {
+        // Only Copilot honors an enterprise host; other agents never get one.
+        let claude = build_login_cmd("claude", Some("mycompany.ghe.com"));
+        assert!(
+            !claude.contains("--host"),
+            "claude must ignore host: {claude}"
+        );
+        assert!(claude.contains("login"), "claude login: {claude}");
+
+        let codex = build_login_cmd("codex", Some("mycompany.ghe.com"));
+        assert!(codex.contains("auth"), "codex auth: {codex}");
+        assert!(!codex.contains("--host"), "codex must ignore host: {codex}");
+
+        let opencode = build_login_cmd("opencode", Some("mycompany.ghe.com"));
+        assert!(
+            opencode.contains("auth login"),
+            "OpenCode login: {opencode}"
+        );
+        assert!(
+            !opencode.contains("--host"),
+            "OpenCode must ignore host: {opencode}"
+        );
+    }
 }

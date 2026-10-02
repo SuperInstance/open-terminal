@@ -1200,7 +1200,7 @@ const wchar_t* Utils::FindActionableControlCharacter(const wchar_t* beg, const s
             goto plainSearch;
         }
 
-        const auto wch = vld1q_u16(it);
+        const auto wch = vld1q_u16(reinterpret_cast<const uint16_t*>(it));
         const auto a = vcleq_u16(wch, vdupq_n_u16(0x1f));
         const auto b = vcleq_u16(vsubq_u16(wch, vdupq_n_u16(0x7f)), vdupq_n_u16(0x20));
         const auto c = vorrq_u16(a, b);
@@ -1251,6 +1251,45 @@ bool Utils::IsValidDirectory(const wchar_t* path) noexcept
 }
 
 #pragma warning(pop)
+
+// Routine Description:
+// - Decides whether a working directory reported by shell integration (OSC 9;9 /
+//   OSC 7) can be handed back to a *new* process as its starting directory.
+// - A path that resolves to a real Windows directory obviously can. A WSL shell,
+//   though, reports Linux paths (`/home/user/x`), which are never valid Windows
+//   directories - and yet they are still usable, because
+//   MangleStartingDirectoryForWSL folds them into a `wsl.exe --cd <path>`
+//   argument. Any *other* shell reporting a non-Windows path (git bash's
+//   `/c/Users/...`, say) would just fail to launch, so we reject those.
+// Arguments:
+// - commandLine - the commandline the new process would be launched with
+// - startingDirectory - the working directory reported by the running shell
+// Return Value:
+// - true if launching commandLine with startingDirectory would actually land in
+//   that directory
+bool Utils::IsUsableStartingDirectory(const std::wstring_view commandLine,
+                                      const std::wstring_view startingDirectory) noexcept
+try
+{
+    if (startingDirectory.empty())
+    {
+        return false;
+    }
+
+    if (IsValidDirectory(std::wstring{ startingDirectory }.c_str()))
+    {
+        return true;
+    }
+
+    // MangleStartingDirectoryForWSL clears the starting directory precisely when
+    // it has folded it into `--cd`, so an empty result is our signal that WSL
+    // will honor the path we could not validate ourselves.
+    return std::get<1>(MangleStartingDirectoryForWSL(commandLine, startingDirectory)).empty();
+}
+catch (...)
+{
+    return false;
+}
 
 std::wstring Utils::EvaluateStartingDirectory(
     std::wstring_view currentDirectory,

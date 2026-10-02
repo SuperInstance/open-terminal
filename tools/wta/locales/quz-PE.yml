@@ -1,9 +1,7 @@
 # Setup screen titles
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
-setup.title.first_run: "Allillanchu Yuyaysapa Terminal!"
 setup.title.agent_missing: "Mana agente tarikusqachu"
 setup.title.agent_error: "Agente t'inkiynin mana allinchu"
-setup.title.switch_agent: "Agente t'ikray"
 setup.title.not_available: "Agente mana kanchu"
 setup.title.sign_in: "Qallariy yaykuna"
 
@@ -12,21 +10,24 @@ setup.subtitle.copilot_missing: "Agentiyki \"%{agent}\" mana churasqachu. Churan
 setup.subtitle.agent_missing: "Agentiyki \"%{agent}\" mana churasqachu. Ama hina kaspa makiykiwan churay, chaymanta watiqmanta qallariy. Agente t'ikranapaq Yuyaysapa Terminal Settings > Agent nisqaman riy."
 setup.subtitle.copilot_auth: "Agentiyki \"%{agent}\" yaykunata munan. Yaykunaykipaq uraypi llamk'ankunata ruway. Agente t'ikranapaq Yuyaysapa Terminal Settings > Agent nisqaman riy."
 setup.subtitle.agent_auth: "Agentiyki \"%{agent}\" yaykunata munan. Agentewan yaykuy, chaymanta uraypi \"Yaykurqaniña\" nisqata akllay. Agente t'ikranapaq Yuyaysapa Terminal Settings > Agent nisqaman riy."
+setup.subtitle.connection_failed: "%{agent} nisqata mana qallariyta atirqaykuchu."
 
 # {Locked=qps-ploc,qps-ploca,qps-plocm}, {Locked="Settings"}
-setup.description.fre_line1: "Yuyaysapa Terminal nisqapi llamk'achinaykipaq qallariy agente nisqata akllay. Qamqa"
-setup.description.fre_line2: "Settings nisqaman riy llamk'ana k'itiykita wakichinapaq."
 
 setup.option.install: "%{agent} churay"
 setup.option.install_hint: "(Kikinmanta churakunqa)"
 setup.option.signin: "%{agent} nisqaman yaykuy"
 setup.option.retry_detection: "Watiqmanta ruwasun"
 setup.option.retry_auth: "Yaykurqaniña — watiqmanta tinkiyta ruwasun"
-setup.option.retry_connection: "Watiqmanta tinkiyta ruwasun"
-setup.option.switch_to: "%{agent} nisqaman t’ikray"
+setup.option.retry_connection: "Watiqmanta tinkiyta ruway"
 setup.status.installing: "Churachkan..."
+setup.status.installing_copilot_cli: "GitHub Copilot CLI churachkan"
+setup.status.connecting_agent: "%{agent} nisqaman tinkichkan"
 setup.status.install_failed: "Churay mana allinchu: "
 setup.status.installing_winget: " winget nisqawan churachkan..."
+setup.error.install_start_failed: "Churaq programa mana qallariyta atikurqanchu. Watiqmanta ruwanaykipaq \"Watiqmanta ruwasun\" nisqata akllay."
+setup.error.install_timed_out: "Churaypa suyanan pacha tukukurqan. Huk churayta qallarinaykipaq ñawpaqta \"Watiqmanta ruwasun\" nisqata akllay."
+setup.error.install_detection_timed_out: "Churay tukurqan, ichaqa Copilot manaraq rikurinchu. Watiqmanta qhawanaykipaq \"Watiqmanta ruwasun\" nisqata akllay."
 
 # ── Auth flow (src/ui/auth.rs) ──────────────────────────────────────────────
 # {Locked="CLI"} - acronym, common usage across Microsoft localizations
@@ -35,17 +36,19 @@ auth.agent_selected_with_status: "Agente %{name} — "
 auth.checking_authentication: "  %{spinner} Yaykunata qhawachkan..."
 auth.waiting_for_authorization: "  %{spinner} Kamachiyta suyachkan..."
 auth.code_copied_hint: "  Kode wich'aman apasqa — navegador nisqaykipi k'askachiy."
-auth.sign_in_prompt: "Agentiykita llamk'achinapaq yaykuy:"
+auth.device_code_prompt: "Yaykuy %{url} nisqaman hinaspa kay codigota qillqay: %{code}"  # Copilot device-flow sign-in progress; %{url} is the verification URL, %{code} is the device code
 auth.card_connect: "  %{name} t'inkiy agente llamk'aykunata hurqunapaq"
-auth.button_sign_in_github: "[ GitHub nisqawan yaykuy ]"  # {Locked="GitHub"}
-auth.button_sign_in_with: "[ %{name} nisqawan yaykuy ]"
-auth.hint_footer: "  Enter nit'iy yaykunapaq, Esc kutirinapaq"  # {Locked="Enter","Esc"}
+auth.enterprise_prompt: "  Yaykunapaq Enter · GitHub Enterprisepaq E · kutimunaykipaq Esc"  # {Locked="Enter","E","Esc"}
+auth.enterprise_domain_label: "  Enterprise dominio: "
+auth.enterprise_hint_footer: "  Yaykunapaq Enter · github.compaq Esc"  # {Locked="Enter","Esc","github.com"}
+auth.login_failed_help_enterprise: "  Watiqmanta ruwanapaq Enter ñit'iy, utaq github.compaq Esc. Sapa kuti kaqninkuna: pantasqa qillqasqa utaq mana chayay atina dominio, tukusqa codigo, utaq chay hostpi Copilot yaykuy mana kanchu."  # {Locked="Enter","Esc","github.com","Copilot"}
+auth.login_failed_help_default: "  Watiqmanta ruwanapaq Enter ñit'iy, utaq kutimunaykipaq Esc."  # {Locked="Enter","Esc"}
 
 # ── Chat view (src/ui/chat.rs) ──────────────────────────────────────────────
 chat.activity_thinking: "Yuyachkan..."
 # {Locked=qps-ploc,qps-ploca,qps-plocm}
 chat.welcome_title: "Allillanchu Yuyaysapa Terminal!"
-chat.welcome_disclaimer: "Yuyaysapa Terminal AI-ta llamk'achin. Pantaykunata qhaway."
+chat.welcome_disclaimer: "Yuyaysapa Terminal AI-ta llamk'achin."
 chat.plan_header: "Ruwana:"
 chat.plan_marker_completed: "[x]"  # {Locked}
 chat.plan_marker_in_progress: "[>]"  # {Locked}
@@ -53,11 +56,24 @@ chat.plan_marker_pending: "[ ]"  # {Locked}
 chat.autofix_prompt_label: "Sapan kamachiykuq pantarisqa ñakaq qhawasqa"
 chat.turn_canceled: "(saqisqa)"
 chat.turn_executed: "→ ruwasqa: %{title}"
+# Persistent tool-category labels shown after a status marker and before a subject.
+chat.tool_kind.run: "Purichiy"
+chat.tool_kind.insert: "Churay"
+chat.tool_kind.read: "Ñawinchay"
+chat.tool_kind.search: "Maskay"
+chat.tool_kind.edit: "Allichay"
+chat.tool_kind.delete: "Qulluy"
+chat.tool_kind.move: "Kuyuchiy"
+chat.tool_kind.fetch: "Apamuy"
+chat.tool_kind.think: "Yuyay"
+chat.tool_kind.mode: "Modo"
+chat.tool_kind.other: "Yanapakuy"
 
 # ── Input placeholders (src/ui/input.rs) ────────────────────────────────────
 input.placeholder.connected: "Imata tapukuy, / kamachiykunapaq.."  # {Locked="/"}
 input.placeholder.connecting: "t'inkichkan..."
 input.placeholder.disconnected: "t'inkisqa"
+input.image_attachments: "📎 Imagenkuna: %{items}"  # {Locked="📎","%{items}"}
 
 # ── Command popup (src/ui/command_popup.rs) ─────────────────────────────────
 # {Locked="/"} - slash-command prefix, must remain ASCII
@@ -93,9 +109,7 @@ permission.compact.prefix: "[!] "  # {Locked}
 permission.compact.hint: "[Y/N kutchinapaq · hunt'a tarjeta rikunapaq t'ikray]"  # {Locked="Y/N"}
 
 # ── Agent status (src/agent_check.rs) ───────────────────────────────────────
-agent.status.not_installed_auto: "Mana churasqachu — kikinmanta churanapaq akllay"
 agent.status.not_found: "Mana tarikusqachu"
-agent.status.detected: "Tarikusqa"
 # {Locked="winget","GitHub.Copilot","GitHub","Copilot"} - tool names and command, must run verbatim
 agent.install.running_winget: "Purichkan: winget install GitHub.Copilot"
 agent.install.launch_failed: "winget nisqata qallarichiy mana atikurqanchu: %{error}"
@@ -106,8 +120,8 @@ agent.custom.auth_hint: "%{name} churasqa kasqanta PATH nisqapiña kasqanta qhaw
 
 # ── Agents view (src/ui/agents_view.rs) ─────────────────────────────────────
 agents.loading: "Chaqachkan..."
-# {Locked="Enter","Esc","↑","↓"} - key combinations, do not translate
-agents.footer_hint: "(↑ ↓ purinapaq • Enter hunt'ata qallarichiy • Esc lluqsinapaq)"
+# {Locked="Enter","Esc","F5","↑","↓","/"} - key combinations, do not translate
+agents.footer_hint: "(↑ ↓ purinapaq • Enter hunt'ata qallarichiy • Esc lluqsinapaq • F5 musuqyachinapaq • / maskanapaq)"
 agents.status.active: "Llamk'achkan"
 agents.status.waiting_for_input: "Yaykuyta suyachkan"
 agents.status.error: "Pantay"
@@ -117,26 +131,47 @@ agents.status.idle: "Samachkan"
 layout.welcome_hint: "  (Ctrl+Shift+. agente k'itita rikuchiy/pakay • Ctrl+Shift+/ agente hunt'ata rikuchiy/pakay)"  # {Locked="Ctrl+Shift+.","Ctrl+Shift+/"}
 
 # ── Connection state ────────────────────────────────────────────────────────
-connection.starting: "Agente qallarichkan..."
+# Preparing the AI agent connection, including preflight and reuse of a cached agent.
+connection.starting: "Agenteman t'inkinata wakichispa..."
+# Retiring old AI agent sessions for /restart, before the next connection phases.
+connection.restarting: "Agenteta musuqmanta qallarichispa..."
 connection.reconnecting: "Watiqmanta t'inkichkan..."
+# Connecting the pane to WTA's local coordinator process, not to an AI model.
+connection.coordinator: "Kay computadorapi tinkuchiqman t'inkispa..."
+# Initializing the helper/coordinator connection, including local preparation and AI agent initialization.
+connection.initializing: "Agenteman t'inkinata qallarichispa..."
+# Refreshing the user's authentication with the AI agent after login; not verifying the agent's identity.
+connection.authenticating: "Agentepi haykuqpa kikin kayninta chiqaqchaspa..."
+# Reading the coordinator's registry snapshot, including existing history; not fetching history from the AI agent.
+connection.syncing_sessions: "Sesión listata ñawirispa..."
+# Creating the AI agent session, including local registration; internal agent progress is unknown.
+connection.creating_session: "Agente sesiónta ruwaspa..."
+# Applying the requested AI model before the connection is ready. Preserve %{model}.
+connection.selecting_model: "Sesión modelota churaspa: %{model}..."  # {Locked="%{model}"}
+# Activity row while connecting to restore a conversation. Keep the actual stage first so narrow panes show it; session_id is shortened to eight characters.
+connection.resuming_stage: "%{stage} (%{session_id} nisqata qatispa)"  # {Locked="%{stage}","%{session_id}"}
 connection.connecting_activity: "Agente-man t'inkichkan…"
 connection.lost: "Agente-man t'inkiy chinkarun. Watiqmanta t'inkinapaq /restart qillqay."  # {Locked="/restart"}
 
 # ── System messages (src/app.rs) ────────────────────────────────────────────
+system.close_pane_hint: "K'itita wichq'anaykipaq Ctrl+C yapay ñit'iy."  # {Locked="Ctrl+C"}
+system.selection_copied: "Kikinchasqa"  # Brief hint shown after selected terminal text is copied
 system.cancelled: "Chinkachisqa."
 system.no_prompt_in_flight: "Mana tapukuy purichkanchu."
 system.authentication_failed: "Yaykuy mana allinchu"
-system.command_copied_retry: "Kamachiy apasqa — huk terminal nisqapi purichiy, chaymanta Enter nit'iy watiqmanta qallarinapaq"  # {Locked="Enter"}
 system.stopped_max_tokens: "Kutichiyqa kuchurqakun modelopa lluqsiynin sayaynin chayasqan qhipata."
 system.stopped_max_turn_requests: "Agenteqa sayarqan kay kutipi mañakuy sayaynin chayasqan qhipata."
 system.stopped_refusal: "Agenteqa kay mañakuyta qatiyta mana munarqanchu."
 system.agent_busy: "Kay tab nisqapi Agent llamk'achkan — kunan prompt tukukunankama suyay."
+system.image_clipboard_empty: "K'askachinapaq wich'amanpi mana imagen kanchu."
+system.image_not_supported: "Kay Agent mana imagen yaykuchiyta yanapanchu."
+system.image_pasted: "Imagen k'askachasqa (%{label}). Enter nit'iy apachinapaq."  # {Locked="%{label}","Enter"}
 system.resuming_session: "Sesión %{session_id} kutichispa..."
 system.unknown_command: "Mana riqsisqa kamachiy \"%{command}\" — prompt hina apachisqa. Lista rikunaykipaq /help qillqay."  # {Locked="/help"} — slash-command name.
 system.busy_use_stop: "Kunan prompt tukukunankama suyay, utaq ñawpaqta /stop ruway."  # {Locked="/stop"} — slash-command name.
 system.cannot_focus_session: "Sesión %{session_id} nisqaman mana enfoque ruwayta atikunchu: live hina rikukun, ichaqa manaraq pane GUID watasqachu. Huk ratumanta wakmanta kallpachakuy."
-system.cannot_resume_no_load_session: "agent pane ukupi mana kutichiyta atikunchu: %{agent} mana ACP `loadSession` atiyninta willarqachu. Chaypa rantinpi musuq terminal pane ukupi kutichinapaq Enter (Shift mana) ñit'iy."  # {Locked="ACP","loadSession","Enter","Shift"} — protocol/UI terms.
-system.cannot_resume_no_resume_flag: "%{agent} sesión mana kutichiyta atikunchu: kay agent mana `--resume` hina flag nisqayuqchu. Chaypa rantinpi ACP nisqawan agent pane ukupi kutichiyta yachanapaq Shift+Enter ñit'iy."  # {Locked="--resume","Shift","Enter","ACP"} — flag and UI terms.
+system.cannot_resume_no_load_session: "agent pane ukupi mana kutichiyta atikunchu: %{agent} mana ACP `loadSession` atiyninta willarqachu."  # {Locked="ACP","loadSession"} — protocol/UI terms.
+system.cannot_resume_no_resume_flag: "%{agent} sesión mana kutichiyta atikunchu: kay agent mana `--resume` hina flag nisqayuqchu."  # {Locked="--resume"} — flag and UI terms.
 system.cannot_resume_unknown_agent: "Sesión %{session_id} mana kutichiyta atikunchu: paqarimuq agent kay WTA build nisqapaq mana riqsisqachu."
 system.cannot_resume_phantom_via_flag: "%{agent} sesión %{session_id} mana kutichiyta atikunchu: qallarirqan, ichaqa mana ima rimaytapas huñurqanchu; chayrayku %{agent} kikinqa resume nisqata mana chaskinqachu. Filata hurquchkan."
 system.cannot_resume_phantom_via_load: "%{agent} sesión %{session_id} mana kutichiyta atikunchu: qallarirqan, ichaqa mana ima rimaytapas huñurqanchu; chayrayku %{agent} load nisqata mana chaskinqachu. Filata hurquchkan."
@@ -178,7 +213,7 @@ hooks.marketplace_path_stale: "⚠ qhatu ñan mawkayasqa"
 hooks.installed_but_disabled: "⚠ churasqa ichaqa ñit'isqa"
 hooks.not_installed: "✗ mana churasqachu"
 hooks.uninstall_skipped: "pasasqa (CLI mana PATH nisqapichu)"
-hooks.install_attempted: "wt-agent-hooks churay llamk'achisqa (idempotente). `wta hooks status` purichiy ruwasqata qhawanaykipaq. Qatiy willana: %LOCALAPPDATA%\\IntelligentTerminal\\logs\\wta-install-hooks.log"
+hooks.install_succeeded: "✓ wt-agent-hooks churasqa %{clis}-paq"
 # ── Relative time + date formatting (src/ui/agents_view.rs) ─────────────────
 time.just_now: "kunanlla"
 time.minute_singular: "%{count} minutu ñawpaq"
@@ -188,5 +223,46 @@ time.hours_other: "%{count} hora ñawpaq"
 time.day_singular: "%{count} p'unchaw ñawpaq"
 time.days_other: "%{count} p'unchaw ñawpaq"
 
+# ── Slash-command summaries (src/commands.rs) ─────────────────────────────
+# Command names (/help, /clear, etc.) stay English; descriptions translate.
+# {Locked="ACP","Ctrl+Shift+/"} - protocol name and shortcut, do not translate
+commands.help.summary: "Show this command list"
+commands.clear.summary: "Clear the chat scrollback (keeps session)"
+commands.new.summary: "Start a fresh ACP session (drops history)"  # {Locked="ACP"}
+commands.fix.summary: "Diagnose the active terminal and suggest a fix (/fix <hint>)"  # {Locked="/fix","<hint>"}
+commands.restart.summary: "Restart agent"
+commands.stop.summary: "Cancel the in-flight prompt"
+commands.sessions.summary: "Open the historical sessions picker (Ctrl+Shift+/)"  # {Locked="Ctrl+Shift+/"}
+commands.agent.summary: "Kay k'itipaq agente akllay (/agent <id> qillqay kikinmanta t'ikranapaq)"  # {Locked="/agent","<id>"}
+
 # ── Recomendación ruwariy (src/coordinator.rs) ───────────────────────────
 system.choice_execution_failed: "Akllay %{choice} pantarun: %{error}"
+
+# ── Agent picker (src/ui/agent_popup.rs) ────────────────────────────────────
+# {Locked="↑","↓","Enter","Esc"} - key names, do not translate
+agent_picker.title: "Agente akllay (↑ ↓ • Enter • Esc)"  # Agent means an AI coding agent
+# Shown when no policy-allowed AI agent CLI is installed on the machine.
+system.no_agents: "Manam ima agente CLI kaqpas tarikunchu kay computadorapi."  # {Locked="CLI"}
+# {agent} is the unrecognized text the user typed after /agent.
+system.agent_unknown: "Mana riqsisqa modelo %{agent} — akllana lista rikunaykipaq /agent qillqay."  # {Locked="/agent"}
+# Shown only when /agent is used outside a Windows Terminal-owned agent pane.
+system.agent_switch_unavailable: "Agente cambiaqkuna manam tarikunchu Windows Terminal pestaña hawapi."
+
+# ── Model picker (/model) ───────────────────────────────────────────────────
+commands.model.summary: "Kay k'itipaq modelo akllay (/model <id> qillqay kikinmanta t'ikranapaq)"  # {Locked="/model","<id>"}
+commands.config.summary: "Kay agente nisqap t'inkinta allichay"  # Agent means an AI coding agent; shown for the /config command. {Locked="/config"}
+commands.move.summary: "Kay hunt'a k'itipi agente k'itita astay (/move <position>)"  # {Locked="/move","<position>"}
+model_picker.title: "Modelo akllay (↑ ↓ • Enter • Esc)"  # {Locked="↑","↓","Enter","Esc"}
+system.no_models: "Tinkisqa agente mana ima akllana modelotapas willarqachu."
+system.model_set: "Kay k'itipaq modelo %{model} nisqaman churasqa."  # {Locked="%{model}"}
+
+# ── Session configuration picker (src/ui/config_popup.rs) ───────────────────
+# {Locked="↑","↓","Enter","Esc","ACP"} - key names and protocol name
+config_picker.title: "T'inki allichay (↑ ↓ • Enter • Esc)"
+# Shown when /config is used but the AI agent exposed no ACP select options.
+system.no_config_options: "T'inkisqa agente mana ima allichana t'inki akllanatahpas riqsichimurqanchu."
+# {option} is an Agent-provided option name; {error} is the ACP error.
+system.config_update_failed: "%{option} machkhapay pantarun: %{error}"
+system.yolo_disable_pending: "proveedorqa manam kamachisqa mana privilegioyuq sesiónpa estadonta chiqapachirqachu"  # Shown after the localized failure prefix while prompts remain blocked until the AI agent provider confirms that its privileged session mode is off. Provider means an AI agent provider, not a network provider.
+system.provider_command_blocked_by_policy: "%{command}: Organizaciónniykip política rurasqanrayku automática aprobacionqa harkasqa kachkan."  # {Locked="%{command}"} Shown when AllowAutomaticApproval blocks a provider-advertised privileged command.
+system.model_unknown: "Mana riqsisqa modelo %{model} — akllana lista rikunaykipaq /model qillqay."  # {Locked="%{model}","/model"}
